@@ -1085,7 +1085,8 @@ fn encode_batch_rgb(
             &mut bitstreams[*slot],
             desc.pts.ticks(),
             flags,
-        )? {
+        )
+        .map_err(|e| EncodeError::Backend(format!("batch frame {i} slot {slot}: {e}")))? {
             EncodeCall::Emitted => {}
             // The frame is buffered; its output appears on a later call.
             EncodeCall::NeedMoreInput => continue,
