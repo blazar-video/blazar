@@ -465,8 +465,10 @@ fn encode_one(
     let slot = match pool.acquire(pts) {
         Some(slot) => slot,
         None => {
-            // Every slot is in flight: collect what has completed, then retry.
-            drain_ready(
+            // Every slot is in flight: wait for the oldest to complete. With a
+            // 16-slot pool and no B-frames the driver must be able to emit the
+            // oldest, so this is backpressure rather than a stall.
+            drain_oldest(
                 bitstreams,
                 pool,
                 codec_config,
@@ -499,7 +501,11 @@ fn encode_one(
             return Ok(());
         }
     }
-    drain_ready(
+    // One emission per successful call. Draining more than the oldest in-flight
+    // slot reads buffers the driver has not written yet: it echoes the new
+    // timestamp into a slot that still holds the previous frame's payload, which
+    // duplicated a frame and dropped the last one under slow submissions.
+    drain_oldest(
         bitstreams,
         pool,
         codec_config,
@@ -507,6 +513,34 @@ fn encode_one(
         frame_duration,
         units,
     )
+}
+
+/// Lock the oldest in-flight slot and emit it.
+///
+/// Blocking is safe here: the caller only reaches this after `encode_picture`
+/// returned success, which means an output is ready, and outputs are produced in
+/// submission order when there are no B-frames.
+fn drain_oldest(
+    bitstreams: &mut [Bitstream<'_>],
+    pool: &mut SlotPool,
+    codec_config: &mut Option<Vec<u8>>,
+    decode_index: &mut u64,
+    frame_duration: u64,
+    units: &mut Vec<EncodedUnit>,
+) -> Result<(), EncodeError> {
+    let Some((slot, expected_pts)) = pool.in_flight().first().copied() else {
+        return Ok(());
+    };
+    let lock = bitstreams[slot].lock().map_err(nvenc_error)?;
+    if lock.data().is_empty() || lock.timestamp() != expected_pts {
+        // Not this slot's output after all; leave it in flight for a later call.
+        return Ok(());
+    }
+    let unit = unit_from_bitstream(&lock, codec_config, decode_index, frame_duration)?;
+    drop(lock);
+    pool.release(slot);
+    units.push(unit);
+    Ok(())
 }
 
 enum EncodeCall {
@@ -537,36 +571,6 @@ fn encode_with_retry(
     Err(EncodeError::Backend(
         "NVENC stayed busy across retries".into(),
     ))
-}
-
-/// Collect completed outputs in submission order.
-///
-/// A slot that has not been filled yet still contains the *previous* frame's
-/// bitstream, so completion is confirmed by matching the driver's echoed
-/// timestamp against the one recorded when the slot was acquired.
-fn drain_ready(
-    bitstreams: &mut [Bitstream<'_>],
-    pool: &mut SlotPool,
-    codec_config: &mut Option<Vec<u8>>,
-    decode_index: &mut u64,
-    frame_duration: u64,
-    units: &mut Vec<EncodedUnit>,
-) -> Result<(), EncodeError> {
-    for (slot, expected_pts) in pool.in_flight() {
-        let lock = match bitstreams[slot].try_lock() {
-            Ok(lock) => lock,
-            Err(e) if e.kind() == ErrorKind::LockBusy => break,
-            Err(e) => return Err(nvenc_error(e)),
-        };
-        if lock.data().is_empty() || lock.timestamp() != expected_pts {
-            break;
-        }
-        let unit = unit_from_bitstream(&lock, codec_config, decode_index, frame_duration)?;
-        drop(lock);
-        pool.release(slot);
-        units.push(unit);
-    }
-    Ok(())
 }
 
 /// Drain everything still in flight after end-of-stream.
