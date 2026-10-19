@@ -89,25 +89,17 @@ pub struct Nv12Converter {
 
 impl Nv12Converter {
     pub fn new(ctx: &Arc<CudaContext>) -> Result<Self, EncodeError> {
-        // NVRTC otherwise targets the toolkit's newest virtual architecture,
-        // and a driver older than the toolkit rejects that PTX with
-        // CUDA_ERROR_UNSUPPORTED_PTX_VERSION (hit on Windows: toolkit 13.4,
-        // driver 610). Compile for the device actually present instead.
-        let (major, minor) = ctx.compute_capability().map_err(|e| {
-            EncodeError::Backend(format!("CUDA compute capability: {e:?}"))
-        })?;
-        // NVRTC's PTX ISA version follows the requested architecture, and the
-        // installed driver may predate the toolkit (13.4 toolkit vs a 13.1
-        // driver rejects anything newer than sm_86 PTX). Ampere PTX is forward
-        // compatible with every newer GPU, so only pre-Ampere parts need their
-        // own target.
-        let (arch_major, arch_minor) = if major >= 8 { (8, 0) } else { (major, minor) };
-        let opts = cudarc::nvrtc::CompileOptions {
-            options: vec![format!("--gpu-architecture=compute_{arch_major}{arch_minor}")],
-            ..Default::default()
-        };
-        let ptx = cudarc::nvrtc::compile_ptx_with_opts(KERNEL, opts)
-            .map_err(|e| EncodeError::Backend(format!("compile NV12 kernel: {e}")))?;
+        // Compile to a cubin for this device instead of PTX. PTX is versioned
+        // by the toolkit that produced it, and a driver older than the toolkit
+        // rejects it with CUDA_ERROR_UNSUPPORTED_PTX_VERSION (toolkit 13.4 vs
+        // driver 610.88 on Windows). A cubin for the device's own sm_XY sidesteps
+        // that negotiation entirely.
+        let (major, minor) = ctx
+            .compute_capability()
+            .map_err(|e| EncodeError::Backend(format!("CUDA compute capability: {e:?}")))?;
+        let arch = format!("--gpu-architecture=sm_{major}{minor}");
+        let cubin = compile_cubin(KERNEL, &arch)?;
+        let ptx = cudarc::nvrtc::Ptx::from_binary(cubin);
         let module = ctx
             .load_module(ptx)
             .map_err(|e| EncodeError::Backend(format!("load NV12 kernel: {e}")))?;
@@ -194,4 +186,35 @@ impl Nv12Converter {
             .map_err(|e| EncodeError::Backend(format!("launch NV12 kernel: {e}")))?;
         Ok(())
     }
+}
+
+/// Compile `src` to a cubin for `arch` (e.g. `--gpu-architecture=sm_89`).
+///
+/// cudarc only wraps `nvrtcGetPTX`, so the cubin fetch goes through the raw
+/// NVRTC entry points. The program is destroyed on every path.
+fn compile_cubin(src: &str, arch: &str) -> Result<Vec<u8>, EncodeError> {
+    use std::ffi::CString;
+    let src = CString::new(src).expect("kernel source has no interior NUL");
+    let prog = cudarc::nvrtc::result::create_program(&src, None)
+        .map_err(|e| EncodeError::Backend(format!("create NVRTC program: {e:?}")))?;
+    let result = (|| {
+        let options = ["--cubin".to_string(), arch.to_string()];
+        cudarc::nvrtc::result::compile_program(prog, &options)
+            .map_err(|e| EncodeError::Backend(format!("compile NV12 kernel: {e:?}")))?;
+        let mut size = 0usize;
+        cudarc::nvrtc::sys::nvrtcGetCUBINSize(prog, &mut size)
+            .result()
+            .map_err(|e| EncodeError::Backend(format!("cubin size: {e:?}")))?;
+        if size == 0 {
+            return Err(EncodeError::Backend("NVRTC returned an empty cubin".into()));
+        }
+        let mut bytes = vec![0u8; size];
+        cudarc::nvrtc::sys::nvrtcGetCUBIN(prog, bytes.as_mut_ptr().cast())
+            .result()
+            .map_err(|e| EncodeError::Backend(format!("cubin fetch: {e:?}")))?;
+        Ok(bytes)
+    })();
+    // SAFETY: `prog` came from create_program and is destroyed exactly once.
+    let _ = unsafe { cudarc::nvrtc::result::destroy_program(prog) };
+    result
 }
