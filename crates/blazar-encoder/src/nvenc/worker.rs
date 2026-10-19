@@ -1003,8 +1003,7 @@ fn encode_batch_rgb(
     // Take as many slots as the pool can give without blocking.
     let wanted = frames.len().min(POOL_CAPACITY);
     let mut slots = Vec::with_capacity(wanted);
-    for (bytes, desc) in frames.iter().take(wanted) {
-        let _ = bytes;
+    for _ in frames.iter().take(wanted) {
         match pool.reserve() {
             Some(slot) => slots.push(slot),
             None => break,
