@@ -517,9 +517,17 @@ fn encode_one(
 
 /// Lock the oldest in-flight slot and emit it.
 ///
-/// Blocking is safe here: the caller only reaches this after `encode_picture`
-/// returned success, which means an output is ready, and outputs are produced in
-/// submission order when there are no B-frames.
+/// Emission order IS decode order: `unit_from_bitstream` derives DTS from the
+/// emission index, so a unit must leave in the order the decoder must consume it.
+/// With `frameIntervalP = 1` decode order equals submission order, which is why
+/// the oldest in-flight slot is the right one and why this can block safely: the
+/// caller only reaches it after `encode_picture` returned success, and outputs
+/// complete in submission order when there is no reordering.
+///
+/// With B-frames this equivalence breaks: the driver completes in decode order,
+/// which is not submission order, and it exposes no per-slot completion or
+/// decode index (`frameIdx` is 0). B-frames are rejected until that order is
+/// observable; see the Stage B notes.
 fn drain_oldest(
     bitstreams: &mut [Bitstream<'_>],
     pool: &mut SlotPool,
