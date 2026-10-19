@@ -372,9 +372,7 @@ mod tests {
     use super::*;
 
     const H264_AU: &[u8] = include_bytes!("../tests/fixtures/h264.annexb");
-    const H264_CONFIG: &[u8] = include_bytes!("../tests/fixtures/h264.config");
     const HEVC_AU: &[u8] = include_bytes!("../tests/fixtures/hevc.annexb");
-    const HEVC_CONFIG: &[u8] = include_bytes!("../tests/fixtures/hevc.config");
 
     #[test]
     fn splits_three_and_four_byte_start_codes() {
@@ -383,7 +381,10 @@ mod tests {
             0x01, 0x65, 0xcc,
         ];
         let nals = split_annexb(&data);
-        assert_eq!(nals, vec![&[0x67, 0xaa][..], &[0x68, 0xbb][..], &[0x65, 0xcc][..]]);
+        assert_eq!(
+            nals,
+            vec![&[0x67, 0xaa][..], &[0x68, 0xbb][..], &[0x65, 0xcc][..]]
+        );
     }
 
     #[test]
@@ -413,7 +414,11 @@ mod tests {
             .to_vec();
 
         assert_eq!(config[0], 1, "configurationVersion");
-        assert_eq!(&config[1..4], &sps[1..4], "profile/compat/level from the SPS");
+        assert_eq!(
+            &config[1..4],
+            &sps[1..4],
+            "profile/compat/level from the SPS"
+        );
         assert_eq!(config[4], 0xff, "reserved + lengthSizeMinusOne = 3");
         assert_eq!(config[5], 0xe1, "one SPS");
         let sps_len = u16::from_be_bytes([config[6], config[7]]) as usize;
@@ -444,7 +449,10 @@ mod tests {
         assert_eq!(config[22], 3, "three parameter-set arrays");
         for (offset, kind) in [(23usize, HEVC_NAL_VPS), (23 + 5 + 24, HEVC_NAL_SPS)] {
             assert_eq!(config[offset] & 0x3f, kind, "array type");
-            assert_eq!(u16::from_be_bytes([config[offset + 1], config[offset + 2]]), 1);
+            assert_eq!(
+                u16::from_be_bytes([config[offset + 1], config[offset + 2]]),
+                1
+            );
         }
     }
 
@@ -465,7 +473,11 @@ mod tests {
             offset += 4 + len;
             count += 1;
         }
-        assert_eq!(offset, sample.len(), "framing must consume the whole sample");
+        assert_eq!(
+            offset,
+            sample.len(),
+            "framing must consume the whole sample"
+        );
         assert!(count > 0);
     }
 
@@ -479,7 +491,9 @@ mod tests {
             let nal = &sample[offset + 4..offset + 4 + len];
             let kind = (nal[0] >> 1) & 0x3f;
             assert!(
-                kind != HEVC_NAL_VPS && kind != HEVC_NAL_SPS && kind != HEVC_NAL_PPS
+                kind != HEVC_NAL_VPS
+                    && kind != HEVC_NAL_SPS
+                    && kind != HEVC_NAL_PPS
                     && kind != HEVC_NAL_AUD,
                 "parameter set or AUD leaked into the sample"
             );

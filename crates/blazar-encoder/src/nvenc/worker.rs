@@ -25,8 +25,8 @@ use cudarc::driver::CudaContext;
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
         GUID, NV_ENC_BUFFER_FORMAT, NV_ENC_CODEC_AV1_GUID, NV_ENC_CODEC_H264_GUID,
-        NV_ENC_CODEC_HEVC_GUID, NV_ENC_CONFIG, NV_ENC_PARAMS_RC_MODE,
-        NV_ENC_PIC_FLAGS, NV_ENC_PIC_TYPE, NV_ENC_PRESET_P4_GUID, NV_ENC_QP, NV_ENC_TUNING_INFO,
+        NV_ENC_CODEC_HEVC_GUID, NV_ENC_CONFIG, NV_ENC_PARAMS_RC_MODE, NV_ENC_PIC_FLAGS,
+        NV_ENC_PIC_TYPE, NV_ENC_PRESET_P4_GUID, NV_ENC_QP, NV_ENC_TUNING_INFO,
         NV_ENC_VUI_COLOR_PRIMARIES, NV_ENC_VUI_MATRIX_COEFFS, NV_ENC_VUI_TRANSFER_CHARACTERISTIC,
     },
     Bitstream, Buffer, EncodePictureParams, Encoder, EncoderInitParams, ErrorKind, Session,
@@ -667,9 +667,8 @@ fn unit_from_bitstream(
                 VideoCodec::Hevc => AnnexB::Hevc,
                 VideoCodec::Av1 => unreachable!("handled above"),
             };
-            let parsed = nal::parse_access_unit(raw, format).map_err(|e| {
-                EncodeError::Backend(format!("parse {codec:?} access unit: {e}"))
-            })?;
+            let parsed = nal::parse_access_unit(raw, format)
+                .map_err(|e| EncodeError::Backend(format!("parse {codec:?} access unit: {e}")))?;
             if codec_config.is_none() {
                 *codec_config = parsed.config;
             }

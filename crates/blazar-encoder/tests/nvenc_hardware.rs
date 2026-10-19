@@ -147,3 +147,61 @@ fn encoding_after_finish_is_rejected() {
         blazar_encoder::EncodeError::AfterFinish
     );
 }
+
+fn encoder_codec(keyint: u32, bframes: u32, codec: VideoCodec) -> NvencEncoder {
+    let mut c = cfg(keyint);
+    c.bframes = bframes;
+    NvencEncoder::new(&c, W, H, FPS, Timebase::MPEG_90K, codec)
+        .unwrap_or_else(|e| panic!("NVENC {codec:?} session opens: {e}"))
+}
+
+/// Every unit must be a sequence of four-byte-length-prefixed NALs.
+fn assert_length_prefixed(unit: &blazar_core::EncodedUnit) {
+    let mut offset = 0usize;
+    let bytes = &unit.bytes;
+    while offset < bytes.len() {
+        assert!(offset + 4 <= bytes.len(), "truncated length prefix");
+        let len = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+        assert!(len > 0, "zero-length NAL");
+        offset += 4 + len;
+    }
+    assert_eq!(offset, bytes.len(), "framing must consume the sample");
+}
+
+/// H.264 and HEVC are the codecs that actually reorder on this driver, so they
+/// are the regression test for DTS-based ordering and for the end-of-stream
+/// drain that used to drop the reorder window.
+#[test]
+fn h264_and_hevc_emit_config_and_true_reordering() {
+    for codec in [VideoCodec::H264, VideoCodec::Hevc] {
+        let mut enc = encoder_codec(12, 2, codec);
+        let mut units = Vec::new();
+        for i in 0..24u64 {
+            units.extend(enc.encode(&frame(i)).expect("frame encodes"));
+        }
+        units.extend(enc.finish().expect("finish drains the reorder window"));
+
+        assert_eq!(units.len(), 24, "{codec:?} must emit every submitted frame");
+        let config = enc.codec_config().expect("decoder config after keyframe");
+        assert!(!config.is_empty());
+        match codec {
+            VideoCodec::H264 => assert_eq!(config[0], 1, "avcC configurationVersion"),
+            VideoCodec::Hevc => assert_eq!(config[0], 1, "hvcC configurationVersion"),
+            VideoCodec::Av1 => unreachable!(),
+        }
+
+        let dts: Vec<u64> = units.iter().map(|u| u.dts.ticks()).collect();
+        let pts: Vec<u64> = units.iter().map(|u| u.pts.ticks()).collect();
+        assert!(
+            dts.windows(2).all(|w| w[1] > w[0]),
+            "{codec:?} DTS must be strictly increasing"
+        );
+        assert!(
+            pts.windows(2).any(|w| w[1] < w[0]),
+            "{codec:?} should produce a presentation-order descent with B-frames"
+        );
+        for unit in &units {
+            assert_length_prefixed(unit);
+        }
+    }
+}
