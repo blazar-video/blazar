@@ -634,6 +634,49 @@ enum EncodeCall {
     NeedMoreInput,
 }
 
+fn fail_pending(rx: &mpsc::Receiver<Command>, error: EncodeError) {
+    while let Ok(command) = rx.try_recv() {
+        match command {
+            Command::Encode { reply, .. } => {
+                let _ = reply.send(Err(EncodeError::Backend(error.to_string())));
+            }
+            Command::Flush { reply } | Command::Finish { reply } => {
+                let _ = reply.send(Err(EncodeError::Backend(error.to_string())));
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn drain_ready(
+    bitstreams: &mut [Bitstream<'_>],
+    pool: &mut SlotPool,
+    codec_config: &mut Option<Vec<u8>>,
+    decode_index: &mut u64,
+    frame_duration: u64,
+    codec: VideoCodec,
+    units: &mut Vec<EncodedUnit>,
+) -> Result<(), EncodeError> {
+    while let Some((slot, _)) = pool.in_flight().first().copied() {
+        let lock = bitstreams[slot].lock().map_err(nvenc_error)?;
+        if lock.data().is_empty() {
+            return Err(EncodeError::Backend(
+                "NVENC reported success but a pending output buffer is empty".into(),
+            ));
+        }
+        let unit = unit_from_bitstream(&lock, codec, codec_config, decode_index, frame_duration)?;
+        drop(lock);
+        pool.release(slot);
+        units.push(unit);
+    }
+    Ok(())
+}
+
+enum EncodeCall {
+    Emitted,
+    NeedMoreInput,
+}
+
 fn encode_with_retry(
     session: &Session,
     input: &mut impl EncoderInput,
