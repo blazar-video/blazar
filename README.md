@@ -61,6 +61,14 @@ vLLM-Omni), `range` (`unit01`, `signed_unit`) and the geometry are explicit per
 submit. Pull requests to "just figure it out" will be declined; the seams do not
 tag any of it.
 
+The Rust worker logs session start (backend, codec, target, calibration count),
+periodic progress and a final summary (frames, payload bytes, max encode time) to
+stderr. Set `BLAZAR_LOG=debug` for per-frame lines, `off` to silence it.
+`examples/python/verify_encode.py out.mp4 --log run.log` cross-checks that
+summary against the container: packet count must equal the worker's frame count
+and the packets' payload must sum to the worker's byte count, so "Blazar encoded
+this" is evidence rather than a claim.
+
 Build and test instructions: `bindings/python/README.md`. Examples:
 
 ```sh

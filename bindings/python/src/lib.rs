@@ -135,6 +135,17 @@ struct WorkerStats {
     failed: bool,
 }
 
+/// Identity of one session, logged by the worker so the encode can be traced
+/// back to this process rather than to whatever wrote the file.
+struct SessionInfo {
+    request_id: String,
+    backend: String,
+    codec: String,
+    target: String,
+    calibrations: usize,
+    queue_depth: usize,
+}
+
 struct Shared {
     events: Sender<WorkerEvent>,
     error: Mutex<Option<String>>,
@@ -147,7 +158,18 @@ fn worker_main(
     jobs: Receiver<Job>,
     shared: Arc<Shared>,
     written: Arc<Mutex<Vec<WrittenUnit>>>,
+    info: SessionInfo,
 ) {
+    tracing::info!(
+        target: "blazar",
+        request_id = %info.request_id,
+        backend = %info.backend,
+        codec = %info.codec,
+        target = %info.target,
+        calibrations = info.calibrations,
+        queue_depth = info.queue_depth,
+        "encoder worker started"
+    );
     let mut finished = false;
     loop {
         let job = match jobs.recv() {
@@ -176,6 +198,26 @@ fn worker_main(
                             stats.bytes += bytes as u64;
                             stats.last_encode_us = encode_us;
                             stats.max_encode_us = stats.max_encode_us.max(encode_us);
+                        }
+                        tracing::debug!(
+                            target: "blazar",
+                            seq,
+                            pts,
+                            keyframe,
+                            units = units.len(),
+                            bytes,
+                            encode_us,
+                            "frame encoded"
+                        );
+                        if let Ok(stats) = shared.stats.lock() {
+                            if stats.encoded > 0 && stats.encoded % 24 == 0 {
+                                tracing::info!(
+                                    target: "blazar",
+                                    frames = stats.encoded,
+                                    bytes = stats.bytes,
+                                    "encode progress"
+                                );
+                            }
                         }
                         let _ = shared.events.send(WorkerEvent::Encoded {
                             seq,
@@ -218,6 +260,17 @@ fn worker_main(
         // Sender dropped or the worker failed: finalize best effort so the file
         // is playable even if the caller never called close().
         let _ = stream.close();
+    }
+    if let Ok(stats) = shared.stats.lock() {
+        tracing::info!(
+            target: "blazar",
+            request_id = %info.request_id,
+            frames = stats.encoded,
+            bytes = stats.bytes,
+            max_encode_us = stats.max_encode_us,
+            failed = stats.failed,
+            "encoder session finished"
+        );
     }
     let _ = shared.events.send(WorkerEvent::Closed);
 }
@@ -301,6 +354,14 @@ impl PyEncoder {
         if queue_depth == 0 {
             return Err(PyValueError::new_err("queue_depth must be >= 1"));
         }
+        let info = SessionInfo {
+            request_id: request_id.to_string(),
+            backend: backend.to_string(),
+            codec: codec.to_string(),
+            target: target.to_string(),
+            calibrations: calibrations.index.len(),
+            queue_depth,
+        };
         let identity = model_identity(identity)?;
         let target = parse_target(target)?;
         let backend = parse_backend(backend)?;
@@ -342,7 +403,7 @@ impl PyEncoder {
         let worker_shared = Arc::clone(&shared);
         let worker = thread::Builder::new()
             .name("blazar-encode".into())
-            .spawn(move || worker_main(stream, job_rx, worker_shared, written))
+            .spawn(move || worker_main(stream, job_rx, worker_shared, written, info))
             .map_err(|err| {
                 PyRuntimeError::new_err(format!("cannot start encoder thread: {err}"))
             })?;
@@ -767,8 +828,37 @@ fn parse_range(value: &str) -> PyResult<ColorRange> {
     }
 }
 
+/// Log level from BLAZAR_LOG/RUST_LOG (error|warn|info|debug|trace|off),
+/// defaulting to info. Logs go to stderr so they are visible next to ffmpeg's
+/// and do not interleave with anything Python prints to stdout.
+fn init_logging() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let raw = std::env::var("BLAZAR_LOG")
+            .or_else(|_| std::env::var("RUST_LOG"))
+            .unwrap_or_else(|_| "info".to_string());
+        let level = match raw.trim().to_ascii_lowercase().as_str() {
+            "off" => tracing::Level::ERROR,
+            "error" => tracing::Level::ERROR,
+            "warn" => tracing::Level::WARN,
+            "debug" => tracing::Level::DEBUG,
+            "trace" => tracing::Level::TRACE,
+            _ => tracing::Level::INFO,
+        };
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(level)
+            .with_target(false)
+            // Logs get captured to files; colour escapes make them unparseable.
+            .with_ansi(false)
+            .with_writer(std::io::stderr)
+            .try_init();
+    });
+}
+
 #[pymodule]
 fn _blazar(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    init_logging();
     module.add_class::<PyCalibrations>()?;
     module.add_class::<PyEncoder>()?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
