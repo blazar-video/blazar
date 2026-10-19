@@ -31,7 +31,8 @@ use nvidia_video_codec_sdk::{
         NV_ENC_PIC_FLAGS, NV_ENC_PIC_TYPE, NV_ENC_PRESET_P4_GUID, NV_ENC_QP, NV_ENC_TUNING_INFO,
         NV_ENC_VUI_COLOR_PRIMARIES, NV_ENC_VUI_MATRIX_COEFFS, NV_ENC_VUI_TRANSFER_CHARACTERISTIC,
     },
-    Bitstream, EncodePictureParams, Encoder, EncoderInitParams, EncoderInput, ErrorKind, Session,
+    Bitstream, Buffer, EncodePictureParams, Encoder, EncoderInitParams, EncoderInput, ErrorKind,
+    Session,
 };
 
 use super::config::{NvencParams, NvencRateControl};
