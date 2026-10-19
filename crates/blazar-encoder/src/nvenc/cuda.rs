@@ -104,7 +104,14 @@ impl Nv12Converter {
         };
         let ptx = cudarc::nvrtc::compile_ptx_with_opts(KERNEL, opts)
             .map_err(|e| EncodeError::Backend(format!("compile NV12 kernel: {e:?}")))?;
-        let image = match assemble_cubin(ptx.as_bytes().unwrap_or_default(), major, minor) {
+        // `get_ptx` returns a NUL-terminated buffer, and ptxas rejects the
+        // trailing NUL. Trim at the first zero byte.
+        let raw = ptx.as_bytes().unwrap_or_default();
+        let text = match raw.iter().position(|b| *b == 0) {
+            Some(end) => &raw[..end],
+            None => raw,
+        };
+        let image = match assemble_cubin(text, major, minor) {
             Some(bytes) => {
                 tracing::debug!(target_sm = %format!("{major}{minor}"), "NV12 kernel assembled with ptxas");
                 cudarc::nvrtc::Ptx::from_binary(bytes)
