@@ -24,6 +24,8 @@ thiserror = "=2.0.21"
 serde = { version = "=1.0.229", features = ["derive"] }
 toml = "=1.1.8"
 tracing = "=0.1.44"
+# CPU preprocess is data-parallel over chroma rows; exact pin per project rules.
+rayon = "=1.12.0"
 oxideav-core = "=0.1.40"
 oxideav-mp4 = { git = "https://github.com/jgh-/oxideav-mp4", rev = "9b6f7bb6a0dee7de72b8e593cb1feba5f14034e6" }
 # NVENC (Phase 2). Fork pinned by rev: adds EncodePictureParams::encode_pic_flags

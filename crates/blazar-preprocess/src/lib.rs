@@ -12,6 +12,7 @@
 //! `[-1,1]` BCTHW) — the conversion must read range + layout, not assume them.
 
 use blazar_core::{ColorRange, ColorSpace, Dtype, FrameRef, Layout, Pts};
+use rayon::prelude::*;
 use thiserror::Error;
 
 /// An 8-bit planar YUV 4:2:0 frame — the small representation encoders consume
@@ -206,42 +207,47 @@ fn convert_thwc<S: Sample>(
     h: usize,
 ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let matrix = Matrix::new(desc.colorspace);
+    let cw = w.div_ceil(2);
+    let ch = h.div_ceil(2);
     let mut y_plane = vec![0u8; w * h];
-    let mut chroma = Plane::new(w, h);
-    for cy in 0..chroma.ch {
-        for cx in 0..chroma.cw {
-            let mut cb = 0.0f32;
-            let mut cr = 0.0f32;
-            let mut n = 0.0f32;
-            for dy in 0..2 {
-                let sy = cy * 2 + dy;
-                if sy >= h {
-                    break;
-                }
-                for dx in 0..2 {
-                    let sx = cx * 2 + dx;
-                    if sx >= w {
-                        break;
+    let mut u = vec![0u8; cw * ch];
+    let mut v = vec![0u8; cw * ch];
+
+    // One task per chroma row: it writes that row of U/V and the one or two
+    // luma rows it owns, so the chunks are disjoint by construction.
+    y_plane
+        .par_chunks_mut(2 * w)
+        .zip(u.par_chunks_mut(cw))
+        .zip(v.par_chunks_mut(cw))
+        .enumerate()
+        .for_each(|(cy, ((y_rows, u_row), v_row))| {
+            for cx in 0..cw {
+                let (mut cb, mut cr, mut n) = (0.0f32, 0.0f32, 0.0f32);
+                for (dy, y_row) in y_rows.chunks_exact_mut(w).enumerate() {
+                    for dx in 0..2 {
+                        let sx = cx * 2 + dx;
+                        if sx >= w {
+                            break;
+                        }
+                        let component = ((cy * 2 + dy) * w + sx) * 3;
+                        let (yy, ccb, ccr) = pixel_into(
+                            S::read(bytes, component),
+                            S::read(bytes, component + 1),
+                            S::read(bytes, component + 2),
+                            desc,
+                            &matrix,
+                        );
+                        y_row[sx] = yy;
+                        cb += ccb;
+                        cr += ccr;
+                        n += 1.0;
                     }
-                    let px = sy * w + sx;
-                    let base = px * 3;
-                    let (yy, ccb, ccr) = pixel_into(
-                        S::read(bytes, base),
-                        S::read(bytes, base + 1),
-                        S::read(bytes, base + 2),
-                        desc,
-                        &matrix,
-                    );
-                    y_plane[px] = yy;
-                    cb += ccb;
-                    cr += ccr;
-                    n += 1.0;
                 }
+                u_row[cx] = CpuPreprocess::q8(cb / n);
+                v_row[cx] = CpuPreprocess::q8(cr / n);
             }
-            chroma.store(cx, cy, cb / n, cr / n);
-        }
-    }
-    (y_plane, chroma.u, chroma.v)
+        });
+    (y_plane, u, v)
 }
 
 /// BCTHW (vLLM-Omni host fallback): three full-resolution planes.
@@ -253,68 +259,46 @@ fn convert_bcthw<S: Sample>(
 ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let matrix = Matrix::new(desc.colorspace);
     let pixels = w * h;
+    let cw = w.div_ceil(2);
+    let ch = h.div_ceil(2);
     let mut y_plane = vec![0u8; pixels];
-    let mut chroma = Plane::new(w, h);
-    for cy in 0..chroma.ch {
-        for cx in 0..chroma.cw {
-            let mut cb = 0.0f32;
-            let mut cr = 0.0f32;
-            let mut n = 0.0f32;
-            for dy in 0..2 {
-                let sy = cy * 2 + dy;
-                if sy >= h {
-                    break;
-                }
-                for dx in 0..2 {
-                    let sx = cx * 2 + dx;
-                    if sx >= w {
-                        break;
+    let mut u = vec![0u8; cw * ch];
+    let mut v = vec![0u8; cw * ch];
+
+    y_plane
+        .par_chunks_mut(2 * w)
+        .zip(u.par_chunks_mut(cw))
+        .zip(v.par_chunks_mut(cw))
+        .enumerate()
+        .for_each(|(cy, ((y_rows, u_row), v_row))| {
+            let rows = y_rows.len() / w;
+            for cx in 0..cw {
+                let (mut cb, mut cr, mut n) = (0.0f32, 0.0f32, 0.0f32);
+                for dy in 0..rows {
+                    for dx in 0..2 {
+                        let sx = cx * 2 + dx;
+                        if sx >= w {
+                            break;
+                        }
+                        let px = (cy * 2 + dy) * w + sx;
+                        let (yy, ccb, ccr) = pixel_into(
+                            S::read(bytes, px),
+                            S::read(bytes, pixels + px),
+                            S::read(bytes, 2 * pixels + px),
+                            desc,
+                            &matrix,
+                        );
+                        y_rows[dy * w + sx] = yy;
+                        cb += ccb;
+                        cr += ccr;
+                        n += 1.0;
                     }
-                    let px = sy * w + sx;
-                    let (yy, ccb, ccr) = pixel_into(
-                        S::read(bytes, px),
-                        S::read(bytes, pixels + px),
-                        S::read(bytes, 2 * pixels + px),
-                        desc,
-                        &matrix,
-                    );
-                    y_plane[px] = yy;
-                    cb += ccb;
-                    cr += ccr;
-                    n += 1.0;
                 }
+                u_row[cx] = CpuPreprocess::q8(cb / n);
+                v_row[cx] = CpuPreprocess::q8(cr / n);
             }
-            chroma.store(cx, cy, cb / n, cr / n);
-        }
-    }
-    (y_plane, chroma.u, chroma.v)
-}
-
-struct Plane {
-    cw: usize,
-    ch: usize,
-    u: Vec<u8>,
-    v: Vec<u8>,
-}
-
-impl Plane {
-    fn new(w: usize, h: usize) -> Self {
-        let cw = w.div_ceil(2);
-        let ch = h.div_ceil(2);
-        Self {
-            cw,
-            ch,
-            u: vec![0u8; cw * ch],
-            v: vec![0u8; cw * ch],
-        }
-    }
-
-    #[inline(always)]
-    fn store(&mut self, cx: usize, cy: usize, cb: f32, cr: f32) {
-        let idx = cy * self.cw + cx;
-        self.u[idx] = CpuPreprocess::q8(cb);
-        self.v[idx] = CpuPreprocess::q8(cr);
-    }
+        });
+    (y_plane, u, v)
 }
 
 /// Normalize, convert and quantize one pixel. Returns `(Y, Cb, Cr)` with chroma

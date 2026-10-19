@@ -8,3 +8,4 @@ rust-version.workspace = true
 [dependencies]
 blazar-core.workspace = true
 thiserror.workspace = true
+rayon.workspace = true
