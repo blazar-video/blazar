@@ -52,12 +52,16 @@ echo "== unaligned width (834x480): row alignment =="
 ffmpeg -v error -xerror -i "$UNALIGNED" -frames:v 1 -f rawvideo -pix_fmt gray -y /tmp/unaligned.gray
 python3 - <<'PY'
 W, H = 834, 480
+# Rows alternate black/white, so a stride mix puts ~128 levels of difference
+# inside one decoded row. Quantization noise is +/-1, hence the threshold.
+SKEW_THRESHOLD = 8
 data = open("/tmp/unaligned.gray", "rb").read()
 assert len(data) == W * H, f"decoded {len(data)} bytes, expected {W * H}"
-non_uniform = [row for row in range(H) if len(set(data[row * W:(row + 1) * W])) != 1]
-print(f"non_uniform_rows={len(non_uniform)}/{H}")
-if non_uniform:
-    raise SystemExit(f"row skew detected, first rows: {non_uniform[:5]}")
+ranges = [max(data[r * W:(r + 1) * W]) - min(data[r * W:(r + 1) * W]) for r in range(H)]
+skewed = [r for r, spread in enumerate(ranges) if spread > SKEW_THRESHOLD]
+print(f"max_row_spread={max(ranges)} rows_over_threshold={len(skewed)}/{H}")
+if skewed:
+    raise SystemExit(f"row skew detected, first rows: {skewed[:5]}")
 PY
 
 echo "== NVENC validation passed =="
