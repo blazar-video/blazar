@@ -17,4 +17,4 @@ pub mod pool;
 mod worker;
 
 #[cfg(feature = "nvenc")]
-pub use worker::NvencAv1Encoder;
+pub use worker::NvencEncoder;

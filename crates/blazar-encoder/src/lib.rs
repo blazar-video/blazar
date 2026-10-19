@@ -8,6 +8,7 @@
 //! bindings land behind the `svtav1` feature.
 
 pub mod av1;
+pub mod nal;
 pub mod config;
 pub mod nvenc;
 

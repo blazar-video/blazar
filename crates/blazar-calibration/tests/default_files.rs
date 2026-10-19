@@ -34,7 +34,7 @@ fn load_all() -> CalibrationIndex {
 
 /// Codec keys that must ship a terminal default for every target. A deployment
 /// whose backend has no default here fails resolution at stream open.
-const CODEC_KEYS: [&str; 2] = ["svtav1", "nvenc_av1"];
+const CODEC_KEYS: [&str; 4] = ["svtav1", "nvenc_av1", "nvenc_h264", "nvenc_hevc"];
 
 #[test]
 fn all_default_files_load() {

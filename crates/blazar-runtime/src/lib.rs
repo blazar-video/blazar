@@ -118,6 +118,8 @@ impl<S: Sink> Encoder<S> {
         match self.output.backend {
             VideoEncoderBackend::SvtAv1 => "svtav1",
             VideoEncoderBackend::NvencAv1 => "nvenc_av1",
+            VideoEncoderBackend::NvencH264 => "nvenc_h264",
+            VideoEncoderBackend::NvencHevc => "nvenc_hevc",
             VideoEncoderBackend::Rav1e => "rav1e",
         }
     }
@@ -350,10 +352,22 @@ fn build_encoder(
         VideoEncoderBackend::SvtAv1 | VideoEncoderBackend::Rav1e => {
             Ok(Box::new(MockVideoEncoder::new(cfg, desc.fps, timebase)))
         }
-        VideoEncoderBackend::NvencAv1 => {
+        VideoEncoderBackend::NvencAv1
+        | VideoEncoderBackend::NvencH264
+        | VideoEncoderBackend::NvencHevc => {
+            let expected = match backend {
+                VideoEncoderBackend::NvencH264 => VideoCodec::H264,
+                VideoEncoderBackend::NvencHevc => VideoCodec::Hevc,
+                _ => VideoCodec::Av1,
+            };
+            if codec != expected {
+                return Err(RuntimeError::Encode(blazar_encoder::EncodeError::Backend(
+                    format!("{backend:?} produces {expected:?}, not {codec:?}"),
+                )));
+            }
             #[cfg(feature = "nvenc")]
             {
-                Ok(Box::new(blazar_encoder::nvenc::NvencAv1Encoder::new(
+                Ok(Box::new(blazar_encoder::nvenc::NvencEncoder::new(
                     cfg,
                     desc.width,
                     desc.height,

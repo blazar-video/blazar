@@ -807,9 +807,11 @@ fn parse_backend(value: &str) -> PyResult<VideoEncoderBackend> {
     match value {
         "svtav1" => Ok(VideoEncoderBackend::SvtAv1),
         "nvenc_av1" => Ok(VideoEncoderBackend::NvencAv1),
+        "nvenc_h264" => Ok(VideoEncoderBackend::NvencH264),
+        "nvenc_hevc" => Ok(VideoEncoderBackend::NvencHevc),
         "rav1e" => Ok(VideoEncoderBackend::Rav1e),
         other => Err(PyValueError::new_err(format!(
-            "unknown backend {other:?} (expected svtav1|nvenc_av1|rav1e)"
+            "unknown backend {other:?} (expected svtav1|nvenc_av1|nvenc_h264|nvenc_hevc|rav1e)"
         ))),
     }
 }

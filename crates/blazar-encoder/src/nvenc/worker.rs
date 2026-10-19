@@ -24,7 +24,8 @@ use blazar_preprocess::PreprocessedFrame;
 use cudarc::driver::CudaContext;
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
-        NV_ENC_BUFFER_FORMAT, NV_ENC_CODEC_AV1_GUID, NV_ENC_CONFIG, NV_ENC_PARAMS_RC_MODE,
+        NV_ENC_BUFFER_FORMAT, NV_ENC_CODEC_AV1_GUID, NV_ENC_CODEC_H264_GUID,
+        NV_ENC_CODEC_HEVC_GUID, NV_ENC_CONFIG, NV_ENC_PARAMS_RC_MODE,
         NV_ENC_PIC_FLAGS, NV_ENC_PIC_TYPE, NV_ENC_PRESET_P4_GUID, NV_ENC_QP, NV_ENC_TUNING_INFO,
         NV_ENC_VUI_COLOR_PRIMARIES, NV_ENC_VUI_MATRIX_COEFFS, NV_ENC_VUI_TRANSFER_CHARACTERISTIC,
     },
@@ -37,6 +38,7 @@ use super::nv12::to_nv12;
 use super::pool::SlotPool;
 use crate::av1;
 use crate::config::EncoderConfig;
+use crate::nal::{self, AnnexB};
 use crate::{EncodeError, VideoEncoder};
 
 /// Output bitstreams kept in flight. NVENC's lookahead is a handful of frames;
@@ -77,7 +79,7 @@ enum Command {
 ///
 /// Constructing one starts a worker thread and opens the session, so hardware
 /// or configuration problems surface here rather than on the first frame.
-pub struct NvencAv1Encoder {
+pub struct NvencEncoder {
     tx: Option<mpsc::Sender<Command>>,
     join: Option<thread::JoinHandle<()>>,
     codec_config: Option<Vec<u8>>,
@@ -85,7 +87,7 @@ pub struct NvencAv1Encoder {
     finished: bool,
 }
 
-impl NvencAv1Encoder {
+impl NvencEncoder {
     /// Open an NVENC AV1 session for one stream.
     pub fn new(
         cfg: &EncoderConfig,
@@ -95,11 +97,6 @@ impl NvencAv1Encoder {
         timebase: Timebase,
         codec: VideoCodec,
     ) -> Result<Self, EncodeError> {
-        if codec != VideoCodec::Av1 {
-            return Err(EncodeError::Backend(format!(
-                "NVENC backend produces AV1, not {codec:?}"
-            )));
-        }
         let params = NvencParams::from_encoder_config(cfg, width, height, fps)
             .map_err(|e| EncodeError::Backend(e.to_string()))?;
         let frame_duration = timebase.ticks_per_frame(fps);
@@ -108,7 +105,7 @@ impl NvencAv1Encoder {
         let (init_tx, init_rx) = mpsc::channel();
         let join = thread::Builder::new()
             .name("blazar-nvenc".into())
-            .spawn(move || worker_main(params, frame_duration, rx, init_tx))
+            .spawn(move || worker_main(params, frame_duration, codec, rx, init_tx))
             .map_err(|e| EncodeError::Backend(format!("spawn NVENC worker: {e}")))?;
 
         match init_rx.recv() {
@@ -149,7 +146,7 @@ impl NvencAv1Encoder {
     }
 }
 
-impl VideoEncoder for NvencAv1Encoder {
+impl VideoEncoder for NvencEncoder {
     fn encode(&mut self, frame: &PreprocessedFrame) -> Result<Vec<EncodedUnit>, EncodeError> {
         if self.finished {
             return Err(EncodeError::AfterFinish);
@@ -189,7 +186,7 @@ impl VideoEncoder for NvencAv1Encoder {
     }
 }
 
-impl Drop for NvencAv1Encoder {
+impl Drop for NvencEncoder {
     fn drop(&mut self) {
         // Dropping the sender ends the worker's `recv` loop; join so the
         // session and its buffers are torn down before this handle disappears.
@@ -203,15 +200,16 @@ impl Drop for NvencAv1Encoder {
 fn worker_main(
     params: NvencParams,
     frame_duration: u64,
+    codec: VideoCodec,
     rx: mpsc::Receiver<Command>,
     init: mpsc::Sender<Result<(), EncodeError>>,
 ) {
-    match open_session(&params) {
+    match open_session(&params, codec) {
         Ok(session) => {
             if init.send(Ok(())).is_err() {
                 return;
             }
-            run_loop(&session, &params, frame_duration, rx);
+            run_loop(&session, &params, frame_duration, codec, rx);
             // `session` drops here, after the buffers created inside
             // `run_loop` have already been dropped.
         }
@@ -221,7 +219,16 @@ fn worker_main(
     }
 }
 
-fn open_session(params: &NvencParams) -> Result<Session, EncodeError> {
+fn guid_for(codec: VideoCodec) -> GUID {
+    match codec {
+        VideoCodec::Av1 => NV_ENC_CODEC_AV1_GUID,
+        VideoCodec::H264 => NV_ENC_CODEC_H264_GUID,
+        VideoCodec::Hevc => NV_ENC_CODEC_HEVC_GUID,
+    }
+}
+
+fn open_session(params: &NvencParams, codec: VideoCodec) -> Result<Session, EncodeError> {
+    let guid = guid_for(codec);
     let ctx = match &*CUDA_CONTEXT {
         Ok(ctx) => Arc::clone(ctx),
         Err(e) => return Err(EncodeError::Backend(e.clone())),
@@ -234,22 +241,22 @@ fn open_session(params: &NvencParams) -> Result<Session, EncodeError> {
     let guids = encoder
         .get_encode_guids()
         .map_err(|e| EncodeError::Backend(format!("NVENC encode GUIDs: {e:?}")))?;
-    if !guids.contains(&NV_ENC_CODEC_AV1_GUID) {
-        return Err(EncodeError::Backend(
-            "this GPU does not advertise NVENC AV1".into(),
-        ));
+    if !guids.contains(&guid) {
+        return Err(EncodeError::Backend(format!(
+            "this GPU does not advertise NVENC {codec:?}"
+        )));
     }
 
     let mut preset = encoder
         .get_preset_config(
-            NV_ENC_CODEC_AV1_GUID,
+            guid,
             NV_ENC_PRESET_P4_GUID,
             NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_HIGH_QUALITY,
         )
         .map_err(|e| EncodeError::Backend(format!("NVENC preset config: {e:?}")))?;
     apply_config(&mut preset.presetCfg, params);
 
-    let mut init = EncoderInitParams::new(NV_ENC_CODEC_AV1_GUID, params.width, params.height);
+    let mut init = EncoderInitParams::new(guid, params.width, params.height);
     init.preset_guid(NV_ENC_PRESET_P4_GUID)
         .tuning_info(NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_HIGH_QUALITY)
         .framerate(params.fps_num, params.fps_den)
@@ -318,6 +325,7 @@ fn run_loop(
     session: &Session,
     params: &NvencParams,
     frame_duration: u64,
+    codec: VideoCodec,
     rx: mpsc::Receiver<Command>,
 ) {
     // One input buffer per output slot. A single shared input is a data race
@@ -401,6 +409,7 @@ fn run_loop(
                     &frame,
                     pitch,
                     frame_duration,
+                    codec,
                     force_idr,
                     &mut units,
                 );
@@ -422,6 +431,7 @@ fn run_loop(
                     &mut pool,
                     &mut decode_index,
                     frame_duration,
+                    codec,
                     &mut units,
                 );
                 let _ = reply.send(result.map(|()| units));
@@ -456,6 +466,7 @@ fn encode_one(
     frame: &PreprocessedFrame,
     pitch: u32,
     frame_duration: u64,
+    codec: VideoCodec,
     force_keyframe: bool,
     units: &mut Vec<EncodedUnit>,
 ) -> Result<(), EncodeError> {
@@ -474,6 +485,7 @@ fn encode_one(
                 codec_config,
                 decode_index,
                 frame_duration,
+                codec,
                 units,
             )?;
             pool.acquire(pts)
@@ -511,6 +523,7 @@ fn encode_one(
         codec_config,
         decode_index,
         frame_duration,
+        codec,
         units,
     )
 }
@@ -532,6 +545,7 @@ fn drain_ready(
     codec_config: &mut Option<Vec<u8>>,
     decode_index: &mut u64,
     frame_duration: u64,
+    codec: VideoCodec,
     units: &mut Vec<EncodedUnit>,
 ) -> Result<(), EncodeError> {
     while let Some((slot, _)) = pool.in_flight().first().copied() {
@@ -541,7 +555,7 @@ fn drain_ready(
                 "NVENC reported success but a pending output buffer is empty".into(),
             ));
         }
-        let unit = unit_from_bitstream(&lock, codec_config, decode_index, frame_duration)?;
+        let unit = unit_from_bitstream(&lock, codec, codec_config, decode_index, frame_duration)?;
         drop(lock);
         pool.release(slot);
         units.push(unit);
@@ -586,6 +600,7 @@ fn finish(
     pool: &mut SlotPool,
     decode_index: &mut u64,
     frame_duration: u64,
+    codec: VideoCodec,
     units: &mut Vec<EncodedUnit>,
 ) -> Result<(), EncodeError> {
     let mut eos = false;
@@ -615,7 +630,7 @@ fn finish(
             continue;
         }
         let mut no_config = None;
-        let unit = unit_from_bitstream(&lock, &mut no_config, decode_index, frame_duration)?;
+        let unit = unit_from_bitstream(&lock, codec, &mut no_config, decode_index, frame_duration)?;
         drop(lock);
         pool.release(slot);
         units.push(unit);
@@ -625,6 +640,7 @@ fn finish(
 
 fn unit_from_bitstream(
     lock: &nvidia_video_codec_sdk::BitstreamLock<'_, '_>,
+    codec: VideoCodec,
     codec_config: &mut Option<Vec<u8>>,
     decode_index: &mut u64,
     frame_duration: u64,
@@ -632,14 +648,32 @@ fn unit_from_bitstream(
     // With picture-type decision enabled, the driver reports the real type.
     // Only IDR is a random-access/sync sample; INTRA_ONLY (I) is not.
     let keyframe = matches!(lock.picture_type(), NV_ENC_PIC_TYPE::NV_ENC_PIC_TYPE_IDR);
-    let bytes = lock.data().to_vec();
-
-    if keyframe && codec_config.is_none() {
-        *codec_config = Some(
-            av1::av1c_from_keyframe(&bytes)
-                .map_err(|e| EncodeError::Backend(format!("derive av1C from keyframe: {e}")))?,
-        );
-    }
+    let raw = lock.data();
+    let sample = match codec {
+        VideoCodec::Av1 => {
+            if keyframe && codec_config.is_none() {
+                *codec_config = Some(av1::av1c_from_keyframe(raw).map_err(|e| {
+                    EncodeError::Backend(format!("derive av1C from keyframe: {e}"))
+                })?);
+            }
+            raw.to_vec()
+        }
+        VideoCodec::H264 | VideoCodec::Hevc => {
+            // Annex B in, length-prefixed sample plus avcC/hvcC out.
+            let format = match codec {
+                VideoCodec::H264 => AnnexB::H264,
+                VideoCodec::Hevc => AnnexB::Hevc,
+                VideoCodec::Av1 => unreachable!("handled above"),
+            };
+            let parsed = nal::parse_access_unit(raw, format).map_err(|e| {
+                EncodeError::Backend(format!("parse {codec:?} access unit: {e}"))
+            })?;
+            if codec_config.is_none() {
+                *codec_config = parsed.config;
+            }
+            parsed.sample
+        }
+    };
 
     let pts = Pts(lock.timestamp());
     let dts = Pts(decode_index.saturating_mul(frame_duration));
@@ -647,7 +681,7 @@ fn unit_from_bitstream(
 
     Ok(EncodedUnit {
         track_id: TrackId::Video,
-        bytes,
+        bytes: sample,
         pts,
         dts,
         keyframe,

@@ -22,8 +22,12 @@ pub enum VideoCodec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VideoEncoderBackend {
     SvtAv1,
-    /// Hardware AV1 encoder — Phase 2.
+    /// Hardware AV1 encoder.
     NvencAv1,
+    /// Hardware H.264 encoder (same NVENC implementation as AV1).
+    NvencH264,
+    /// Hardware HEVC encoder (same NVENC implementation as AV1).
+    NvencHevc,
     Rav1e,
 }
 

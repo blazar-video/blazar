@@ -10,7 +10,7 @@
 use blazar_core::Pts;
 use blazar_core::{Timebase, VideoCodec};
 use blazar_encoder::config::{EncoderConfig, RateControl};
-use blazar_encoder::nvenc::NvencAv1Encoder;
+use blazar_encoder::nvenc::NvencEncoder;
 use blazar_encoder::VideoEncoder;
 use blazar_preprocess::PreprocessedFrame;
 
@@ -50,8 +50,8 @@ fn frame(index: u64) -> PreprocessedFrame {
     }
 }
 
-fn encoder(keyint: u32) -> NvencAv1Encoder {
-    NvencAv1Encoder::new(&cfg(keyint), W, H, FPS, Timebase::MPEG_90K, VideoCodec::Av1)
+fn encoder(keyint: u32) -> NvencEncoder {
+    NvencEncoder::new(&cfg(keyint), W, H, FPS, Timebase::MPEG_90K, VideoCodec::Av1)
         .expect("NVENC AV1 session opens")
 }
 
