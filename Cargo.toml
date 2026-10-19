@@ -8,10 +8,6 @@ members = [
     "crates/blazar-preprocess",
     "crates/blazar-runtime",
 ]
-# NVENC spike: CUDA-only, builds on mosk (CUDA 13.1 / 4080), not on the Mac.
-# Kept out of the workspace so `cargo build` on dev machines ignores it.
-exclude = ["spikes/nvenc-av1"]
-
 [workspace.package]
 version = "0.0.0"
 edition = "2021"
