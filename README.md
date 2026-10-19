@@ -31,7 +31,9 @@ audio is additive (§3.1). End-to-end in `blazar-runtime/tests/pipeline.rs`.
   backends land.
 - The NVENC backends are real (`--features nvenc`) and hardware-tested on mosk:
 AV1, H.264 and HEVC. H.264/HEVC input is Annex B from the driver; `nal.rs`
-turns it into length-prefixed samples plus `avcC`/`hvcC`.
+turns it into length-prefixed samples plus `avcC`/`hvcC`. For host ingest the
+RGB→NV12 conversion runs as an NVRTC-compiled kernel on the GPU, inside the
+encoder worker; `CpuPreprocess` remains for direct callers and other backends.
   It derives `av1C` from the first keyframe, forces IDRs itself (driver GOP
   boundaries produce intra-only frames, which are not sync samples), and does not
   support B-frames yet. `VideoEncoder::flush` cannot drain NVENC lookahead without
