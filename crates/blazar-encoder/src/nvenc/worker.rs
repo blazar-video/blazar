@@ -468,7 +468,7 @@ fn encode_one(
             // Every slot is in flight: wait for the oldest to complete. With a
             // 16-slot pool and no B-frames the driver must be able to emit the
             // oldest, so this is backpressure rather than a stall.
-            drain_oldest(
+            drain_ready(
                 bitstreams,
                 pool,
                 codec_config,
@@ -505,7 +505,7 @@ fn encode_one(
     // slot reads buffers the driver has not written yet: it echoes the new
     // timestamp into a slot that still holds the previous frame's payload, which
     // duplicated a frame and dropped the last one under slow submissions.
-    drain_oldest(
+    drain_ready(
         bitstreams,
         pool,
         codec_config,
@@ -515,20 +515,18 @@ fn encode_one(
     )
 }
 
-/// Lock the oldest in-flight slot and emit it.
+/// Drain every pending output after a successful `encode_picture`.
 ///
-/// Emission order IS decode order: `unit_from_bitstream` derives DTS from the
-/// emission index, so a unit must leave in the order the decoder must consume it.
-/// With `frameIntervalP = 1` decode order equals submission order, which is why
-/// the oldest in-flight slot is the right one and why this can block safely: the
-/// caller only reaches it after `encode_picture` returned success, and outputs
-/// complete in submission order when there is no reordering.
+/// NVENC's contract (the one ffmpeg relies on): a call returning success means
+/// *all* pending output buffers are complete; `NEED_MORE_INPUT` means none are.
+/// Buffers are bound to outputs, not to the input frame they were submitted
+/// with, so each one's `outputTimeStamp` is the PTS of the frame it holds.
 ///
-/// With B-frames this equivalence breaks: the driver completes in decode order,
-/// which is not submission order, and it exposes no per-slot completion or
-/// decode index (`frameIdx` is 0). B-frames are rejected until that order is
-/// observable; see the Stage B notes.
-fn drain_oldest(
+/// Emission order is the buffer queue order, and DTS comes from the emission
+/// counter in `unit_from_bitstream`. With B-frames the PTS values are therefore
+/// not monotonic while DTS is, which is exactly what a reordered stream looks
+/// like.
+fn drain_ready(
     bitstreams: &mut [Bitstream<'_>],
     pool: &mut SlotPool,
     codec_config: &mut Option<Vec<u8>>,
@@ -536,18 +534,18 @@ fn drain_oldest(
     frame_duration: u64,
     units: &mut Vec<EncodedUnit>,
 ) -> Result<(), EncodeError> {
-    let Some((slot, expected_pts)) = pool.in_flight().first().copied() else {
-        return Ok(());
-    };
-    let lock = bitstreams[slot].lock().map_err(nvenc_error)?;
-    if lock.data().is_empty() || lock.timestamp() != expected_pts {
-        // Not this slot's output after all; leave it in flight for a later call.
-        return Ok(());
+    while let Some((slot, _)) = pool.in_flight().first().copied() {
+        let lock = bitstreams[slot].lock().map_err(nvenc_error)?;
+        if lock.data().is_empty() {
+            return Err(EncodeError::Backend(
+                "NVENC reported success but a pending output buffer is empty".into(),
+            ));
+        }
+        let unit = unit_from_bitstream(&lock, codec_config, decode_index, frame_duration)?;
+        drop(lock);
+        pool.release(slot);
+        units.push(unit);
     }
-    let unit = unit_from_bitstream(&lock, codec_config, decode_index, frame_duration)?;
-    drop(lock);
-    pool.release(slot);
-    units.push(unit);
     Ok(())
 }
 

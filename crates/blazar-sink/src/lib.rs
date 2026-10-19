@@ -20,7 +20,7 @@ use thiserror::Error;
 pub enum SinkError {
     #[error("write before open")]
     NotOpen,
-    #[error("unit PTS {got} precedes last written PTS {last} on track {track:?}")]
+    #[error("unit DTS {got} precedes last written DTS {last} on track {track:?}")]
     OutOfOrder { got: u64, last: u64, track: TrackId },
     #[error("io error: {0}")]
     Io(String),
@@ -81,17 +81,19 @@ impl OrderGuard {
             TrackId::Video => &mut self.last_video,
             TrackId::Audio => &mut self.last_audio,
         };
-        let pts = unit.pts.ticks();
+        // Decode order, not presentation order: with B-frames PTS is not
+        // monotonic across the units a sink receives, but DTS is.
+        let dts = unit.dts.ticks();
         if let Some(last) = *slot {
-            if pts < last {
+            if dts < last {
                 return Err(SinkError::OutOfOrder {
-                    got: pts,
+                    got: dts,
                     last,
                     track: unit.track_id,
                 });
             }
         }
-        *slot = Some(pts);
+        *slot = Some(dts);
         Ok(())
     }
 }
@@ -103,6 +105,10 @@ mod tests {
 
     fn vunit(pts: u64) -> EncodedUnit {
         EncodedUnit::video(vec![0], Pts(pts), Pts(pts), true, 3750)
+    }
+
+    fn reordered(pts: u64, dts: u64) -> EncodedUnit {
+        EncodedUnit::video(vec![0], Pts(pts), Pts(dts), false, 3750)
     }
 
     #[test]
@@ -119,6 +125,26 @@ mod tests {
         g.check(&vunit(3750)).unwrap();
         let err = g.check(&vunit(0)).unwrap_err();
         assert!(matches!(err, SinkError::OutOfOrder { .. }));
+    }
+
+    #[test]
+    fn order_guard_accepts_reordered_presentation_when_dts_is_monotonic() {
+        // B-frames: the sink sees decode order, so PTS jumps around
+        // (0, 2, 1, 4, 3) while DTS advances by one frame each time.
+        let mut g = OrderGuard::default();
+        for (pts, dts) in [(0, 0), (7500, 3750), (3750, 7500), (15000, 11250)] {
+            assert!(g.check(&reordered(pts, dts)).is_ok(), "pts={pts} dts={dts}");
+        }
+    }
+
+    #[test]
+    fn order_guard_rejects_non_monotonic_dts() {
+        let mut g = OrderGuard::default();
+        g.check(&reordered(7500, 3750)).unwrap();
+        assert!(matches!(
+            g.check(&reordered(0, 0)).unwrap_err(),
+            SinkError::OutOfOrder { .. }
+        ));
     }
 
     #[test]

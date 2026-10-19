@@ -72,7 +72,7 @@ pub enum NvencConfigError {
     UnsupportedPixelFormat(String),
     #[error("NVENC does not understand SVT-style codec_params {0:?}; use a nvenc_av1 calibration")]
     UnsupportedCodecParams(String),
-    #[error("NVENC B-frames are not wired yet (bframes={0}); set bframes = 0")]
+    #[error("NVENC supports at most 4 B-frames (got bframes={0})")]
     BframesUnsupported(u32),
     #[error("keyint must be at least 1")]
     InvalidKeyint,
@@ -102,7 +102,8 @@ impl NvencParams {
                 cfg.codec_params.clone(),
             ));
         }
-        if cfg.bframes != 0 {
+        // NVENC's frameIntervalP is 1 + bframes and accepts up to 5.
+        if cfg.bframes > 4 {
             return Err(NvencConfigError::BframesUnsupported(cfg.bframes));
         }
         if cfg.keyint == 0 {
@@ -119,8 +120,7 @@ impl NvencParams {
             fps_num,
             fps_den,
             gop_length: cfg.keyint,
-            // No B-frames in this stage, so every frame is I or P.
-            frame_interval_p: 1,
+            frame_interval_p: cfg.bframes as i32 + 1,
             rate_control: rate_control(cfg.rate_control)?,
             color: NvencColorConfig::BT709_FULL_RANGE,
         })
@@ -256,11 +256,19 @@ mod tests {
     }
 
     #[test]
-    fn bframes_are_rejected_until_stage_b() {
-        assert_eq!(
+    fn bframes_map_to_frame_interval_p() {
+        let p =
             NvencParams::from_encoder_config(&cfg(RateControl::Crf(30), 120, 3), 640, 360, 24.0)
+                .unwrap();
+        assert_eq!(p.frame_interval_p, 4, "frameIntervalP = 1 + bframes");
+    }
+
+    #[test]
+    fn more_than_four_bframes_is_rejected() {
+        assert_eq!(
+            NvencParams::from_encoder_config(&cfg(RateControl::Crf(30), 120, 5), 640, 360, 24.0)
                 .unwrap_err(),
-            NvencConfigError::BframesUnsupported(3)
+            NvencConfigError::BframesUnsupported(5)
         );
     }
 
