@@ -72,6 +72,10 @@ Both run without the models (`--fake`) and take `--from-npy` for real frames.
 `vllm_omni_stream.py --real` drives vLLM-Omni's own `WanStreamingDecoder` with
 real Wan VAE weights on the GPU (needs `torch`, `diffusers`, and a vLLM-Omni
 checkout; latents are noise, since the AR transformer is not part of that path).
+
+`vllm_omni_generate.py` goes the other way: it generates with the real
+vLLM-Omni engine (Wan2.1 on a 16 GiB card), takes the pipeline's frames, and
+feeds them straight to Blazar. No intermediate video file, no second encode.
 Neither is a live stream yet: the only sink is a file, so these measure the
 encode path rather than deliver playback.
 
