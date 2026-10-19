@@ -12,8 +12,8 @@ pub mod config;
 pub mod nal;
 pub mod nvenc;
 
-use blazar_core::{EncodedUnit, Timebase, TrackId};
-use blazar_preprocess::PreprocessedFrame;
+use blazar_core::{EncodedUnit, FrameRef, Timebase, TrackId};
+use blazar_preprocess::{PreprocessStage, PreprocessedFrame};
 use thiserror::Error;
 
 pub use config::{EncoderConfig, RateControl};
@@ -37,6 +37,16 @@ pub trait VideoEncoder: Send {
     /// encoder with lookahead/B-frames may emit nothing until enough frames
     /// have accumulated).
     fn encode(&mut self, frame: &PreprocessedFrame) -> Result<Vec<EncodedUnit>, EncodeError>;
+
+    /// Encode one raw frame. The default converts on the CPU and calls
+    /// [`encode`](Self::encode); backends that can convert on the GPU override
+    /// this so the caller's thread does no per-pixel work.
+    fn encode_frame(&mut self, frame: FrameRef) -> Result<Vec<EncodedUnit>, EncodeError> {
+        let pre = blazar_preprocess::CpuPreprocess::new()
+            .process(&frame)
+            .map_err(|e| EncodeError::Backend(format!("preprocess: {e}")))?;
+        self.encode(&pre)
+    }
 
     /// Drain buffered frames without ending the stream (segment boundary).
     fn flush(&mut self) -> Result<Vec<EncodedUnit>, EncodeError>;

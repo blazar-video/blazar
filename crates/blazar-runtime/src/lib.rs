@@ -28,7 +28,6 @@ use blazar_core::{
     VideoEncoderBackend, VideoTrackParams,
 };
 use blazar_encoder::{EncoderConfig, MockVideoEncoder, VideoEncoder};
-use blazar_preprocess::{CpuPreprocess, PreprocessStage};
 use blazar_sink::Sink;
 use thiserror::Error;
 
@@ -92,7 +91,6 @@ pub struct Encoder<S: Sink> {
     sink: S,
     index: CalibrationIndex,
     timebase: Timebase,
-    preprocess: CpuPreprocess,
 }
 
 impl<S: Sink> Encoder<S> {
@@ -110,7 +108,6 @@ impl<S: Sink> Encoder<S> {
             sink,
             index,
             timebase: Timebase::MPEG_90K,
-            preprocess: CpuPreprocess::new(),
         }
     }
 
@@ -275,6 +272,7 @@ impl<S: Sink> Stream<S> {
             }
         }
 
+        let desc = frame.desc;
         let units = {
             // A missing encoder here means the state machine was violated
             // ("open" without a built encoder). This must be an error, not a
@@ -284,12 +282,13 @@ impl<S: Sink> Stream<S> {
                 .encoder
                 .as_mut()
                 .ok_or(RuntimeError::EncoderNotInitialized)?;
-            let pre = self.enc.preprocess.process(&frame)?;
-            encoder.encode(&pre)?
+            // Preprocessing happens inside the backend now (GPU for NVENC), so
+            // this call does not do per-pixel work on the caller's thread.
+            encoder.encode_frame(frame)?
         };
         // The first encode is what makes a codec configuration available, so
         // the sink opens here rather than before the encode.
-        self.ensure_sink(&frame.desc)?;
+        self.ensure_sink(&desc)?;
         for u in &units {
             self.enc.sink.write(u)?;
         }

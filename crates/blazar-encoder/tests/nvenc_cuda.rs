@@ -86,7 +86,9 @@ fn check(w: u32, h: u32, layout: Layout, dtype: Dtype, range: ColorRange) {
     eprintln!(
         "diag {layout:?}/{dtype:?}/{range:?} {w}x{h}: worst {worst_diff} at {worst_idx} \
          (gpu={} cpu={}) luma_len={} pitch={pitch}",
-        gpu[worst_idx], cpu[worst_idx], pitch * h
+        gpu[worst_idx],
+        cpu[worst_idx],
+        pitch * h
     );
     let worst = gpu
         .iter()

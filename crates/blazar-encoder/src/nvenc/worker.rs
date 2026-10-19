@@ -19,20 +19,26 @@ use std::sync::{mpsc, Arc, LazyLock};
 use std::thread;
 use std::time::Duration;
 
-use blazar_core::{EncodedUnit, Pts, Timebase, TrackId, VideoCodec};
+use std::ffi::c_void;
+
+use blazar_core::{
+    BufferOwner, EncodedUnit, FrameBuffer, FrameDesc, FrameRef, Pts, Timebase, TrackId, VideoCodec,
+};
 use blazar_preprocess::PreprocessedFrame;
-use cudarc::driver::CudaContext;
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DevicePtr};
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
         GUID, NV_ENC_BUFFER_FORMAT, NV_ENC_CODEC_AV1_GUID, NV_ENC_CODEC_H264_GUID,
-        NV_ENC_CODEC_HEVC_GUID, NV_ENC_CONFIG, NV_ENC_PARAMS_RC_MODE, NV_ENC_PIC_FLAGS,
-        NV_ENC_PIC_TYPE, NV_ENC_PRESET_P4_GUID, NV_ENC_QP, NV_ENC_TUNING_INFO,
+        NV_ENC_CODEC_HEVC_GUID, NV_ENC_CONFIG, NV_ENC_INPUT_RESOURCE_TYPE, NV_ENC_PARAMS_RC_MODE,
+        NV_ENC_PIC_FLAGS, NV_ENC_PIC_TYPE, NV_ENC_PRESET_P4_GUID, NV_ENC_QP, NV_ENC_TUNING_INFO,
         NV_ENC_VUI_COLOR_PRIMARIES, NV_ENC_VUI_MATRIX_COEFFS, NV_ENC_VUI_TRANSFER_CHARACTERISTIC,
     },
-    Bitstream, Buffer, EncodePictureParams, Encoder, EncoderInitParams, ErrorKind, Session,
+    Bitstream, EncodePictureParams, Encoder, EncoderInitParams, EncoderInput, ErrorKind,
+    RegisteredResource, Session,
 };
 
 use super::config::{NvencParams, NvencRateControl};
+use super::cuda::Nv12Converter;
 use super::keyframe::KeyframeSchedule;
 use super::nv12::to_nv12;
 use super::pool::SlotPool;
@@ -64,6 +70,13 @@ struct EncodeOutput {
 enum Command {
     Encode {
         frame: PreprocessedFrame,
+        force_keyframe: bool,
+        reply: mpsc::Sender<Result<EncodeOutput, EncodeError>>,
+    },
+    /// Raw host frame: the worker converts it on the GPU.
+    EncodeFrame {
+        bytes: Vec<u8>,
+        desc: FrameDesc,
         force_keyframe: bool,
         reply: mpsc::Sender<Result<EncodeOutput, EncodeError>>,
     },
@@ -155,6 +168,33 @@ impl VideoEncoder for NvencEncoder {
         let owned = frame.clone();
         let out: EncodeOutput = self.request(move |reply| Command::Encode {
             frame: owned,
+            force_keyframe,
+            reply,
+        })?;
+        if out.codec_config.is_some() {
+            self.codec_config = out.codec_config;
+        }
+        Ok(out.units)
+    }
+
+    fn encode_frame(&mut self, frame: FrameRef) -> Result<Vec<EncodedUnit>, EncodeError> {
+        if self.finished {
+            return Err(EncodeError::AfterFinish);
+        }
+        let force_keyframe = std::mem::take(&mut self.force_keyframe);
+        let FrameRef { buffer, desc } = frame;
+        let bytes = match buffer {
+            FrameBuffer::Host {
+                owner: BufferOwner::Owned(bytes),
+                ..
+            } => bytes,
+            other => other.host_bytes().map(|b| b.to_vec()).ok_or_else(|| {
+                EncodeError::Backend("NVENC needs host frames (device ingest is Phase 2)".into())
+            })?,
+        };
+        let out: EncodeOutput = self.request(move |reply| Command::EncodeFrame {
+            bytes,
+            desc,
             force_keyframe,
             reply,
         })?;
@@ -328,21 +368,70 @@ fn run_loop(
     codec: VideoCodec,
     rx: mpsc::Receiver<Command>,
 ) {
-    // One input buffer per output slot. A single shared input is a data race
-    // under GPU contention: the encoder can still be reading frame N's buffer
-    // when frame N+1 is written into it, which corrupts the encoded stream.
-    // Slot i's input is therefore paired with slot i's bitstream and freed by
-    // the same pool release.
-    let mut inputs: Vec<Buffer<'_>> = match (0..POOL_CAPACITY)
-        .map(|_| session.create_input_buffer())
+    let ctx = match &*CUDA_CONTEXT {
+        Ok(ctx) => Arc::clone(ctx),
+        Err(e) => {
+            fail_pending(&rx, EncodeError::Backend(e.clone()));
+            return;
+        }
+    };
+    let stream = ctx.default_stream();
+
+    // Input buffers live in device memory and are registered with NVENC, so the
+    // GPU preprocess writes straight into what the encoder reads: no host→device
+    // NV12 copy and no CPU pixel work on the caller's thread.
+    let pitch = params.width.div_ceil(256) * 256;
+    let chroma_rows = params.height.div_ceil(2);
+    let buffer_len = (pitch * (params.height + chroma_rows)) as usize;
+    let mut device: Vec<CudaSlice<u8>> = match (0..POOL_CAPACITY)
+        .map(|_| stream.alloc_zeros::<u8>(buffer_len))
         .collect()
     {
         Ok(buffers) => buffers,
         Err(e) => {
             fail_pending(
                 &rx,
-                EncodeError::Backend(format!("NVENC input buffer: {e:?}")),
+                EncodeError::Backend(format!("allocate NVENC input buffers: {e}")),
             );
+            return;
+        }
+    };
+    let mut registered: Vec<RegisteredResource<'_, ()>> = Vec::with_capacity(POOL_CAPACITY);
+    for slice in &device {
+        let (ptr, _) = slice.device_ptr(&stream);
+        match session.register_generic_resource(
+            (),
+            NV_ENC_INPUT_RESOURCE_TYPE::NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR,
+            ptr as *mut c_void,
+            pitch,
+        ) {
+            Ok(resource) => registered.push(resource),
+            Err(e) => {
+                fail_pending(
+                    &rx,
+                    EncodeError::Backend(format!("register NVENC input buffer: {e:?}")),
+                );
+                return;
+            }
+        }
+    }
+    // Staging for the RGB upload; the kernel writes NV12 from here into the
+    // registered buffer, so it cannot alias the destination.
+    let staging_len = (params.width * params.height * 3 * 4) as usize;
+    let mut staging: CudaSlice<u8> = match stream.alloc_zeros(staging_len) {
+        Ok(buffer) => buffer,
+        Err(e) => {
+            fail_pending(
+                &rx,
+                EncodeError::Backend(format!("allocate RGB staging: {e}")),
+            );
+            return;
+        }
+    };
+    let converter = match Nv12Converter::new(&ctx) {
+        Ok(converter) => converter,
+        Err(e) => {
+            fail_pending(&rx, e);
             return;
         }
     };
@@ -356,29 +445,6 @@ fn run_loop(
             return;
         }
     };
-    // The driver's allocation stride is only visible while the buffer is
-    // locked, and it can exceed the frame width (measured: 834 -> 896 for
-    // NV12). It is what the driver actually reads rows at, so NV12 must be
-    // padded to it. `Buffer::pitch()` is not this value: this wrapper passes
-    // the frame width as `inputPitch`, and the driver uses its own stride for
-    // internally allocated buffers.
-    let pitch = match inputs[0].lock() {
-        Ok(lock) => lock.pitch(),
-        Err(e) => {
-            fail_pending(&rx, nvenc_error(e));
-            return;
-        }
-    };
-    if pitch < params.width {
-        fail_pending(
-            &rx,
-            EncodeError::Backend(format!(
-                "NVENC input stride {pitch} is smaller than width {}",
-                params.width
-            )),
-        );
-        return;
-    }
 
     let mut pool = SlotPool::new(POOL_CAPACITY);
     let mut keyframes = KeyframeSchedule::new(params.gop_length);
@@ -387,40 +453,28 @@ fn run_loop(
     let mut finished = false;
 
     while let Ok(command) = rx.recv() {
-        match command {
+        let (source, force_keyframe, reply) = match command {
             Command::Encode {
                 frame,
                 force_keyframe,
                 reply,
-            } => {
-                if finished {
-                    let _ = reply.send(Err(EncodeError::AfterFinish));
-                    continue;
-                }
-                let mut units = Vec::new();
-                let force_idr = keyframes.next_is_keyframe(force_keyframe);
-                let result = encode_one(
-                    session,
-                    &mut inputs,
-                    &mut bitstreams,
-                    &mut pool,
-                    &mut codec_config,
-                    &mut decode_index,
-                    &frame,
-                    pitch,
-                    frame_duration,
-                    codec,
-                    force_idr,
-                    &mut units,
-                );
-                let reply_value = result.map(|()| EncodeOutput {
-                    units,
-                    codec_config: codec_config.clone(),
-                });
-                let _ = reply.send(reply_value);
-            }
+            } => (Source::Planar(frame), force_keyframe, reply),
+            Command::EncodeFrame {
+                bytes,
+                desc,
+                force_keyframe,
+                reply,
+            } => (
+                Source::Rgb {
+                    bytes: Box::new(bytes),
+                    desc,
+                },
+                force_keyframe,
+                reply,
+            ),
             Command::Flush { reply } => {
                 let _ = reply.send(Ok(Vec::new()));
+                continue;
             }
             Command::Finish { reply } => {
                 finished = true;
@@ -435,43 +489,74 @@ fn run_loop(
                     &mut units,
                 );
                 let _ = reply.send(result.map(|()| units));
+                continue;
             }
+        };
+        if finished {
+            let _ = reply.send(Err(EncodeError::AfterFinish));
+            continue;
         }
+        let mut units = Vec::new();
+        let force_idr = keyframes.next_is_keyframe(force_keyframe);
+        let result = encode_one(
+            session,
+            &stream,
+            &mut device,
+            &mut registered,
+            &mut bitstreams,
+            &mut staging,
+            &converter,
+            &mut pool,
+            &mut codec_config,
+            &mut decode_index,
+            frame_duration,
+            codec,
+            pitch,
+            force_idr,
+            &source,
+            &mut units,
+        );
+        let reply_value = result.map(|()| EncodeOutput {
+            units,
+            codec_config: codec_config.clone(),
+        });
+        let _ = reply.send(reply_value);
     }
 }
 
-/// Tell every queued caller that the worker is going away, instead of leaving
-/// them blocked on a reply that will never come.
-fn fail_pending(rx: &mpsc::Receiver<Command>, error: EncodeError) {
-    while let Ok(command) = rx.try_recv() {
-        match command {
-            Command::Encode { reply, .. } => {
-                let _ = reply.send(Err(EncodeError::Backend(error.to_string())));
-            }
-            Command::Flush { reply } | Command::Finish { reply } => {
-                let _ = reply.send(Err(EncodeError::Backend(error.to_string())));
-            }
-        }
-    }
+/// Where a frame comes from: already-planar (direct callers, tests) or raw RGB
+/// that the worker converts on the GPU.
+enum Source {
+    Planar(PreprocessedFrame),
+    Rgb {
+        bytes: Box<Vec<u8>>,
+        desc: FrameDesc,
+    },
 }
 
 #[allow(clippy::too_many_arguments)]
 fn encode_one(
     session: &Session,
-    inputs: &mut [Buffer<'_>],
+    stream: &Arc<CudaStream>,
+    device: &mut [CudaSlice<u8>],
+    registered: &mut [RegisteredResource<'_, ()>],
     bitstreams: &mut [Bitstream<'_>],
+    staging: &mut CudaSlice<u8>,
+    converter: &Nv12Converter,
     pool: &mut SlotPool,
     codec_config: &mut Option<Vec<u8>>,
     decode_index: &mut u64,
-    frame: &PreprocessedFrame,
-    pitch: u32,
     frame_duration: u64,
     codec: VideoCodec,
+    pitch: u32,
     force_keyframe: bool,
+    source: &Source,
     units: &mut Vec<EncodedUnit>,
 ) -> Result<(), EncodeError> {
-    let nv12 = to_nv12(frame, pitch).map_err(|e| EncodeError::Backend(e.to_string()))?;
-    let pts = frame.pts.ticks();
+    let pts = match source {
+        Source::Planar(frame) => frame.pts.ticks(),
+        Source::Rgb { desc, .. } => desc.pts.ticks(),
+    };
 
     let slot = match pool.acquire(pts) {
         Some(slot) => slot,
@@ -493,7 +578,27 @@ fn encode_one(
         }
     };
 
-    unsafe { inputs[slot].lock().map_err(nvenc_error)?.write(&nv12) };
+    match source {
+        Source::Planar(frame) => {
+            let nv12 = to_nv12(frame, pitch).map_err(|e| EncodeError::Backend(e.to_string()))?;
+            stream
+                .memcpy_htod(&nv12, &mut device[slot])
+                .map_err(|e| EncodeError::Backend(format!("upload NV12: {e}")))?;
+        }
+        Source::Rgb { bytes, desc } => {
+            if bytes.len() > staging.len() {
+                return Err(EncodeError::Backend(format!(
+                    "RGB frame is {} bytes, staging is {}",
+                    bytes.len(),
+                    staging.len()
+                )));
+            }
+            stream
+                .memcpy_htod(bytes.as_slice(), staging)
+                .map_err(|e| EncodeError::Backend(format!("upload RGB: {e}")))?;
+            converter.convert(stream, staging, &mut device[slot], desc, pitch)?;
+        }
+    }
 
     let flags = if force_keyframe {
         NV_ENC_PIC_FLAGS::NV_ENC_PIC_FLAG_FORCEIDR as u32
@@ -502,7 +607,7 @@ fn encode_one(
     };
     match encode_with_retry(
         session,
-        &mut inputs[slot],
+        &mut registered[slot],
         &mut bitstreams[slot],
         pts,
         flags,
@@ -513,10 +618,6 @@ fn encode_one(
             return Ok(());
         }
     }
-    // One emission per successful call. Draining more than the oldest in-flight
-    // slot reads buffers the driver has not written yet: it echoes the new
-    // timestamp into a slot that still holds the previous frame's payload, which
-    // duplicated a frame and dropped the last one under slow submissions.
     drain_ready(
         bitstreams,
         pool,
@@ -528,41 +629,6 @@ fn encode_one(
     )
 }
 
-/// Drain every pending output after a successful `encode_picture`.
-///
-/// NVENC's contract (the one ffmpeg relies on): a call returning success means
-/// *all* pending output buffers are complete; `NEED_MORE_INPUT` means none are.
-/// Buffers are bound to outputs, not to the input frame they were submitted
-/// with, so each one's `outputTimeStamp` is the PTS of the frame it holds.
-///
-/// Emission order is the buffer queue order, and DTS comes from the emission
-/// counter in `unit_from_bitstream`. With B-frames the PTS values are therefore
-/// not monotonic while DTS is, which is exactly what a reordered stream looks
-/// like.
-fn drain_ready(
-    bitstreams: &mut [Bitstream<'_>],
-    pool: &mut SlotPool,
-    codec_config: &mut Option<Vec<u8>>,
-    decode_index: &mut u64,
-    frame_duration: u64,
-    codec: VideoCodec,
-    units: &mut Vec<EncodedUnit>,
-) -> Result<(), EncodeError> {
-    while let Some((slot, _)) = pool.in_flight().first().copied() {
-        let lock = bitstreams[slot].lock().map_err(nvenc_error)?;
-        if lock.data().is_empty() {
-            return Err(EncodeError::Backend(
-                "NVENC reported success but a pending output buffer is empty".into(),
-            ));
-        }
-        let unit = unit_from_bitstream(&lock, codec, codec_config, decode_index, frame_duration)?;
-        drop(lock);
-        pool.release(slot);
-        units.push(unit);
-    }
-    Ok(())
-}
-
 enum EncodeCall {
     Emitted,
     NeedMoreInput,
@@ -570,7 +636,7 @@ enum EncodeCall {
 
 fn encode_with_retry(
     session: &Session,
-    input: &mut Buffer<'_>,
+    input: &mut impl EncoderInput,
     output: &mut Bitstream<'_>,
     timestamp: u64,
     flags: u32,
