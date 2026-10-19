@@ -28,7 +28,10 @@ pub enum EncodeError {
 /// A video encoder backend. Stateful: frame N depends on N-1's references and
 /// rate-control history, which is why the runtime keeps one encoder per stream
 /// and never reorders submits (architecture §4).
-pub trait VideoEncoder {
+/// `Send` is a supertrait because the runtime is moved to a worker thread by
+/// embedders (the Python binding does exactly this) to keep encode work off the
+/// caller's thread.
+pub trait VideoEncoder: Send {
     /// Feed one preprocessed frame. Returns zero or more encoded units (an
     /// encoder with lookahead/B-frames may emit nothing until enough frames
     /// have accumulated).

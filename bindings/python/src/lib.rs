@@ -4,36 +4,227 @@
 //!
 //! * `Calibrations` — a parsed calibration directory. Cheap to keep; reused
 //!   across requests.
-//! * `Encoder` — one stream. Owns the Rust stream (and therefore the encoder and
-//!   the fMP4 sink). Create one per request; `close()` finalizes the file.
+//! * `Encoder` — one stream, encoded on its own Rust worker thread. `submit`
+//!   copies the frame and enqueues it; the worker preprocesses, encodes and
+//!   writes. The caller keeps running and drains `poll()` for progress.
+//!
+//! Why a worker: releasing the GIL around the encode would not help the caller
+//! (only other threads), and the caller is the decode loop. The worker never
+//! touches Python; the GIL is released only where the calling thread must wait
+//! (a full job queue, `flush`, `close`).
 //!
 //! Rules the binding enforces instead of guessing:
-//! * `dtype`, `layout` and `range` are required on every submit. The runtimes
-//!   never tag colorspace, so Blazar records the BT.709 assumption.
-//! * The frame buffer must be C-contiguous. A non-contiguous array is rejected
-//!   with the fix in the message rather than silently copied per pixel.
-//! * Frames within a stream must keep width/height/fps. A change is an error, not
-//!   a new segment.
+//! * `layout` and `range` are required on every submit; the runtimes never tag
+//!   colorspace, so Blazar records the BT.709 assumption.
+//! * Frames must be float32. numpy has no bf16 dtype; cast first.
+//! * Width/height/fps are fixed by the first frame. A change is an error, not a
+//!   new segment: the container's metadata is written once.
 //!
-//! Not here yet: audio, device tensors, GIL release during encode (the stream is
-//! intentionally `unsendable` for now), and any sink other than a file.
+//! Not here yet: audio, device tensors, and any sink other than a file.
 
 use std::fs::File;
 use std::io::BufWriter;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use blazar_calibration::CalibrationIndex;
 use blazar_core::{
-    ColorRange, ColorSpace, Container, Dtype, FrameBuffer, FrameDesc, FrameRef, Layout,
-    ModelIdentity, Pts, Target, Timebase, VideoCodec, VideoEncoderBackend,
+    ColorRange, ColorSpace, Container, Dtype, EncodedUnit, FrameBuffer, FrameDesc, FrameRef,
+    Layout, ModelIdentity, Pts, StreamParams, Target, Timebase, VideoCodec, VideoEncoderBackend,
 };
-use blazar_runtime::{Boundary, Encoder as RuntimeEncoder, Output, RuntimeError, Stream};
+use blazar_runtime::{Boundary, Encoder as RuntimeEncoder, Output, Stream};
 use blazar_sink::fmp4::Fmp4FileSink;
+use blazar_sink::{Feedback, Sink, SinkError};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 type FileSink = Fmp4FileSink<BufWriter<File>>;
+
+// ---------------------------------------------------------------------------
+// Worker plumbing: plain Rust types only, no Python objects.
+// ---------------------------------------------------------------------------
+
+struct FrameJob {
+    seq: u64,
+    bytes: Vec<u8>,
+    desc: FrameDesc,
+    boundary: Option<Boundary>,
+}
+
+enum Job {
+    Frame(Box<FrameJob>),
+    Flush(SyncSender<Result<(), String>>),
+    Close(SyncSender<Result<(), String>>),
+}
+
+/// One unit the sink accepted, recorded so the event can report size and
+/// whether a fragment boundary was crossed.
+struct WrittenUnit {
+    keyframe: bool,
+    bytes: usize,
+    pts: u64,
+}
+
+/// Sink decorator that records what was written on each `submit_video` call.
+/// The runtime's submit only returns a sequence number; the Python caller needs
+/// the encoded size and keyframe flag, and this is the least invasive place to
+/// get them.
+struct ReportingSink {
+    inner: FileSink,
+    written: Arc<Mutex<Vec<WrittenUnit>>>,
+}
+
+impl Sink for ReportingSink {
+    fn open(&mut self, params: StreamParams) -> Result<(), SinkError> {
+        self.inner.open(params)
+    }
+
+    fn write(&mut self, unit: &EncodedUnit) -> Result<(), SinkError> {
+        self.written
+            .lock()
+            .map_err(|_| SinkError::InvalidConfiguration("unit recorder poisoned".into()))?
+            .push(WrittenUnit {
+                keyframe: unit.keyframe,
+                bytes: unit.bytes.len(),
+                pts: unit.pts.0,
+            });
+        self.inner.write(unit)
+    }
+
+    fn flush(&mut self) -> Result<(), SinkError> {
+        self.inner.flush()
+    }
+
+    fn close(&mut self) -> Result<(), SinkError> {
+        self.inner.close()
+    }
+
+    fn poll_feedback(&mut self) -> Option<Feedback> {
+        self.inner.poll_feedback()
+    }
+}
+
+enum WorkerEvent {
+    Encoded {
+        seq: u64,
+        pts: u64,
+        keyframe: bool,
+        units: usize,
+        bytes: usize,
+        encode_us: u64,
+        queue_depth: usize,
+    },
+    Failed {
+        seq: Option<u64>,
+        message: String,
+    },
+    Closed,
+}
+
+#[derive(Default)]
+struct WorkerStats {
+    encoded: u64,
+    bytes: u64,
+    last_encode_us: u64,
+    max_encode_us: u64,
+    failed: bool,
+}
+
+struct Shared {
+    events: Sender<WorkerEvent>,
+    error: Mutex<Option<String>>,
+    stats: Mutex<WorkerStats>,
+    queued: AtomicUsize,
+}
+
+fn worker_main(
+    mut stream: Stream<ReportingSink>,
+    jobs: Receiver<Job>,
+    shared: Arc<Shared>,
+    written: Arc<Mutex<Vec<WrittenUnit>>>,
+) {
+    let mut finished = false;
+    loop {
+        let job = match jobs.recv() {
+            Ok(job) => job,
+            Err(_) => break, // sender dropped: finalize below
+        };
+        match job {
+            Job::Frame(job) => {
+                shared.queued.fetch_sub(1, Ordering::Relaxed);
+                let started = Instant::now();
+                let frame = FrameRef::new(FrameBuffer::host_owned(job.bytes), job.desc);
+                let result = stream.submit_video(frame, None, job.boundary);
+                let elapsed = started.elapsed();
+                match result {
+                    Ok(seq) => {
+                        let units: Vec<WrittenUnit> = written
+                            .lock()
+                            .map(|mut units| units.drain(..).collect())
+                            .unwrap_or_default();
+                        let bytes: usize = units.iter().map(|u| u.bytes).sum();
+                        let keyframe = units.iter().any(|u| u.keyframe);
+                        let pts = units.first().map(|u| u.pts).unwrap_or(job.desc.pts.0);
+                        let encode_us = elapsed.as_micros() as u64;
+                        if let Ok(mut stats) = shared.stats.lock() {
+                            stats.encoded += 1;
+                            stats.bytes += bytes as u64;
+                            stats.last_encode_us = encode_us;
+                            stats.max_encode_us = stats.max_encode_us.max(encode_us);
+                        }
+                        let _ = shared.events.send(WorkerEvent::Encoded {
+                            seq,
+                            pts,
+                            keyframe,
+                            units: units.len(),
+                            bytes,
+                            encode_us,
+                            queue_depth: shared.queued.load(Ordering::Relaxed),
+                        });
+                    }
+                    Err(err) => {
+                        let message = err.to_string();
+                        if let Ok(mut slot) = shared.error.lock() {
+                            *slot = Some(message.clone());
+                        }
+                        if let Ok(mut stats) = shared.stats.lock() {
+                            stats.failed = true;
+                        }
+                        let _ = shared.events.send(WorkerEvent::Failed {
+                            seq: Some(job.seq),
+                            message,
+                        });
+                        break;
+                    }
+                }
+            }
+            Job::Flush(ack) => {
+                let _ = ack.send(stream.flush().map_err(|err| err.to_string()));
+            }
+            Job::Close(ack) => {
+                let result = stream.close().map_err(|err| err.to_string());
+                let _ = ack.send(result);
+                finished = true;
+                break;
+            }
+        }
+    }
+    if !finished {
+        // Sender dropped or the worker failed: finalize best effort so the file
+        // is playable even if the caller never called close().
+        let _ = stream.close();
+    }
+    let _ = shared.events.send(WorkerEvent::Closed);
+}
+
+// ---------------------------------------------------------------------------
+// Python classes
+// ---------------------------------------------------------------------------
 
 /// Parsed calibration files, reusable across encoders.
 #[pyclass(name = "Calibrations", module = "blazar")]
@@ -60,14 +251,21 @@ impl PyCalibrations {
     }
 }
 
-/// One encode stream writing a fragmented MP4.
-#[pyclass(name = "Encoder", module = "blazar", unsendable)]
+/// One encode stream writing a fragmented MP4 on a worker thread.
+#[pyclass(name = "Encoder", module = "blazar")]
 struct PyEncoder {
-    stream: Option<Stream<FileSink>>,
+    /// `None` after `close()`; dropping the sender closes the job channel.
+    /// Mutex-wrapped because `SyncSender` is `Send` but not `Sync`, and a
+    /// pyclass must be `Sync`.
+    jobs: Mutex<Option<SyncSender<Job>>>,
+    events: Mutex<Receiver<WorkerEvent>>,
+    shared: Arc<Shared>,
+    worker: Option<JoinHandle<()>>,
     request_id: String,
     timebase: Timebase,
+    seq: u64,
+    submitted: u64,
     frame_index: u64,
-    /// Fixed by the first submit; a change means a new request, not a segment.
     frame_size: Option<(u32, u32)>,
     fps: Option<f64>,
 }
@@ -87,6 +285,7 @@ impl PyEncoder {
         codec = "av1",
         request_id = "stream",
         video_extradata = None,
+        queue_depth = 4,
     ))]
     fn new(
         calibrations: &PyCalibrations,
@@ -97,7 +296,11 @@ impl PyEncoder {
         codec: &str,
         request_id: &str,
         video_extradata: Option<Vec<u8>>,
+        queue_depth: usize,
     ) -> PyResult<Self> {
+        if queue_depth == 0 {
+            return Err(PyValueError::new_err("queue_depth must be >= 1"));
+        }
         let identity = model_identity(identity)?;
         let target = parse_target(target)?;
         let backend = parse_backend(backend)?;
@@ -106,7 +309,11 @@ impl PyEncoder {
         let file = File::create(output).map_err(|err| {
             PyValueError::new_err(format!("cannot create output {output}: {err}"))
         })?;
-        let sink = Fmp4FileSink::new(BufWriter::new(file));
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let sink = ReportingSink {
+            inner: Fmp4FileSink::new(BufWriter::new(file)),
+            written: Arc::clone(&written),
+        };
 
         let runtime = RuntimeEncoder::new(
             identity,
@@ -121,25 +328,46 @@ impl PyEncoder {
             sink,
             calibrations.index.clone(),
         );
+        let stream = runtime.open_stream(request_id);
+
+        let (job_tx, job_rx) = mpsc::sync_channel::<Job>(queue_depth);
+        let (event_tx, event_rx) = mpsc::channel::<WorkerEvent>();
+        let shared = Arc::new(Shared {
+            events: event_tx,
+            error: Mutex::new(None),
+            stats: Mutex::new(WorkerStats::default()),
+            queued: AtomicUsize::new(0),
+        });
+
+        let worker_shared = Arc::clone(&shared);
+        let worker = thread::Builder::new()
+            .name("blazar-encode".into())
+            .spawn(move || worker_main(stream, job_rx, worker_shared, written))
+            .map_err(|err| {
+                PyRuntimeError::new_err(format!("cannot start encoder thread: {err}"))
+            })?;
 
         Ok(Self {
-            stream: Some(runtime.open_stream(request_id)),
+            jobs: Mutex::new(Some(job_tx)),
+            events: Mutex::new(event_rx),
+            shared,
+            worker: Some(worker),
             request_id: request_id.to_string(),
             timebase: Timebase::MPEG_90K,
+            seq: 0,
+            submitted: 0,
             frame_index: 0,
             frame_size: None,
             fps: None,
         })
     }
 
-    /// Submit one frame. Returns the stream's sequence number.
+    /// Copy one frame into the encoder's queue. Returns immediately (the encode
+    /// happens on the worker). Blocks only if the queue is full, with the GIL
+    /// released so other Python threads keep running.
     ///
     /// `frame` must be a C-contiguous float32 array (numpy), shaped per `layout`:
     /// THWC = `(height, width, 3)`, BCTHW = `(1, 3, 1, height, width)`.
-    ///
-    /// np.float32 is required because numpy has no bf16 dtype: cast a bf16 torch
-    /// tensor with `.float().numpy()`/`.cpu().numpy()`. Non-contiguous views are
-    /// copied in C order; a non-float32 buffer is rejected with the fix.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         frame,
@@ -169,6 +397,15 @@ impl PyEncoder {
         if width == 0 || height == 0 {
             return Err(PyValueError::new_err("width and height must be non-zero"));
         }
+        if let Some(err) = self.error_message() {
+            return Err(PyRuntimeError::new_err(err));
+        }
+        let jobs = self
+            .jobs
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("encoder state lock poisoned"))?
+            .clone()
+            .ok_or_else(|| closed_error(&self.request_id))?;
 
         let layout = parse_layout(layout)?;
         let range = parse_range(range)?;
@@ -192,10 +429,9 @@ impl PyEncoder {
             }
         }
 
-        // One copy: the preprocess/encode path then owns its bytes and does not
-        // borrow Python memory (which also keeps the door open for releasing the
-        // GIL here once the encoder handle is Send).
-        let bytes = copy_contiguous(py, frame)?;
+        // One copy under the GIL: the job owns its bytes, so the worker needs no
+        // Python memory and can run without the GIL.
+        let bytes = copy_float32(py, frame)?;
 
         let pts = pts_ticks
             .unwrap_or_else(|| Pts::from_frame_index(self.frame_index, fps, self.timebase).0);
@@ -209,44 +445,139 @@ impl PyEncoder {
             fps,
             pts: Pts(pts),
         };
-        let boundary = if scene_cut {
-            Some(Boundary::SceneCut)
-        } else {
-            None
-        };
+        let job = Job::Frame(Box::new(FrameJob {
+            seq: self.seq,
+            bytes,
+            desc,
+            boundary: if scene_cut {
+                Some(Boundary::SceneCut)
+            } else {
+                None
+            },
+        }));
 
-        let stream = self
-            .stream
-            .as_mut()
-            .ok_or_else(|| closed_error(&self.request_id))?;
-        let seq = stream
-            .submit_video(
-                FrameRef::new(FrameBuffer::host_owned(bytes), desc),
-                None,
-                boundary,
-            )
-            .map_err(backend_error)?;
+        self.shared.queued.fetch_add(1, Ordering::Relaxed);
+        let sent = py.detach(move || jobs.send(job));
+        if sent.is_err() {
+            self.shared.queued.fetch_sub(1, Ordering::Relaxed);
+            return Err(PyRuntimeError::new_err(
+                self.error_message()
+                    .unwrap_or_else(|| "encoder worker stopped".to_string()),
+            ));
+        }
+
+        let seq = self.seq;
+        self.seq += 1;
+        self.submitted += 1;
         self.frame_index += 1;
         self.frame_size.get_or_insert((width, height));
         self.fps.get_or_insert(fps);
         Ok(seq)
     }
 
-    /// Drain what the encoder can emit without ending the stream.
-    fn flush(&mut self) -> PyResult<()> {
-        let stream = self
-            .stream
-            .as_mut()
-            .ok_or_else(|| closed_error(&self.request_id))?;
-        stream.flush().map_err(backend_error)
+    /// Drain worker events as dicts. With a timeout, wait up to that many
+    /// seconds for the first event; the GIL is released while waiting.
+    #[pyo3(signature = (timeout = None))]
+    fn poll(&mut self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Vec<Py<PyDict>>> {
+        let mut events: Vec<WorkerEvent> = Vec::new();
+        {
+            let receiver = self
+                .events
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("event queue lock poisoned"))?;
+            while let Ok(event) = receiver.try_recv() {
+                events.push(event);
+            }
+        }
+        if events.is_empty() {
+            if let Some(seconds) = timeout {
+                let wait = Duration::from_secs_f64(seconds.max(0.0));
+                let first = py.detach(|| {
+                    self.events
+                        .lock()
+                        .ok()
+                        .and_then(|receiver| receiver.recv_timeout(wait).ok())
+                });
+                if let Some(event) = first {
+                    events.push(event);
+                    let receiver = self
+                        .events
+                        .lock()
+                        .map_err(|_| PyRuntimeError::new_err("event queue lock poisoned"))?;
+                    while let Ok(event) = receiver.try_recv() {
+                        events.push(event);
+                    }
+                }
+            }
+        }
+        events
+            .into_iter()
+            .map(|event| event_to_dict(py, event))
+            .collect()
     }
 
-    /// Finalize the stream and the container. Idempotent.
-    fn close(&mut self) -> PyResult<()> {
-        let Some(mut stream) = self.stream.take() else {
-            return Ok(());
-        };
-        stream.close().map_err(backend_error)
+    /// Barrier: return once every frame submitted before this call has been
+    /// encoded and written.
+    #[pyo3(signature = (timeout = None))]
+    fn flush(&mut self, py: Python<'_>, timeout: Option<f64>) -> PyResult<()> {
+        let jobs = self
+            .jobs
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("encoder state lock poisoned"))?
+            .clone()
+            .ok_or_else(|| closed_error(&self.request_id))?;
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        py.detach(move || jobs.send(Job::Flush(ack_tx)))
+            .map_err(|_| PyRuntimeError::new_err("encoder worker stopped"))?;
+        wait_ack(py, ack_rx, timeout)
+    }
+
+    /// Drain the queue, finalize the container and stop the worker. Idempotent.
+    /// Raises any encoder error that occurred on the worker.
+    #[pyo3(signature = (timeout = None))]
+    fn close(&mut self, py: Python<'_>, timeout: Option<f64>) -> PyResult<()> {
+        let mut outcome = Ok(());
+        let jobs = self
+            .jobs
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("encoder state lock poisoned"))?
+            .take();
+        if let Some(jobs) = jobs {
+            let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+            match py.detach(move || jobs.send(Job::Close(ack_tx))) {
+                Ok(()) => outcome = wait_ack(py, ack_rx, timeout),
+                // The worker is already gone; its error state is read below.
+                Err(_) => outcome = Ok(()),
+            }
+        }
+        if let Some(worker) = self.worker.take() {
+            let _ = py.detach(move || worker.join());
+        }
+        outcome?;
+        if let Some(err) = self.error_message() {
+            return Err(PyRuntimeError::new_err(err));
+        }
+        Ok(())
+    }
+
+    /// Monotonic counters: `submitted`, `encoded`, `bytes`, `queued`,
+    /// `last_encode_us`, `max_encode_us`, `failed`.
+    #[getter]
+    fn stats(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        let dict = PyDict::new(py);
+        dict.set_item("submitted", self.submitted)?;
+        dict.set_item("queued", self.shared.queued.load(Ordering::Relaxed))?;
+        let stats = self
+            .shared
+            .stats
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("stats lock poisoned"))?;
+        dict.set_item("encoded", stats.encoded)?;
+        dict.set_item("bytes", stats.bytes)?;
+        dict.set_item("last_encode_us", stats.last_encode_us)?;
+        dict.set_item("max_encode_us", stats.max_encode_us)?;
+        dict.set_item("failed", stats.failed)?;
+        Ok(dict.unbind())
     }
 
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -259,21 +590,92 @@ impl PyEncoder {
         _exc: &Bound<'_, PyAny>,
         _tb: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
-        slf.close()
+        let py = slf.py();
+        slf.close(py, None)
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "<blazar.Encoder: request_id={:?}, frames={}, closed={}>",
+            "<blazar.Encoder: request_id={:?}, submitted={}, closed={}>",
             self.request_id,
-            self.frame_index,
-            self.stream.is_none()
+            self.submitted,
+            self.jobs.lock().map(|jobs| jobs.is_none()).unwrap_or(true)
         )
     }
 }
 
+impl PyEncoder {
+    fn error_message(&self) -> Option<String> {
+        self.shared.error.lock().ok().and_then(|slot| slot.clone())
+    }
+}
+
+impl Drop for PyEncoder {
+    fn drop(&mut self) {
+        // Closing the job channel lets the worker drain and finalize; the join
+        // handle is detached so dropping never blocks the interpreter.
+        if let Ok(jobs) = self.jobs.get_mut() {
+            jobs.take();
+        }
+        self.worker.take();
+    }
+}
+
+fn wait_ack(
+    py: Python<'_>,
+    ack: Receiver<Result<(), String>>,
+    timeout: Option<f64>,
+) -> PyResult<()> {
+    let received = py.detach(move || match timeout {
+        Some(seconds) => ack
+            .recv_timeout(Duration::from_secs_f64(seconds.max(0.0)))
+            .map_err(|_| "timed out waiting for the encoder".to_string()),
+        None => ack
+            .recv()
+            .map_err(|_| "encoder worker stopped before replying".to_string()),
+    });
+    match received {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(message)) => Err(PyRuntimeError::new_err(message)),
+        Err(message) => Err(PyRuntimeError::new_err(message)),
+    }
+}
+
+fn event_to_dict(py: Python<'_>, event: WorkerEvent) -> PyResult<Py<PyDict>> {
+    let dict = PyDict::new(py);
+    match event {
+        WorkerEvent::Encoded {
+            seq,
+            pts,
+            keyframe,
+            units,
+            bytes,
+            encode_us,
+            queue_depth,
+        } => {
+            dict.set_item("kind", "encoded")?;
+            dict.set_item("seq", seq)?;
+            dict.set_item("pts", pts)?;
+            dict.set_item("keyframe", keyframe)?;
+            dict.set_item("units", units)?;
+            dict.set_item("bytes", bytes)?;
+            dict.set_item("encode_us", encode_us)?;
+            dict.set_item("queue_depth", queue_depth)?;
+        }
+        WorkerEvent::Failed { seq, message } => {
+            dict.set_item("kind", "failed")?;
+            dict.set_item("seq", seq)?;
+            dict.set_item("message", message)?;
+        }
+        WorkerEvent::Closed => {
+            dict.set_item("kind", "closed")?;
+        }
+    }
+    Ok(dict.unbind())
+}
+
 /// Copy a float32 buffer-protocol object into owned little-endian bytes.
-fn copy_contiguous(py: Python<'_>, frame: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+fn copy_float32(py: Python<'_>, frame: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
     let buffer = PyBuffer::<f32>::get(frame).map_err(|_| {
         PyValueError::new_err(
             "frame must be a float32 array supporting the buffer protocol \
@@ -294,10 +696,6 @@ fn copy_contiguous(py: Python<'_>, frame: &Bound<'_, PyAny>) -> PyResult<Vec<u8>
 
 fn closed_error(request_id: &str) -> PyErr {
     PyRuntimeError::new_err(format!("stream {request_id:?} is closed"))
-}
-
-fn backend_error(err: RuntimeError) -> PyErr {
-    PyRuntimeError::new_err(err.to_string())
 }
 
 fn model_identity(dict: &Bound<'_, PyDict>) -> PyResult<ModelIdentity> {

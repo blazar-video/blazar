@@ -36,7 +36,7 @@ repo README, "Hardware validation").
 import numpy as np
 import blazar
 
-calibrations = blazar.Calibrations.load("calibrations/default")
+Calibrations = blazar.Calibrations.load("calibrations/default")
 
 with blazar.Encoder(
     calibrations=calibrations,
@@ -44,6 +44,7 @@ with blazar.Encoder(
     target="balanced",
     backend="nvenc_av1",           # "svtav1" (mock here) on machines without CUDA
     output="out.mp4",
+    queue_depth=4,                 # frames the encoder may be behind
 ) as stream:
     for i, frame in enumerate(frames):        # frame: (H, W, 3) float32 in [0, 1]
         stream.submit(
@@ -51,7 +52,31 @@ with blazar.Encoder(
             layout="thwc", range="unit01",
             scene_cut=(i == 0),
         )
+        for event in stream.poll():           # optional: non-blocking
+            if event["kind"] == "encoded" and event["keyframe"]:
+                pass                          # a fragment boundary was just closed
 ```
+
+`submit` copies the frame and enqueues it; a Rust worker thread does the
+preprocess, encode and muxing. It blocks only when `queue_depth` frames are
+already queued, and it releases the GIL while blocking, so other Python threads
+keep running. Use `flush()` as a barrier (everything submitted before it is
+durable) and `stats` for counters.
+
+`poll()` returns dicts:
+
+```
+{"kind": "encoded", "seq", "pts", "keyframe", "units", "bytes",
+ "encode_us", "queue_depth"}
+{"kind": "failed", "seq", "message"}
+{"kind": "closed"}
+```
+
+`keyframe: True` means the fMP4 sink closed a fragment at that frame, which is
+the segment boundary a transport sink will publish.
+
+Worker failures surface as a `failed` event, are re-raised by `submit`, and are
+re-raised by `close()`. Nothing is swallowed.
 
 Defaults synthesise PTS as `frame_index * 90000 / fps`; pass `pts_ticks=` to
 place frames explicitly (vLLM-Omni chunks carry a cumulative frame index).

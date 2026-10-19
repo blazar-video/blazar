@@ -425,3 +425,19 @@ mod tests {
         assert!(matches!(err, RuntimeError::EncoderNotInitialized));
     }
 }
+
+#[cfg(test)]
+mod send_assertions {
+    use super::*;
+    use blazar_sink::fmp4::Fmp4FileSink;
+    use std::fs::File;
+    use std::io::BufWriter;
+
+    /// The Python binding moves a stream to a worker thread. If this stops
+    /// compiling, encoding will block the caller again.
+    #[test]
+    fn stream_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Stream<Fmp4FileSink<BufWriter<File>>>>();
+    }
+}
