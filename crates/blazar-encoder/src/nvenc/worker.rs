@@ -748,7 +748,9 @@ fn encode_one(
 fn fail_pending(rx: &mpsc::Receiver<Command>, error: EncodeError) {
     while let Ok(command) = rx.try_recv() {
         match command {
-            Command::Encode { reply, .. } | Command::EncodeFrame { reply, .. } => {
+            Command::Encode { reply, .. }
+            | Command::EncodeFrame { reply, .. }
+            | Command::EncodeBatch { reply, .. } => {
                 let _ = reply.send(Err(EncodeError::Backend(error.to_string())));
             }
             Command::Flush { reply } | Command::Finish { reply } => {
