@@ -78,6 +78,12 @@ enum Command {
         force_keyframe: bool,
         reply: mpsc::Sender<Result<EncodeOutput, EncodeError>>,
     },
+    /// Raw host frames converted by one kernel launch.
+    EncodeBatch {
+        frames: Vec<(Vec<u8>, FrameDesc)>,
+        force_keyframe: bool,
+        reply: mpsc::Sender<Result<EncodeOutput, EncodeError>>,
+    },
     Flush {
         reply: mpsc::Sender<Result<Vec<EncodedUnit>, EncodeError>>,
     },
@@ -193,6 +199,39 @@ impl VideoEncoder for NvencEncoder {
         let out: EncodeOutput = self.request(move |reply| Command::EncodeFrame {
             bytes,
             desc,
+            force_keyframe,
+            reply,
+        })?;
+        if out.codec_config.is_some() {
+            self.codec_config = out.codec_config;
+        }
+        Ok(out.units)
+    }
+
+    fn encode_batch(&mut self, frames: Vec<FrameRef>) -> Result<Vec<EncodedUnit>, EncodeError> {
+        if self.finished {
+            return Err(EncodeError::AfterFinish);
+        }
+        if frames.is_empty() {
+            return Ok(Vec::new());
+        }
+        let force_keyframe = std::mem::take(&mut self.force_keyframe);
+        let mut owned = Vec::with_capacity(frames.len());
+        for frame in frames {
+            let FrameRef { buffer, desc } = frame;
+            let bytes = match buffer {
+                FrameBuffer::Host {
+                    owner: BufferOwner::Owned(bytes),
+                    ..
+                } => bytes,
+                other => other.host_bytes().map(|b| b.to_vec()).ok_or_else(|| {
+                    EncodeError::Backend("NVENC needs host frames (device ingest is Phase 2)".into())
+                })?,
+            };
+            owned.push((bytes, desc));
+        }
+        let out: EncodeOutput = self.request(move |reply| Command::EncodeBatch {
+            frames: owned,
             force_keyframe,
             reply,
         })?;
@@ -490,6 +529,44 @@ fn run_loop(
                 force_keyframe,
                 reply,
             ),
+            Command::EncodeBatch {
+                frames,
+                force_keyframe,
+                reply,
+            } => {
+                if finished {
+                    let _ = reply.send(Err(EncodeError::AfterFinish));
+                    continue;
+                }
+                let mut units = Vec::new();
+                let idr: Vec<bool> = (0..frames.len())
+                    .map(|i| keyframes.next_is_keyframe(i == 0 && force_keyframe))
+                    .collect();
+                let result = encode_batch_rgb(
+                    session,
+                    &stream,
+                    &device,
+                    &mut inputs,
+                    &mut bitstreams,
+                    &mut staging,
+                    &mut dst_ptrs,
+                    &converter,
+                    &mut pool,
+                    &mut codec_config,
+                    &mut decode_index,
+                    frame_duration,
+                    codec,
+                    pitch,
+                    &frames,
+                    &idr,
+                    &mut units,
+                );
+                let _ = reply.send(result.map(|()| EncodeOutput {
+                    units,
+                    codec_config: codec_config.clone(),
+                }));
+                continue;
+            }
             Command::Flush { reply } => {
                 let _ = reply.send(Ok(Vec::new()));
                 continue;
@@ -870,4 +947,173 @@ impl Drop for PitchedInput {
         // SAFETY: the pointer came from cuMemAllocPitch and is freed once.
         unsafe { sys::cuMemFree_v2(self.ptr) };
     }
+}
+
+/// Convert a batch of RGB frames with one kernel launch, then encode each slot.
+///
+/// Frames are packed into the staging buffer in submission order, so the kernel
+/// reads frame `i` from `i * frame_bytes`. Slots are acquired up front: if the
+/// pool cannot supply all of them the largest prefix is batched and the rest go
+/// through the single-frame path, which keeps latency bounded.
+#[allow(clippy::too_many_arguments)]
+fn encode_batch_rgb(
+    session: &Session,
+    stream: &Arc<CudaStream>,
+    device: &[PitchedInput],
+    inputs: &mut [RegisteredResource<'_, ()>],
+    bitstreams: &mut [Bitstream<'_>],
+    staging: &mut CudaSlice<u8>,
+    dst_ptrs: &mut CudaSlice<u64>,
+    converter: &Nv12Converter,
+    pool: &mut SlotPool,
+    codec_config: &mut Option<Vec<u8>>,
+    decode_index: &mut u64,
+    frame_duration: u64,
+    codec: VideoCodec,
+    pitch: u32,
+    frames: &[(Vec<u8>, FrameDesc)],
+    idr: &[bool],
+    units: &mut Vec<EncodedUnit>,
+) -> Result<(), EncodeError> {
+    let Some((first, desc0)) = frames.first() else {
+        return Ok(());
+    };
+    let frame_bytes = first.len();
+    if frames
+        .iter()
+        .any(|(bytes, desc)| bytes.len() != frame_bytes || desc != desc0)
+    {
+        return Err(EncodeError::Backend(
+            "batch frames must share geometry and format".into(),
+        ));
+    }
+
+    // Take as many slots as the pool can give without blocking.
+    let wanted = frames.len().min(POOL_CAPACITY);
+    let mut slots = Vec::with_capacity(wanted);
+    for (bytes, desc) in frames.iter().take(wanted) {
+        let _ = bytes;
+        match pool.acquire(desc.pts.ticks()) {
+            Some(slot) => slots.push(slot),
+            None => break,
+        }
+    }
+    if slots.is_empty() {
+        // Nothing free: make room for one frame and let the caller's next
+        // submission try again.
+        drain_ready(
+            bitstreams,
+            pool,
+            codec_config,
+            decode_index,
+            frame_duration,
+            codec,
+            units,
+        )?;
+        let (bytes, desc) = &frames[0];
+        let source = Source::Rgb {
+            bytes: Box::new(bytes.clone()),
+            desc: *desc,
+        };
+        return encode_one(
+            session,
+            stream,
+            device,
+            inputs,
+            bitstreams,
+            staging,
+            dst_ptrs,
+            converter,
+            pool,
+            codec_config,
+            decode_index,
+            frame_duration,
+            codec,
+            pitch,
+            idr[0],
+            &source,
+            units,
+        );
+    }
+
+    let batched = slots.len();
+    let mut host = Vec::with_capacity(batched * frame_bytes);
+    for (bytes, _) in frames.iter().take(batched) {
+        host.extend_from_slice(bytes);
+    }
+    if host.len() > staging.len() {
+        return Err(EncodeError::Backend(format!(
+            "batch is {} bytes, staging is {}",
+            host.len(),
+            staging.len()
+        )));
+    }
+    let ptrs: Vec<u64> = slots.iter().map(|slot| device[*slot].ptr).collect();
+    stream
+        .memcpy_htod(&host, &mut staging.slice_mut(0..host.len()))
+        .map_err(|e| EncodeError::Backend(format!("upload batch: {e}")))?;
+    stream
+        .memcpy_htod(&ptrs, &mut dst_ptrs.slice_mut(0..batched))
+        .map_err(|e| EncodeError::Backend(format!("upload dst pointers: {e}")))?;
+    converter.convert_batch(stream, staging, dst_ptrs, desc0, batched as u32, pitch)?;
+    stream
+        .synchronize()
+        .map_err(|e| EncodeError::Backend(format!("sync before encode: {e}")))?;
+
+    for (i, slot) in slots.iter().enumerate() {
+        let (_, desc) = &frames[i];
+        let flags = if idr[i] {
+            NV_ENC_PIC_FLAGS::NV_ENC_PIC_FLAG_FORCEIDR as u32
+        } else {
+            0
+        };
+        match encode_with_retry(
+            session,
+            &mut inputs[*slot],
+            &mut bitstreams[*slot],
+            desc.pts.ticks(),
+            flags,
+        )? {
+            EncodeCall::Emitted => {}
+            // The frame is buffered; its output appears on a later call.
+            EncodeCall::NeedMoreInput => continue,
+        }
+        drain_ready(
+            bitstreams,
+            pool,
+            codec_config,
+            decode_index,
+            frame_duration,
+            codec,
+            units,
+        )?;
+    }
+
+    // Overflow: encode what did not fit one frame at a time.
+    for (index, (bytes, desc)) in frames.iter().enumerate().skip(batched) {
+        let source = Source::Rgb {
+            bytes: Box::new(bytes.clone()),
+            desc: *desc,
+        };
+        encode_one(
+            session,
+            stream,
+            device,
+            inputs,
+            bitstreams,
+            staging,
+            dst_ptrs,
+            converter,
+            pool,
+            codec_config,
+            decode_index,
+            frame_duration,
+            codec,
+            pitch,
+            idr[index],
+            &source,
+            units,
+        )?;
+    }
+    Ok(())
 }

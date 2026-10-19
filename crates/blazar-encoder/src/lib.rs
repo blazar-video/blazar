@@ -48,6 +48,21 @@ pub trait VideoEncoder: Send {
         self.encode(&pre)
     }
 
+    /// Encode several raw frames in one submission. The default loops
+    /// [`encode_frame`](Self::encode_frame); GPU backends override it so the
+    /// per-pixel work for the whole batch is one kernel launch.
+    ///
+    /// Frames must share geometry and format. `encode_batch` exists for
+    /// throughput, not semantics: the returned units are identical to encoding
+    /// the frames one at a time.
+    fn encode_batch(&mut self, frames: Vec<FrameRef>) -> Result<Vec<EncodedUnit>, EncodeError> {
+        let mut units = Vec::new();
+        for frame in frames {
+            units.extend(self.encode_frame(frame)?);
+        }
+        Ok(units)
+    }
+
     /// Drain buffered frames without ending the stream (segment boundary).
     fn flush(&mut self) -> Result<Vec<EncodedUnit>, EncodeError>;
 
