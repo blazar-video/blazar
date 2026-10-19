@@ -233,7 +233,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 [[package]]
 name = "nvidia-video-codec-sdk"
 version = "0.4.0"
-source = "git+https://github.com/jgh-/nvidia-video-codec-sdk?rev=bf560c7578d4aeb764d51f634e261a38312d28c4#bf560c7578d4aeb764d51f634e261a38312d28c4"
+source = "git+https://github.com/jgh-/nvidia-video-codec-sdk?rev=2a6d4cd8f3623935a9db2888aa538f819bf889b3#2a6d4cd8f3623935a9db2888aa538f819bf889b3"
 dependencies = [
  "cudarc",
  "lazy_static",
@@ -259,7 +259,7 @@ dependencies = [
 [[package]]
 name = "oxideav-mp4"
 version = "0.0.10"
-source = "git+https://github.com/jgh-/oxideav-mp4?rev=6433b27699b77f0de5fc720ebcb9e42078bfca29#6433b27699b77f0de5fc720ebcb9e42078bfca29"
+source = "git+https://github.com/jgh-/oxideav-mp4?rev=9b6f7bb6a0dee7de72b8e593cb1feba5f14034e6#9b6f7bb6a0dee7de72b8e593cb1feba5f14034e6"
 dependencies = [
  "aes",
  "cbc",
