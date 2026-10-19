@@ -33,7 +33,7 @@ oxideav-mp4 = { git = "https://github.com/jgh-/oxideav-mp4", rev = "9b6f7bb6a0de
 nvidia-video-codec-sdk = { git = "https://github.com/jgh-/nvidia-video-codec-sdk", rev = "2a6d4cd8f3623935a9db2888aa538f819bf889b3" }
 # The SDK's published 0.4.0 pins cudarc 0.16.6, which rejects CUDA 13. The git
 # revision depends on cudarc 0.19; pin it with the explicit toolkit feature.
-cudarc = { version = "=0.19.10", default-features = false, features = ["cuda-13010", "driver", "dynamic-loading"] }
+cudarc = { version = "=0.19.10", default-features = false, features = ["cuda-13010", "driver", "dynamic-loading", "nvrtc"] }
 
 # Internal crates
 blazar-core = { path = "crates/blazar-core" }
