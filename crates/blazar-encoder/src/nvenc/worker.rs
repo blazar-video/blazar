@@ -320,8 +320,16 @@ fn run_loop(
     frame_duration: u64,
     rx: mpsc::Receiver<Command>,
 ) {
-    let mut input = match session.create_input_buffer() {
-        Ok(buffer) => buffer,
+    // One input buffer per output slot. A single shared input is a data race
+    // under GPU contention: the encoder can still be reading frame N's buffer
+    // when frame N+1 is written into it, which corrupts the encoded stream.
+    // Slot i's input is therefore paired with slot i's bitstream and freed by
+    // the same pool release.
+    let mut inputs: Vec<Buffer<'_>> = match (0..POOL_CAPACITY)
+        .map(|_| session.create_input_buffer())
+        .collect()
+    {
+        Ok(buffers) => buffers,
         Err(e) => {
             fail_pending(
                 &rx,
@@ -346,7 +354,7 @@ fn run_loop(
     // padded to it. `Buffer::pitch()` is not this value: this wrapper passes
     // the frame width as `inputPitch`, and the driver uses its own stride for
     // internally allocated buffers.
-    let pitch = match input.lock() {
+    let pitch = match inputs[0].lock() {
         Ok(lock) => lock.pitch(),
         Err(e) => {
             fail_pending(&rx, nvenc_error(e));
@@ -385,7 +393,7 @@ fn run_loop(
                 let force_idr = keyframes.next_is_keyframe(force_keyframe);
                 let result = encode_one(
                     session,
-                    &mut input,
+                    &mut inputs,
                     &mut bitstreams,
                     &mut pool,
                     &mut codec_config,
@@ -440,7 +448,7 @@ fn fail_pending(rx: &mpsc::Receiver<Command>, error: EncodeError) {
 #[allow(clippy::too_many_arguments)]
 fn encode_one(
     session: &Session,
-    input: &mut Buffer<'_>,
+    inputs: &mut [Buffer<'_>],
     bitstreams: &mut [Bitstream<'_>],
     pool: &mut SlotPool,
     codec_config: &mut Option<Vec<u8>>,
@@ -471,14 +479,20 @@ fn encode_one(
         }
     };
 
-    unsafe { input.lock().map_err(nvenc_error)?.write(&nv12) };
+    unsafe { inputs[slot].lock().map_err(nvenc_error)?.write(&nv12) };
 
     let flags = if force_keyframe {
         NV_ENC_PIC_FLAGS::NV_ENC_PIC_FLAG_FORCEIDR as u32
     } else {
         0
     };
-    match encode_with_retry(session, input, &mut bitstreams[slot], pts, flags)? {
+    match encode_with_retry(
+        session,
+        &mut inputs[slot],
+        &mut bitstreams[slot],
+        pts,
+        flags,
+    )? {
         EncodeCall::Emitted => {}
         EncodeCall::NeedMoreInput => {
             // The frame is buffered; its output appears on a later call.
