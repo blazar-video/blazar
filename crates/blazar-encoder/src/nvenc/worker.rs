@@ -19,13 +19,11 @@ use std::sync::{mpsc, Arc, LazyLock};
 use std::thread;
 use std::time::Duration;
 
-use std::ffi::c_void;
-
 use blazar_core::{
     BufferOwner, EncodedUnit, FrameBuffer, FrameDesc, FrameRef, Pts, Timebase, TrackId, VideoCodec,
 };
 use blazar_preprocess::PreprocessedFrame;
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DevicePtr};
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
         GUID, NV_ENC_BUFFER_FORMAT, NV_ENC_CODEC_AV1_GUID, NV_ENC_CODEC_H264_GUID,
@@ -33,8 +31,7 @@ use nvidia_video_codec_sdk::{
         NV_ENC_PIC_FLAGS, NV_ENC_PIC_TYPE, NV_ENC_PRESET_P4_GUID, NV_ENC_QP, NV_ENC_TUNING_INFO,
         NV_ENC_VUI_COLOR_PRIMARIES, NV_ENC_VUI_MATRIX_COEFFS, NV_ENC_VUI_TRANSFER_CHARACTERISTIC,
     },
-    Bitstream, EncodePictureParams, Encoder, EncoderInitParams, EncoderInput, ErrorKind,
-    RegisteredResource, Session,
+    Bitstream, EncodePictureParams, Encoder, EncoderInitParams, EncoderInput, ErrorKind, Session,
 };
 
 use super::config::{NvencParams, NvencRateControl};
@@ -377,10 +374,42 @@ fn run_loop(
     };
     let stream = ctx.default_stream();
 
-    // Input buffers live in device memory and are registered with NVENC, so the
-    // GPU preprocess writes straight into what the encoder reads: no host→device
-    // NV12 copy and no CPU pixel work on the caller's thread.
-    let pitch = params.width.div_ceil(4) * 4;
+    // Device scratch for the GPU kernel. NVENC's CUDA device-pointer
+    // registration returns ResourceRegisterFailed on this WSL driver, so the
+    // converted NV12 is copied back and written into a normal input buffer. The
+    // pixel work is still on the GPU; only the NV12 transfer is not zero-copy.
+    let mut inputs: Vec<Buffer<'_>> = match (0..POOL_CAPACITY)
+        .map(|_| session.create_input_buffer())
+        .collect()
+    {
+        Ok(buffers) => buffers,
+        Err(e) => {
+            fail_pending(
+                &rx,
+                EncodeError::Backend(format!("NVENC input buffer: {e:?}")),
+            );
+            return;
+        }
+    };
+    // The driver's stride is visible only on a locked buffer and can exceed the
+    // width (834 -> 896 measured). Pad to it, not to the frame width.
+    let pitch = match inputs[0].lock() {
+        Ok(lock) => lock.pitch(),
+        Err(e) => {
+            fail_pending(&rx, nvenc_error(e));
+            return;
+        }
+    };
+    if pitch < params.width {
+        fail_pending(
+            &rx,
+            EncodeError::Backend(format!(
+                "NVENC input stride {pitch} is smaller than width {}",
+                params.width
+            )),
+        );
+        return;
+    }
     let chroma_rows = params.height.div_ceil(2);
     let buffer_len = (pitch * (params.height + chroma_rows)) as usize;
     let mut device: Vec<CudaSlice<u8>> = match (0..POOL_CAPACITY)
@@ -391,32 +420,11 @@ fn run_loop(
         Err(e) => {
             fail_pending(
                 &rx,
-                EncodeError::Backend(format!("allocate NVENC input buffers: {e}")),
+                EncodeError::Backend(format!("allocate NV12 scratch: {e}")),
             );
             return;
         }
     };
-    let mut registered: Vec<RegisteredResource<'_, ()>> = Vec::with_capacity(POOL_CAPACITY);
-    for slice in &device {
-        let (ptr, _) = slice.device_ptr(&stream);
-        match session.register_generic_resource(
-            (),
-            NV_ENC_INPUT_RESOURCE_TYPE::NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR,
-            ptr as *mut c_void,
-            pitch,
-        ) {
-            Ok(resource) => registered.push(resource),
-            Err(e) => {
-                fail_pending(
-                    &rx,
-                    EncodeError::Backend(format!("register NVENC input buffer: {e:?}")),
-                );
-                return;
-            }
-        }
-    }
-    // Staging for the RGB upload; the kernel writes NV12 from here into the
-    // registered buffer, so it cannot alias the destination.
     let staging_len = (params.width * params.height * 3 * 4) as usize;
     let mut staging: CudaSlice<u8> = match stream.alloc_zeros(staging_len) {
         Ok(buffer) => buffer,
@@ -502,7 +510,7 @@ fn run_loop(
             session,
             &stream,
             &mut device,
-            &mut registered,
+            &mut inputs,
             &mut bitstreams,
             &mut staging,
             &converter,
@@ -539,7 +547,7 @@ fn encode_one(
     session: &Session,
     stream: &Arc<CudaStream>,
     device: &mut [CudaSlice<u8>],
-    registered: &mut [RegisteredResource<'_, ()>],
+    inputs: &mut [Buffer<'_>],
     bitstreams: &mut [Bitstream<'_>],
     staging: &mut CudaSlice<u8>,
     converter: &Nv12Converter,
@@ -578,12 +586,9 @@ fn encode_one(
         }
     };
 
-    match source {
+    let nv12 = match source {
         Source::Planar(frame) => {
-            let nv12 = to_nv12(frame, pitch).map_err(|e| EncodeError::Backend(e.to_string()))?;
-            stream
-                .memcpy_htod(&nv12, &mut device[slot])
-                .map_err(|e| EncodeError::Backend(format!("upload NV12: {e}")))?;
+            to_nv12(frame, pitch).map_err(|e| EncodeError::Backend(e.to_string()))?
         }
         Source::Rgb { bytes, desc } => {
             if bytes.len() > staging.len() {
@@ -597,7 +602,13 @@ fn encode_one(
                 .memcpy_htod(bytes.as_slice(), staging)
                 .map_err(|e| EncodeError::Backend(format!("upload RGB: {e}")))?;
             converter.convert(stream, staging, &mut device[slot], desc, pitch)?;
+            stream
+                .clone_dtoh(&device[slot])
+                .map_err(|e| EncodeError::Backend(format!("download NV12: {e}")))?
         }
+    };
+    unsafe {
+        inputs[slot].lock().map_err(nvenc_error)?.write(&nv12);
     }
 
     let flags = if force_keyframe {
@@ -607,7 +618,7 @@ fn encode_one(
     };
     match encode_with_retry(
         session,
-        &mut registered[slot],
+        &mut inputs[slot],
         &mut bitstreams[slot],
         pts,
         flags,
