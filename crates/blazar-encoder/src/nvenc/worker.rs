@@ -1131,6 +1131,13 @@ fn encode_chunk(
         host.extend_from_slice(bytes);
     }
     let ptrs: Vec<u64> = slots.iter().map(|slot| device[*slot].ptr).collect();
+    // Staging starts one frame deep. Chunks are capped by BATCH_STAGING_BUDGET,
+    // so this grows to the largest chunk and then stays there.
+    if host.len() > staging.len() {
+        *staging = stream
+            .alloc_zeros(host.len())
+            .map_err(|e| EncodeError::Backend(format!("grow batch staging: {e}")))?;
+    }
     stream
         .memcpy_htod(&host, &mut staging.slice_mut(0..host.len()))
         .map_err(|e| EncodeError::Backend(format!("upload batch: {e}")))?;
