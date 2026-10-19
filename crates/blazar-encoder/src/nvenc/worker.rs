@@ -52,6 +52,11 @@ use crate::{EncodeError, VideoEncoder};
 /// 3.1 MB at 1080p). 32 allows a 30-frame chunk in one launch; the bitstream
 /// side is only a few KiB per slot.
 const POOL_CAPACITY: usize = 32;
+
+/// Upper bound on the RGB staging one launch may claim. Staging is 24 bytes per
+/// pixel per frame (f32x3), so 30 frames at 1080p would otherwise be ~750 MiB.
+/// At 480p this still allows the full pool; at 1080p a chunk is ~10 frames.
+const BATCH_STAGING_BUDGET: usize = 256 << 20;
 /// `EncoderBusy` is recoverable; wait briefly and retry a bounded number of times.
 const BUSY_RETRIES: u32 = 50;
 const BUSY_SLEEP: Duration = Duration::from_millis(2);
@@ -957,10 +962,15 @@ impl Drop for PitchedInput {
 
 /// Convert a batch of RGB frames with one kernel launch, then encode each slot.
 ///
-/// Frames are packed into the staging buffer in submission order, so the kernel
-/// reads frame `i` from `i * frame_bytes`. Slots are acquired up front: if the
-/// pool cannot supply all of them the largest prefix is batched and the rest go
-/// through the single-frame path, which keeps latency bounded.
+/// Batches larger than the slot pool (or larger than the staging budget) are
+/// split into chunks of at most `POOL_CAPACITY` frames, one launch each. The
+/// frames within a chunk are packed into staging in submission order, so the
+/// kernel reads frame `i` from `i * frame_bytes`.
+///
+/// Chunks exist because every destination must be registered with NVENC and
+/// alive at the same time: the pool is VRAM, and the RGB staging is 24 bytes per
+/// pixel per frame. Splitting keeps both bounded without falling back to
+/// one-frame submissions.
 #[allow(clippy::too_many_arguments)]
 fn encode_batch_rgb(
     session: &Session,
@@ -1004,33 +1014,15 @@ fn encode_batch_rgb(
         ));
     }
 
-    // Take as many slots as the pool can give without blocking.
-    let wanted = frames.len().min(POOL_CAPACITY);
-    let mut slots = Vec::with_capacity(wanted);
-    for _ in frames.iter().take(wanted) {
-        match pool.reserve() {
-            Some(slot) => slots.push(slot),
-            None => break,
-        }
-    }
-    if slots.is_empty() {
-        // Nothing free: make room for one frame and let the caller's next
-        // submission try again.
-        drain_ready(
-            bitstreams,
-            pool,
-            codec_config,
-            decode_index,
-            frame_duration,
-            codec,
-            units,
-        )?;
-        let (bytes, desc) = &frames[0];
-        let source = Source::Rgb {
-            bytes: Box::new(bytes.clone()),
-            desc: *desc,
-        };
-        return encode_one(
+    // Chunk size: the pool is the hard limit, and staging is capped so a large
+    // batch cannot reserve hundreds of megabytes of VRAM at 1080p.
+    let budget_frames = (BATCH_STAGING_BUDGET / frame_bytes.max(1)).max(1);
+    let max_per_chunk = POOL_CAPACITY.min(budget_frames).max(1);
+
+    let mut start = 0;
+    while start < frames.len() {
+        let end = (start + max_per_chunk).min(frames.len());
+        let consumed = encode_chunk(
             session,
             stream,
             device,
@@ -1045,23 +1037,69 @@ fn encode_batch_rgb(
             frame_duration,
             codec,
             pitch,
-            idr[0],
-            &source,
+            &frames[start..end],
+            &idr[start..end],
             units,
-        );
+        )?;
+        // `consumed == 0` means the pool could not supply a single slot; the
+        // chunk helper drained and left the frame for the single-frame path.
+        start += consumed.max(1);
+    }
+    Ok(())
+}
+
+/// Convert and encode one chunk that fits the pool. Returns how many frames it
+/// consumed; `0` means nothing was free and the caller should try one frame.
+#[allow(clippy::too_many_arguments)]
+fn encode_chunk(
+    session: &Session,
+    stream: &Arc<CudaStream>,
+    device: &[PitchedInput],
+    inputs: &mut [RegisteredResource<'_, ()>],
+    bitstreams: &mut [Bitstream<'_>],
+    staging: &mut CudaSlice<u8>,
+    dst_ptrs: &mut CudaSlice<u64>,
+    converter: &Nv12Converter,
+    pool: &mut SlotPool,
+    codec_config: &mut Option<Vec<u8>>,
+    decode_index: &mut u64,
+    frame_duration: u64,
+    codec: VideoCodec,
+    pitch: u32,
+    frames: &[(Vec<u8>, FrameDesc)],
+    idr: &[bool],
+    units: &mut Vec<EncodedUnit>,
+) -> Result<usize, EncodeError> {
+    let Some((_, desc0)) = frames.first() else {
+        return Ok(0);
+    };
+    let frame_bytes = frames[0].0.len();
+
+    let mut slots = Vec::with_capacity(frames.len());
+    for _ in frames.iter() {
+        match pool.reserve() {
+            Some(slot) => slots.push(slot),
+            None => break,
+        }
+    }
+    if slots.is_empty() {
+        // Nothing free: make room and let the caller retry this frame.
+        drain_ready(
+            bitstreams,
+            pool,
+            codec_config,
+            decode_index,
+            frame_duration,
+            codec,
+            units,
+        )?;
+        return Ok(0);
     }
 
     let batched = slots.len();
     let mut host = Vec::with_capacity(batched * frame_bytes);
     for (bytes, _) in frames.iter().take(batched) {
         host.extend_from_slice(bytes);
-    }
-    // Staging starts one frame deep. Grow it for larger batches rather than
-    // reserving 16 frames' worth of VRAM (132 MB at 1080p) up front.
-    if host.len() > staging.len() {
-        *staging = stream
-            .alloc_zeros(host.len())
-            .map_err(|e| EncodeError::Backend(format!("grow batch staging: {e}")))?;
     }
     let ptrs: Vec<u64> = slots.iter().map(|slot| device[*slot].ptr).collect();
     stream
@@ -1089,8 +1127,7 @@ fn encode_batch_rgb(
             &mut bitstreams[*slot],
             desc.pts.ticks(),
             flags,
-        )
-        .map_err(|e| EncodeError::Backend(format!("batch frame {i} slot {slot}: {e}")))? {
+        )? {
             EncodeCall::Emitted => {}
             // The frame is buffered; its output appears on a later call.
             EncodeCall::NeedMoreInput => continue,
@@ -1105,32 +1142,5 @@ fn encode_batch_rgb(
             units,
         )?;
     }
-
-    // Overflow: encode what did not fit one frame at a time.
-    for (index, (bytes, desc)) in frames.iter().enumerate().skip(batched) {
-        let source = Source::Rgb {
-            bytes: Box::new(bytes.clone()),
-            desc: *desc,
-        };
-        encode_one(
-            session,
-            stream,
-            device,
-            inputs,
-            bitstreams,
-            staging,
-            dst_ptrs,
-            converter,
-            pool,
-            codec_config,
-            decode_index,
-            frame_duration,
-            codec,
-            pitch,
-            idr[index],
-            &source,
-            units,
-        )?;
-    }
-    Ok(())
+    Ok(batched)
 }

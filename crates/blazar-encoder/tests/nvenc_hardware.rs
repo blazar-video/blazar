@@ -234,18 +234,14 @@ fn rgb_frame(index: u64) -> FrameRef {
 /// A batch must produce the same packets as the same frames encoded one at a
 /// time. NVENC is deterministic for identical input and settings, so the
 /// payloads are compared byte for byte, not just counted.
-#[test]
-fn a_batch_matches_encoding_the_same_frames_one_at_a_time() {
-    // 30 is the chunk size a 480p vLLM-Omni rollout produces per second of
-    // video, and it exceeds the old 16-slot pool.
-    const N: u64 = 30;
+fn assert_batch_matches_singles(n: u64) {
 
     // Consumer GPUs cap concurrent NVENC sessions, and the rest of this suite
     // runs in parallel, so the two encoders are not held at the same time.
     let single_units = {
         let mut single = encoder(120);
         let mut units = Vec::new();
-        for index in 0..N {
+        for index in 0..n {
             units.extend(
                 single
                     .encode_frame(rgb_frame(index))
@@ -254,7 +250,7 @@ fn a_batch_matches_encoding_the_same_frames_one_at_a_time() {
         }
         units
     };
-    let frames: Vec<_> = (0..N).map(rgb_frame).collect();
+    let frames: Vec<_> = (0..n).map(rgb_frame).collect();
     let batch_units = {
         let mut batched = encoder(120);
         batched.encode_batch(frames).expect("batch encode")
@@ -274,4 +270,17 @@ fn a_batch_matches_encoding_the_same_frames_one_at_a_time() {
     let batch_dts: Vec<u64> = batch_units.iter().map(|u| u.dts.0).collect();
     let single_dts: Vec<u64> = single_units.iter().map(|u| u.dts.0).collect();
     assert_eq!(batch_dts, single_dts, "batch and single decode order differ");
+}
+
+#[test]
+fn a_batch_matches_encoding_the_same_frames_one_at_a_time() {
+    // 30 is what a second of 480p vLLM-Omni rollout produces.
+    assert_batch_matches_singles(30);
+}
+
+#[test]
+fn a_batch_larger_than_the_pool_is_chunked_not_serialised() {
+    // Above POOL_CAPACITY the worker splits into launches; the result must be
+    // the same as if the whole batch had been submitted at once.
+    assert_batch_matches_singles(40);
 }
