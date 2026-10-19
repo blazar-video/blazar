@@ -132,3 +132,70 @@ fn nvenc_to_fmp4_produces_a_real_av1_container() {
 
     println!("SMOKE_MP4={}", path.display());
 }
+
+const ROW_W: u32 = 834;
+const ROW_H: u32 = 480;
+
+/// Every row is one constant colour. A stride mistake mixes adjacent rows, so
+/// decoding this and checking row uniformity catches the pitch bug directly.
+fn row_frame(index: u64) -> FrameRef {
+    let mut bytes = Vec::with_capacity(rgb_f32_len(ROW_W, ROW_H));
+    for row in 0..ROW_H {
+        let v = row as f32 / ROW_H as f32;
+        for _ in 0..ROW_W {
+            for _ in 0..3 {
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+    }
+    let desc = FrameDesc {
+        width: ROW_W,
+        height: ROW_H,
+        dtype: Dtype::F32,
+        range: ColorRange::Unit01,
+        layout: Layout::Thwc,
+        colorspace: ColorSpace::AssumedBt709,
+        fps: 24.0,
+        pts: Pts::from_frame_index(index, 24.0, Timebase::MPEG_90K),
+    };
+    FrameRef::new(FrameBuffer::host_owned(bytes), desc)
+}
+
+/// 834 is not a stride the driver allocates (it uses 896), so this is the case
+/// that breaks if NV12 rows are padded to the width instead of the lock pitch.
+#[test]
+fn unaligned_width_produces_an_av1_container() {
+    let path = std::env::temp_dir().join("blazar-nvenc-unaligned.mp4");
+    let _ = fs::remove_file(&path);
+
+    let sink = Fmp4FileSink::new(fs::File::create(&path).expect("create unaligned file"));
+    let mut enc = Encoder::new(
+        ModelIdentity::new("wan", "2.1", "bf16", "1.3b"),
+        Target::LowLatency,
+        Output {
+            codec: VideoCodec::Av1,
+            backend: VideoEncoderBackend::NvencAv1,
+            container: Container::FragmentedMp4,
+            video_extradata: None,
+            audio_extradata: None,
+        },
+        sink,
+        index(),
+    );
+    {
+        let mut stream = enc.open_stream("nvenc-unaligned");
+        for i in 0..2u64 {
+            stream
+                .submit_video(row_frame(i), None, None)
+                .expect("submit");
+        }
+        stream.close().expect("close");
+    }
+    drop(enc);
+
+    let bytes = fs::read(&path).expect("unaligned file exists");
+    assert_eq!(count_box(&bytes, b"av01"), 1);
+    assert!(count_box(&bytes, b"moof") >= 1);
+
+    println!("SMOKE_UNALIGNED_MP4={}", path.display());
+}

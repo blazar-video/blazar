@@ -6,8 +6,12 @@
 //! (`pitch`) that is not necessarily the frame width.
 //!
 //! `BufferLock::write` copies contiguously and ignores the pitch, so this is
-//! where the padding happens. The caller passes the pitch reported by the
-//! driver and gets a buffer whose size exactly matches `pitch`-strided NV12.
+//! where the padding happens. The caller passes the **allocation stride** from
+//! `BufferLock::pitch()` (not `Buffer::pitch()`, which is the frame width) and
+//! gets a buffer whose size exactly matches `pitch`-strided NV12.
+//!
+//! This matters at widths the driver does not align: at 834x480 NVENC allocates
+//! a stride of 896, and writing rows packed at 834 skews the image.
 
 use blazar_preprocess::PreprocessedFrame;
 use thiserror::Error;

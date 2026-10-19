@@ -340,12 +340,24 @@ fn run_loop(
             return;
         }
     };
-    let pitch = input.pitch();
+    // The driver's allocation stride is only visible while the buffer is
+    // locked, and it can exceed the frame width (measured: 834 -> 896 for
+    // NV12). It is what the driver actually reads rows at, so NV12 must be
+    // padded to it. `Buffer::pitch()` is not this value: this wrapper passes
+    // the frame width as `inputPitch`, and the driver uses its own stride for
+    // internally allocated buffers.
+    let pitch = match input.lock() {
+        Ok(lock) => lock.pitch(),
+        Err(e) => {
+            fail_pending(&rx, nvenc_error(e));
+            return;
+        }
+    };
     if pitch < params.width {
         fail_pending(
             &rx,
             EncodeError::Backend(format!(
-                "NVENC input pitch {pitch} is smaller than width {}",
+                "NVENC input stride {pitch} is smaller than width {}",
                 params.width
             )),
         );
