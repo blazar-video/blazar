@@ -250,6 +250,9 @@ fn worker_main(
             }
             Job::Close(ack) => {
                 let result = stream.close().map_err(|err| err.to_string());
+                // Closing drains the reorder window, so the last units may be
+                // written here rather than during a submit. They still count.
+                record_extra_bytes(&shared, &written);
                 let _ = ack.send(result);
                 finished = true;
                 break;
@@ -260,6 +263,7 @@ fn worker_main(
         // Sender dropped or the worker failed: finalize best effort so the file
         // is playable even if the caller never called close().
         let _ = stream.close();
+        record_extra_bytes(&shared, &written);
     }
     if let Ok(stats) = shared.stats.lock() {
         tracing::info!(
@@ -679,6 +683,20 @@ impl Drop for PyEncoder {
             jobs.take();
         }
         self.worker.take();
+    }
+}
+
+/// Fold units the sink accepted outside a submit (the close-time reorder drain)
+/// into the byte counter, so the reported bytes always equal the file's payload.
+fn record_extra_bytes(shared: &Shared, written: &Mutex<Vec<WrittenUnit>>) {
+    let extra: usize = written
+        .lock()
+        .map(|mut units| units.drain(..).map(|u| u.bytes).sum())
+        .unwrap_or(0);
+    if extra > 0 {
+        if let Ok(mut stats) = shared.stats.lock() {
+            stats.bytes += extra as u64;
+        }
     }
 }
 
