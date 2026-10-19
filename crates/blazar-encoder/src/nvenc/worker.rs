@@ -620,11 +620,13 @@ fn finish(
         ));
     }
 
-    for (slot, expected_pts) in pool.in_flight() {
+    for (slot, _) in pool.in_flight() {
         let lock = bitstreams[slot].lock().map_err(nvenc_error)?;
-        // Stale-data guard: only emit an output that reports the timestamp this
-        // slot was acquired with.
-        if lock.data().is_empty() || lock.timestamp() != expected_pts {
+        // After end_of_stream every in-flight buffer is complete. Do not compare
+        // the echoed timestamp with the slot's input PTS: under reordering the
+        // driver reports a different frame's PTS, and the old guard silently
+        // dropped the reorder window (two frames for H.264/HEVC with bframes=2).
+        if lock.data().is_empty() {
             drop(lock);
             pool.release(slot);
             continue;

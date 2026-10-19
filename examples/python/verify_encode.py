@@ -61,6 +61,7 @@ def main() -> int:
     parser.add_argument("video", type=Path)
     parser.add_argument("--log", type=Path, required=True, help="stderr captured from the run")
     parser.add_argument("--expect-backend", default="nvenc_av1")
+    parser.add_argument("--expect-codec", default="av1")
     args = parser.parse_args()
 
     if not args.video.is_file():
@@ -102,8 +103,10 @@ def main() -> int:
     failures = []
     if backend is None or backend.group(1) != args.expect_backend:
         failures.append(f"log backend is {backend.group(1) if backend else '?'}, expected {args.expect_backend}")
-    if stream["codec_name"] != "av1":
-        failures.append(f"container codec is {stream['codec_name']}, expected av1")
+    if stream["codec_name"] != args.expect_codec:
+        failures.append(
+            f"container codec is {stream['codec_name']}, expected {args.expect_codec}"
+        )
     if len(packet_sizes) != reported_frames:
         failures.append(f"container has {len(packet_sizes)} packets, worker reported {reported_frames} frames")
     if file_bytes != reported_bytes:
