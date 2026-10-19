@@ -1,0 +1,11 @@
+[package]
+name = "blazar-sink"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+blazar-core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

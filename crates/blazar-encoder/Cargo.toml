@@ -1,0 +1,20 @@
+[package]
+name = "blazar-encoder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+blazar-core.workspace = true
+blazar-calibration.workspace = true
+blazar-preprocess.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[features]
+default = []
+# Real SVT-AV1 backend via FFI. Off by default so the workspace builds and
+# tests run without libsvtav1 installed; the mock backend covers the pipeline
+# contract until the bindings land.
+svtav1 = []

@@ -1,0 +1,7 @@
+# Rust build artifacts
+/target
+/spikes/*/target
+**/*.rs.bk
+
+# the NVENC spike's lockfile is machine-specific (CUDA git dep); keep it out
+/spikes/*/Cargo.lock

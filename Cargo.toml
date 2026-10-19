@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/blazar-core",
+    "crates/blazar-calibration",
+    "crates/blazar-encoder",
+    "crates/blazar-sink",
+    "crates/blazar-preprocess",
+    "crates/blazar-runtime",
+]
+# NVENC spike: CUDA-only, builds on mosk (CUDA 13.1 / 4080), not on the Mac.
+# Kept out of the workspace so `cargo build` on dev machines ignores it.
+exclude = ["spikes/nvenc-av1"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.95"
+
+# Shared dependency versions. Pinned (see project rules: exact/pinned versions).
+[workspace.dependencies]
+thiserror = "=2.0.21"
+serde = { version = "=1.0.229", features = ["derive"] }
+toml = "=1.1.8"
+tracing = "=0.1.44"
+
+# Internal crates
+blazar-core = { path = "crates/blazar-core" }
+blazar-calibration = { path = "crates/blazar-calibration" }
+blazar-encoder = { path = "crates/blazar-encoder" }
+blazar-sink = { path = "crates/blazar-sink" }
+blazar-preprocess = { path = "crates/blazar-preprocess" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
