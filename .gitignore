@@ -1,7 +1,10 @@
-# Rust build artifacts
-/target
-/spikes/*/target
-**/*.rs.bk
+# Rust build artifacts (any crate, including bindings/python's own workspace)
+target/
+*.rs.bk
 
-# the NVENC spike's lockfile is machine-specific (CUDA git dep); keep it out
-/spikes/*/Cargo.lock
+# Python build artifacts and tooling
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.venv/
