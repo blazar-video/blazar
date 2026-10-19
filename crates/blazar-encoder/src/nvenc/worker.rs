@@ -1053,12 +1053,12 @@ fn encode_batch_rgb(
     for (bytes, _) in frames.iter().take(batched) {
         host.extend_from_slice(bytes);
     }
+    // Staging starts one frame deep. Grow it for larger batches rather than
+    // reserving 16 frames' worth of VRAM (132 MB at 1080p) up front.
     if host.len() > staging.len() {
-        return Err(EncodeError::Backend(format!(
-            "batch is {} bytes, staging is {}",
-            host.len(),
-            staging.len()
-        )));
+        *staging = stream
+            .alloc_zeros(host.len())
+            .map_err(|e| EncodeError::Backend(format!("grow batch staging: {e}")))?;
     }
     let ptrs: Vec<u64> = slots.iter().map(|slot| device[*slot].ptr).collect();
     stream
