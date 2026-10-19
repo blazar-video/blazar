@@ -150,7 +150,7 @@ impl Nv12Converter {
         let (ptr, guard) = dst.device_ptr(stream);
         drop(guard);
         let ptrs = stream
-            .memcpy_stod(&[ptr])
+            .clone_htod(&[ptr])
             .map_err(|e| EncodeError::Backend(format!("upload dst pointer: {e}")))?;
         self.convert_batch(stream, src, &ptrs, desc, 1, pitch)
     }

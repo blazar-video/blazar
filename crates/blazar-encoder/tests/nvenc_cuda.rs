@@ -10,7 +10,7 @@ use blazar_core::{ColorRange, ColorSpace, Dtype, FrameBuffer, FrameDesc, FrameRe
 use blazar_encoder::nvenc::cuda::Nv12Converter;
 use blazar_encoder::nvenc::nv12::to_nv12;
 use blazar_preprocess::{CpuPreprocess, PreprocessStage};
-use cudarc::driver::CudaContext;
+use cudarc::driver::{CudaContext, DevicePtr};
 
 fn frame_desc(w: u32, h: u32, layout: Layout, dtype: Dtype, range: ColorRange) -> FrameDesc {
     FrameDesc {
@@ -183,7 +183,7 @@ fn gpu_matches_cpu_for_a_batch_of_frames() {
             ptr
         })
         .collect();
-    let ptr_buf = stream.memcpy_stod(&ptrs).expect("upload dst pointers");
+    let ptr_buf = stream.clone_htod(&ptrs).expect("upload dst pointers");
 
     let converter = Nv12Converter::new(&ctx).expect("compile kernel");
     converter
