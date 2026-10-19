@@ -168,7 +168,7 @@ fn gpu_matches_cpu_for_a_batch_of_frames() {
     let ctx: Arc<CudaContext> = CudaContext::new(0).expect("cuda");
     let stream = ctx.default_stream();
     let src = stream.clone_htod(&bytes).expect("upload rgb");
-    let mut dsts: Vec<CudaSlice<u8>> = (0..n)
+    let dsts: Vec<CudaSlice<u8>> = (0..n)
         .map(|_| {
             stream
                 .alloc_zeros::<u8>((pitch * (h + chroma_rows)) as usize)
