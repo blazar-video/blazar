@@ -382,7 +382,7 @@ fn run_loop(
     //
     // `device` is declared before `inputs` so the registered resources (which
     // borrow the session) are dropped before the allocations they point at.
-    let mut device: Vec<PitchedInput> = match (0..POOL_CAPACITY)
+    let device: Vec<PitchedInput> = match (0..POOL_CAPACITY)
         .map(|_| PitchedInput::new(params.width, params.height))
         .collect()
     {
