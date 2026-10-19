@@ -6,7 +6,7 @@
 use blazar_calibration::{load_str, CalibrationIndex};
 use blazar_core::{
     ColorRange, ColorSpace, Container, Dtype, FrameBuffer, FrameDesc, FrameRef, Layout,
-    ModelIdentity, Pts, Target, Timebase, VideoCodec,
+    ModelIdentity, Pts, Target, Timebase, VideoCodec, VideoEncoderBackend,
 };
 use blazar_preprocess::rgb_f32_len;
 use blazar_runtime::{Boundary, Encoder, Output};
@@ -79,8 +79,11 @@ fn run(n: u32) -> Vec<u8> {
         ModelIdentity::new("wan", "2.1", "bf16", "1.3b"),
         Target::Balanced,
         Output {
-            codec: VideoCodec::SvtAv1,
+            codec: VideoCodec::Av1,
+            backend: VideoEncoderBackend::SvtAv1,
             container: Container::FragmentedMp4,
+            video_extradata: vec![0x81, 0x04, 0x0c, 0x00],
+            audio_extradata: None,
         },
         sink,
         index(),
@@ -147,8 +150,11 @@ fn scene_cut_boundary_forces_keyframe() {
         ModelIdentity::new("wan", "2.1", "bf16", "1.3b"),
         Target::Balanced,
         Output {
-            codec: VideoCodec::SvtAv1,
+            codec: VideoCodec::Av1,
+            backend: VideoEncoderBackend::SvtAv1,
             container: Container::FragmentedMp4,
+            video_extradata: vec![0x81, 0x04, 0x0c, 0x00],
+            audio_extradata: None,
         },
         sink,
         index(),

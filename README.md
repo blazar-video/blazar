@@ -12,7 +12,7 @@ live outside this repo for now.
 | `blazar-calibration` | TOML calibration: schema, validating loader (per-file safe failure), specificity index with source tie-break + logging. | calibration-format.md; §5.1 |
 | `blazar-preprocess` | Preprocess stage trait + CPU impl (RGB→YUV, range-normalize, 4:2:0 subsample, 8-bit quantize). Parameterized by `FrameDesc` (two ingest conventions). | §7 |
 | `blazar-encoder` | `VideoEncoder` trait + `MockVideoEncoder` (full contract, no real codec yet); calibration→`EncoderConfig` translation. Real SVT-AV1 behind the `svtav1` feature (not yet implemented). | §3.1, §6 |
-| `blazar-sink` | `Sink` trait + `Feedback` channel + `OrderGuard`; `DebugFileSink` (working, inspectable) and `Fmp4FileSink` (skeleton — the next real task). | §6 |
+| `blazar-sink` | `Sink` trait + `Feedback` channel + `OrderGuard`; `DebugFileSink` (working, inspectable) and `Fmp4FileSink` backed by the forked `oxideav-mp4` muxer (AV1/H.264/HEVC + Opus/AAC). | §6 |
 | `blazar-runtime` | Operator API (`Encoder::new` → `open_stream` → `submit_video`/`flush`/`close`) and the Phase-1 synchronous pipeline spine. | §3, §4, §9 |
 
 ## Phase 1 scope (what works today)
@@ -23,11 +23,12 @@ audio is additive (§3.1). End-to-end in `blazar-runtime/tests/pipeline.rs`.
 
 ## Known Phase-1 boundaries (honest stubs, not fakes)
 
-- `Fmp4FileSink` returns `NotImplemented` — the real fMP4 box muxer is the next task.
-  The `Sink` contract already carries everything a fragment needs.
+- `Fmp4FileSink` uses the pinned `oxideav-mp4` fork revision. It requires codec
+  configuration extradata and supports AV1/H.264/HEVC video plus Opus/AAC audio.
+  `Sink::flush()` emits an explicit fMP4 fragment; `close()` writes the final trailer.
 - `MockVideoEncoder` implements the encoder *contract* (keyframe cadence, ordering,
-  flush/finish) but does not compress. The real SVT-AV1 backend must satisfy the same
-  contract; it lands behind the `svtav1` feature.
+  flush/finish) but does not compress. The real encoder backends must satisfy the same
+  contract; NVENC is the next backend milestone.
 - Device (GPU/DLPack) ingest: the `FrameBuffer::Device` variant exists but the CPU
   preprocess rejects it. Device path is Phase 2 (and is where vLLM-Omni's zero-copy
   seam pays off, §7).

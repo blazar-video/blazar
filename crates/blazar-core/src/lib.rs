@@ -24,7 +24,8 @@ pub use frame::{
 };
 pub use identity::ModelIdentity;
 pub use stream_params::{
-    AudioCodec, AudioTrackParams, Container, StreamParams, VideoCodec, VideoTrackParams,
+    AudioCodec, AudioTrackParams, Container, StreamParams, VideoCodec, VideoEncoderBackend,
+    VideoTrackParams,
 };
 pub use target::Target;
 pub use timebase::{Pts, Timebase};

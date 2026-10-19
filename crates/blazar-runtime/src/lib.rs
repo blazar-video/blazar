@@ -23,7 +23,8 @@
 
 use blazar_calibration::{CalibrationIndex, Query};
 use blazar_core::{
-    FrameRef, ModelIdentity, StreamParams, Target, Timebase, VideoCodec, VideoTrackParams,
+    FrameRef, ModelIdentity, StreamParams, Target, Timebase, VideoCodec, VideoEncoderBackend,
+    VideoTrackParams,
 };
 use blazar_encoder::{EncoderConfig, MockVideoEncoder, VideoEncoder};
 use blazar_preprocess::{CpuPreprocess, PreprocessStage};
@@ -47,10 +48,17 @@ pub enum RuntimeError {
 }
 
 /// Output configuration for a deployment (architecture §3 `output`).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Output {
+    /// Wire/container codec.
     pub codec: VideoCodec,
+    /// Backend/calibration identity that produces the wire codec.
+    pub backend: VideoEncoderBackend,
     pub container: blazar_core::Container,
+    /// AV1 configuration record body for the selected video encoder.
+    pub video_extradata: Vec<u8>,
+    /// Reserved for the Phase-2 Opus path.
+    pub audio_extradata: Option<Vec<u8>>,
 }
 
 /// A hint the caller may attach to a submit (architecture §4). The only
@@ -99,10 +107,10 @@ impl<S: Sink> Encoder<S> {
     }
 
     fn codec_key(&self) -> &'static str {
-        match self.output.codec {
-            VideoCodec::SvtAv1 => "svtav1",
-            VideoCodec::NvencAv1 => "nvenc_av1",
-            VideoCodec::Rav1e => "rav1e",
+        match self.output.backend {
+            VideoEncoderBackend::SvtAv1 => "svtav1",
+            VideoEncoderBackend::NvencAv1 => "nvenc_av1",
+            VideoEncoderBackend::Rav1e => "rav1e",
         }
     }
 
@@ -173,6 +181,7 @@ impl<'a, S: Sink> Stream<'a, S> {
                 width: desc.width,
                 height: desc.height,
                 fps: desc.fps,
+                extradata: self.enc.output.video_extradata.clone(),
             },
             audio: None, // video-only in Phase 1
             container: self.enc.output.container,
@@ -226,6 +235,7 @@ impl<'a, S: Sink> Stream<'a, S> {
                 self.enc.sink.write(&u)?;
             }
         }
+        self.enc.sink.flush()?;
         Ok(())
     }
 

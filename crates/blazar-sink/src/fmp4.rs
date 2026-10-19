@@ -9,15 +9,19 @@
 //!   without a conformant demuxer. This is the calibration-harness output and
 //!   the integration-test target until the box muxer lands.
 //!
-//! * [`Fmp4FileSink`] — the real fragmented-MP4 muxer skeleton. It implements
-//!   the [`Sink`] contract shape but the box-writing is deliberately
-//!   unimplemented (returns [`SinkError::NotImplemented`]); the trait is
-//!   designed so dropping the real muxer in is additive. This is the next
-//!   concrete implementation task, called out rather than faked.
+//! * [`Fmp4FileSink`] — a real fragmented-MP4 file muxer backed by the
+//!   upstream `oxideav-mp4` implementation. It writes AV1, H.264, and HEVC
+//!   video plus Opus or AAC audio with explicit PTS/DTS/duration/keyframe
+//!   metadata and exposes explicit fragment boundaries through [`Sink::flush`].
 
-use std::io::Write;
+use std::io::{Seek, Write};
 
-use blazar_core::{EncodedUnit, StreamParams, TrackId};
+use blazar_core::{AudioCodec, Container, EncodedUnit, StreamParams, TrackId, VideoCodec};
+use oxideav_core::{
+    CodecId, CodecParameters, Muxer, Packet, StreamInfo, TimeBase as OxideTimeBase,
+};
+use oxideav_mp4::frag::{open_fragmented_typed, FragmentedMuxer};
+use oxideav_mp4::options::{FragmentCadence, FragmentedOptions, Mp4MuxerOptions};
 
 use crate::{OrderGuard, Sink, SinkError};
 
@@ -90,6 +94,12 @@ impl<W: Write> Sink for DebugFileSink<W> {
         Ok(())
     }
 
+    fn flush(&mut self) -> Result<(), SinkError> {
+        self.writer
+            .flush()
+            .map_err(|e| SinkError::Io(e.to_string()))
+    }
+
     fn close(&mut self) -> Result<(), SinkError> {
         self.writer
             .flush()
@@ -99,42 +109,177 @@ impl<W: Write> Sink for DebugFileSink<W> {
     }
 }
 
-/// Fragmented-MP4 muxer skeleton. The next real implementation task.
+/// Fragmented-MP4 file sink backed by `oxideav-mp4`.
 ///
-/// The box structure is well-defined (ftyp + moov with track descriptors, then
-/// moof+mdat fragments per segment, mfra/index at close). The [`Sink`] contract
-/// already carries everything a fragment needs (per-unit pts/dts/keyframe/
-/// duration + track_id + StreamParams at open), so wiring a box writer here is
-/// additive and does not touch the pipeline.
-pub struct Fmp4FileSink<W: Write> {
-    _writer: W,
-    _params: Option<StreamParams>,
+/// The sink owns the muxer after `open`; `flush` publishes an explicit
+/// `styp? + moof + mdat` fragment through the contribution in the forked
+/// oxideav revision, and `close` writes the final trailer/index.
+pub struct Fmp4FileSink<W: Write + Seek + Send + 'static> {
+    writer: Option<W>,
+    muxer: Option<FragmentedMuxer>,
+    params: Option<StreamParams>,
+    guard: OrderGuard,
+    closed: bool,
 }
 
-impl<W: Write> Fmp4FileSink<W> {
+impl<W: Write + Seek + Send + 'static> Fmp4FileSink<W> {
     pub fn new(writer: W) -> Self {
         Self {
-            _writer: writer,
-            _params: None,
+            writer: Some(writer),
+            muxer: None,
+            params: None,
+            guard: OrderGuard::default(),
+            closed: false,
         }
+    }
+
+    fn stream_infos(params: &StreamParams) -> Result<Vec<StreamInfo>, SinkError> {
+        if params.container != Container::FragmentedMp4 {
+            return Err(SinkError::InvalidConfiguration(
+                "Fmp4FileSink requires Container::FragmentedMp4".into(),
+            ));
+        }
+        if params.video.extradata.is_empty() {
+            return Err(SinkError::InvalidConfiguration(
+                "video codec configuration extradata is required".into(),
+            ));
+        }
+
+        let time_base = OxideTimeBase::new(1, params.timebase.ticks_per_second() as i64);
+        let video_codec = match params.video.codec {
+            VideoCodec::Av1 => "av1",
+            VideoCodec::H264 => "h264",
+            VideoCodec::Hevc => "h265",
+        };
+        let mut video = CodecParameters::video(CodecId::new(video_codec));
+        video.width = Some(params.video.width);
+        video.height = Some(params.video.height);
+        video.extradata = params.video.extradata.clone();
+
+        let mut streams = vec![StreamInfo {
+            index: 0,
+            time_base,
+            duration: None,
+            start_time: Some(0),
+            params: video,
+        }];
+
+        if let Some(audio) = &params.audio {
+            let audio_codec = match audio.codec {
+                AudioCodec::Opus => "opus",
+                AudioCodec::Aac => "aac",
+            };
+            let mut audio_params = CodecParameters::audio(CodecId::new(audio_codec));
+            audio_params.sample_rate = Some(audio.sample_rate);
+            audio_params.channels = Some(audio.channels as u16);
+            audio_params.extradata = audio.extradata.clone();
+            streams.push(StreamInfo {
+                index: 1,
+                time_base,
+                duration: None,
+                start_time: Some(0),
+                params: audio_params,
+            });
+        }
+
+        Ok(streams)
+    }
+
+    fn packet_for(&self, unit: &EncodedUnit) -> Result<Packet, SinkError> {
+        let params = self.params.as_ref().ok_or(SinkError::NotOpen)?;
+        let stream_index = match unit.track_id {
+            TrackId::Video => 0,
+            TrackId::Audio => {
+                if params.audio.is_none() {
+                    return Err(SinkError::InvalidConfiguration(
+                        "audio unit received on a video-only stream".into(),
+                    ));
+                }
+                1
+            }
+        };
+        let time_base = OxideTimeBase::new(1, params.timebase.ticks_per_second() as i64);
+        let pts = i64::try_from(unit.pts.ticks()).map_err(|_| {
+            SinkError::InvalidConfiguration("PTS exceeds oxideav i64 timestamp range".into())
+        })?;
+        let dts = i64::try_from(unit.dts.ticks()).map_err(|_| {
+            SinkError::InvalidConfiguration("DTS exceeds oxideav i64 timestamp range".into())
+        })?;
+        let duration = i64::try_from(unit.duration).map_err(|_| {
+            SinkError::InvalidConfiguration("duration exceeds oxideav i64 timestamp range".into())
+        })?;
+
+        let mut packet = Packet::new(stream_index, time_base, unit.bytes.clone());
+        packet.pts = Some(pts);
+        packet.dts = Some(dts);
+        packet.duration = Some(duration);
+        packet.flags.keyframe = unit.keyframe;
+        Ok(packet)
     }
 }
 
-impl<W: Write> Sink for Fmp4FileSink<W> {
+impl<W: Write + Seek + Send + 'static> Sink for Fmp4FileSink<W> {
     fn open(&mut self, params: StreamParams) -> Result<(), SinkError> {
-        self._params = Some(params);
-        // TODO(phase1-muxer): write ftyp + moov (track descriptors from params).
-        Err(SinkError::NotImplemented("fMP4 ftyp/moov box writing"))
+        if self.muxer.is_some() || self.closed {
+            return Err(SinkError::InvalidConfiguration(
+                "fMP4 sink can only be opened once".into(),
+            ));
+        }
+        let streams = Self::stream_infos(&params)?;
+        let writer = self.writer.take().ok_or(SinkError::NotOpen)?;
+        let mut muxer = open_fragmented_typed(
+            Box::new(writer),
+            &streams,
+            Mp4MuxerOptions::default(),
+            FragmentedOptions {
+                cadence: FragmentCadence::EverySeconds(2.0),
+                ..FragmentedOptions::default()
+            },
+        )
+        .map_err(|e| SinkError::Muxer(e.to_string()))?;
+        muxer
+            .write_header()
+            .map_err(|e| SinkError::Muxer(e.to_string()))?;
+        self.params = Some(params);
+        self.muxer = Some(muxer);
+        Ok(())
     }
 
-    fn write(&mut self, _unit: &EncodedUnit) -> Result<(), SinkError> {
-        // TODO(phase1-muxer): accumulate a fragment; emit moof+mdat per segment.
-        Err(SinkError::NotImplemented("fMP4 moof/mdat fragment writing"))
+    fn write(&mut self, unit: &EncodedUnit) -> Result<(), SinkError> {
+        if self.closed {
+            return Err(SinkError::Closed);
+        }
+        self.guard.check(unit)?;
+        let packet = self.packet_for(unit)?;
+        self.muxer
+            .as_mut()
+            .ok_or(SinkError::NotOpen)?
+            .write_packet(&packet)
+            .map_err(|e| SinkError::Muxer(e.to_string()))
+    }
+
+    fn flush(&mut self) -> Result<(), SinkError> {
+        if self.closed {
+            return Err(SinkError::Closed);
+        }
+        self.muxer
+            .as_mut()
+            .ok_or(SinkError::NotOpen)?
+            .flush_fragment()
+            .map_err(|e| SinkError::Muxer(e.to_string()))
     }
 
     fn close(&mut self) -> Result<(), SinkError> {
-        // TODO(phase1-muxer): flush last fragment + optional mfra index.
-        Err(SinkError::NotImplemented("fMP4 finalization"))
+        if self.closed {
+            return Ok(());
+        }
+        self.muxer
+            .as_mut()
+            .ok_or(SinkError::NotOpen)?
+            .write_trailer()
+            .map_err(|e| SinkError::Muxer(e.to_string()))?;
+        self.closed = true;
+        Ok(())
     }
 }
 
@@ -149,15 +294,17 @@ mod tests {
         StreamParams {
             timebase: Timebase::MPEG_90K,
             video: VideoTrackParams {
-                codec: VideoCodec::SvtAv1,
+                codec: VideoCodec::Av1,
                 width: 2,
                 height: 2,
                 fps: 24.0,
+                extradata: vec![0x81, 0x04, 0x0c, 0x00],
             },
             audio: Some(AudioTrackParams {
                 codec: AudioCodec::Opus,
                 sample_rate: 48_000,
                 channels: 2,
+                extradata: b"OpusHead\x01\x01\x80\xbb\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00".to_vec(),
             }),
             container: Container::FragmentedMp4,
         }
@@ -211,12 +358,17 @@ mod tests {
     }
 
     #[test]
-    fn fmp4_skeleton_reports_not_implemented() {
-        // Honest Phase-1 boundary: the real muxer is the next task.
-        let mut sink = Fmp4FileSink::new(Vec::new());
-        assert!(matches!(
-            sink.open(params()),
-            Err(SinkError::NotImplemented(_))
-        ));
+    fn fmp4_sink_opens_and_closes_with_video_and_opus_tracks() {
+        let mut sink = Fmp4FileSink::new(std::io::Cursor::new(Vec::new()));
+        sink.open(params()).unwrap();
+        sink.write(&EncodedUnit::video(
+            vec![0x12, 0x00, 0xaa],
+            Pts(0),
+            Pts(0),
+            true,
+            3750,
+        ))
+        .unwrap();
+        sink.close().unwrap();
     }
 }

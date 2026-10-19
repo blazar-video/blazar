@@ -9,3 +9,5 @@ rust-version.workspace = true
 blazar-core.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+oxideav-core.workspace = true
+oxideav-mp4.workspace = true

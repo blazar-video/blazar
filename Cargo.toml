@@ -24,6 +24,8 @@ thiserror = "=2.0.21"
 serde = { version = "=1.0.229", features = ["derive"] }
 toml = "=1.1.8"
 tracing = "=0.1.44"
+oxideav-core = "=0.1.40"
+oxideav-mp4 = { git = "https://github.com/jgh-/oxideav-mp4", rev = "1c042b8b58438cb36c7b1f9e14fe607aa1de8257" }
 
 # Internal crates
 blazar-core = { path = "crates/blazar-core" }

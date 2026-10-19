@@ -8,8 +8,8 @@
 //! a purely one-directional sink could not host WebRTC later.
 //!
 //! Build order (architecture §6): file sink → WebSocket fMP4 → str0m WebRTC.
-//! Phase 1 ships the trait and an ordering-checking file sink; the real fMP4
-//! box muxer is the next concrete step (see [`fmp4`]).
+//! The file sink is backed by the forked oxideav fMP4 implementation; the
+//! transport sinks are the next delivery layers.
 
 pub mod fmp4;
 
@@ -26,6 +26,12 @@ pub enum SinkError {
     Io(String),
     #[error("not implemented: {0}")]
     NotImplemented(&'static str),
+    #[error("invalid sink configuration: {0}")]
+    InvalidConfiguration(String),
+    #[error("muxer error: {0}")]
+    Muxer(String),
+    #[error("sink is closed")]
+    Closed,
 }
 
 /// Feedback from a transport sink back to the encoder's rate control.
@@ -44,6 +50,12 @@ pub trait Sink {
 
     /// Write one encoded unit. The muxer interleaves tracks by PTS.
     fn write(&mut self, unit: &EncodedUnit) -> Result<(), SinkError>;
+
+    /// Emit any pending segment/buffer boundary without finalizing the sink.
+    /// File sinks may flush a fragment; transport sinks may publish a segment.
+    fn flush(&mut self) -> Result<(), SinkError> {
+        Ok(())
+    }
 
     /// Finalize: file sinks write the index/moov; transports send EOS/drain.
     fn close(&mut self) -> Result<(), SinkError>;
