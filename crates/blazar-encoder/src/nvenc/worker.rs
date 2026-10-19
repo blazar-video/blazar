@@ -380,7 +380,7 @@ fn run_loop(
     // Input buffers live in device memory and are registered with NVENC, so the
     // GPU preprocess writes straight into what the encoder reads: no host→device
     // NV12 copy and no CPU pixel work on the caller's thread.
-    let pitch = params.width.div_ceil(256) * 256;
+    let pitch = params.width.div_ceil(4) * 4;
     let chroma_rows = params.height.div_ceil(2);
     let buffer_len = (pitch * (params.height + chroma_rows)) as usize;
     let mut device: Vec<CudaSlice<u8>> = match (0..POOL_CAPACITY)
