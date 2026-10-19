@@ -202,14 +202,14 @@ fn compile_cubin(src: &str, arch: &str) -> Result<Vec<u8>, EncodeError> {
         cudarc::nvrtc::result::compile_program(prog, &options)
             .map_err(|e| EncodeError::Backend(format!("compile NV12 kernel: {e:?}")))?;
         let mut size = 0usize;
-        cudarc::nvrtc::sys::nvrtcGetCUBINSize(prog, &mut size)
+        unsafe { cudarc::nvrtc::sys::nvrtcGetCUBINSize(prog, &mut size) }
             .result()
             .map_err(|e| EncodeError::Backend(format!("cubin size: {e:?}")))?;
         if size == 0 {
             return Err(EncodeError::Backend("NVRTC returned an empty cubin".into()));
         }
         let mut bytes = vec![0u8; size];
-        cudarc::nvrtc::sys::nvrtcGetCUBIN(prog, bytes.as_mut_ptr().cast())
+        unsafe { cudarc::nvrtc::sys::nvrtcGetCUBIN(prog, bytes.as_mut_ptr().cast()) }
             .result()
             .map_err(|e| EncodeError::Backend(format!("cubin fetch: {e:?}")))?;
         Ok(bytes)
