@@ -238,19 +238,25 @@ fn rgb_frame(index: u64) -> FrameRef {
 fn a_batch_matches_encoding_the_same_frames_one_at_a_time() {
     const N: u64 = 8;
 
+    // Consumer GPUs cap concurrent NVENC sessions, and the rest of this suite
+    // runs in parallel, so the two encoders are not held at the same time.
+    let single_units = {
+        let mut single = encoder(0);
+        let mut units = Vec::new();
+        for index in 0..N {
+            units.extend(
+                single
+                    .encode_frame(rgb_frame(index))
+                    .expect("single encode"),
+            );
+        }
+        units
+    };
     let frames: Vec<_> = (0..N).map(rgb_frame).collect();
-    let mut batched = encoder(0);
-    let batch_units = batched.encode_batch(frames).expect("batch encode");
-
-    let mut single = encoder(0);
-    let mut single_units = Vec::new();
-    for index in 0..N {
-        single_units.extend(
-            single
-                .encode_frame(rgb_frame(index))
-                .expect("single encode"),
-        );
-    }
+    let batch_units = {
+        let mut batched = encoder(0);
+        batched.encode_batch(frames).expect("batch encode")
+    };
 
     assert_eq!(
         batch_units.len(),
