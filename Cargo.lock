@@ -233,7 +233,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 [[package]]
 name = "nvidia-video-codec-sdk"
 version = "0.4.0"
-source = "git+https://github.com/jgh-/nvidia-video-codec-sdk?rev=ef7764dd817ccb70ada102f59d260e4b96dcb7d9#ef7764dd817ccb70ada102f59d260e4b96dcb7d9"
+source = "git+https://github.com/jgh-/nvidia-video-codec-sdk?rev=bf560c7578d4aeb764d51f634e261a38312d28c4#bf560c7578d4aeb764d51f634e261a38312d28c4"
 dependencies = [
  "cudarc",
  "lazy_static",
