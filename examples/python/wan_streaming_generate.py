@@ -11,10 +11,12 @@ LingBot-World 14B (~28 GB in bf16) and does not fit a 16 GB card. Wan2.1-1.3B
 does, and diffusers can hand back the pre-decode latents with
 `output_type="latent"`.
 
-Encoding is buffered by default: encode-while-decode is known to corrupt the
-NVENC bitstream on this setup (frame-header parse errors), while buffering the
-decoded frames and encoding them afterwards decodes cleanly. `--interleave`
-reproduces the failure.
+`--save-latents` / `--from-latents` cache the rollout so the decode+encode half
+can be iterated on in seconds without re-running the model.
+
+Encoding is buffered by default (decode everything, then encode). `--interleave`
+encodes while the VAE is still decoding; it used to corrupt the NVENC bitstream
+and is now covered by the encoder's one-unit-per-call drain fix.
 
 The scaling step is the one that has to be right: with `output_type="latent"`,
 diffusers returns the raw denoised latents, and the pipeline applies
@@ -87,9 +89,9 @@ def main() -> int:
     parser.add_argument("--target", default="balanced", choices=["low_latency", "balanced", "quality"])
     parser.add_argument("--calibrations", type=Path, default=repo_calibrations())
     parser.add_argument("--interleave", action="store_true",
-                        help="encode while decoding. KNOWN BROKEN on mosk: the output "
-                             "bitstream is corrupt (dav1d frame-header errors). Buffering "
-                             "the frames and encoding afterwards is clean.")
+                        help="encode while the VAE is still decoding")
+    parser.add_argument("--save-latents", type=Path, help="write raw latents here for fast reruns")
+    parser.add_argument("--from-latents", type=Path, help="skip generation, load raw latents")
     args = parser.parse_args()
 
     import torch
@@ -98,29 +100,37 @@ def main() -> int:
     decoder_cls = load_streaming_decoder(args.vllm_omni)
 
     # Phase 1: real rollout, latents only. CPU offload keeps T5+DiT inside 16 GB.
-    started = time.perf_counter()
-    pipe = WanPipeline.from_pretrained(args.model, torch_dtype=torch.bfloat16)
-    pipe.enable_model_cpu_offload()
-    output = pipe(
-        prompt=args.prompt,
-        negative_prompt=args.negative_prompt,
-        height=args.height,
-        width=args.width,
-        num_frames=args.num_frames,
-        num_inference_steps=args.num_inference_steps,
-        guidance_scale=args.guidance_scale,
-        output_type="latent",
-        generator=torch.Generator(device="cpu").manual_seed(args.seed),
-    )
-    latents = output.frames
-    generation_s = time.perf_counter() - started
-    peak = torch.cuda.max_memory_reserved() / (1024 ** 3)
-    print(f"generated : latents {tuple(latents.shape)} in {generation_s:.1f} s "
-          f"(peak {peak:.2f} GiB reserved)")
-
-    del pipe
-    gc.collect()
-    torch.cuda.empty_cache()
+    if args.from_latents is not None:
+        latents = torch.from_numpy(np.load(args.from_latents))
+        generation_s = 0.0
+        peak = 0.0
+        print(f"generated : loaded latents {tuple(latents.shape)} from {args.from_latents}")
+    else:
+        started = time.perf_counter()
+        pipe = WanPipeline.from_pretrained(args.model, torch_dtype=torch.bfloat16)
+        pipe.enable_model_cpu_offload()
+        output = pipe(
+            prompt=args.prompt,
+            negative_prompt=args.negative_prompt,
+            height=args.height,
+            width=args.width,
+            num_frames=args.num_frames,
+            num_inference_steps=args.num_inference_steps,
+            guidance_scale=args.guidance_scale,
+            output_type="latent",
+            generator=torch.Generator(device="cpu").manual_seed(args.seed),
+        )
+        latents = output.frames
+        generation_s = time.perf_counter() - started
+        peak = torch.cuda.max_memory_reserved() / (1024 ** 3)
+        print(f"generated : latents {tuple(latents.shape)} in {generation_s:.1f} s "
+              f"(peak {peak:.2f} GiB reserved)")
+        if args.save_latents is not None:
+            np.save(args.save_latents, latents.float().cpu().numpy())
+            print(f"saved     : latents -> {args.save_latents}")
+        del pipe
+        gc.collect()
+        torch.cuda.empty_cache()
 
     # Phase 2: the pipeline's own pre-decode scaling, then streaming decode.
     vae = (
