@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use crate::EncodeError;
 use blazar_core::{ColorRange, ColorSpace, Dtype, FrameDesc, Layout};
-use cudarc::driver::{
+use cudarc::driver::{DevicePtr, 
     CudaContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
 };
 
@@ -110,6 +110,22 @@ impl Nv12Converter {
         desc: &FrameDesc,
         pitch: u32,
     ) -> Result<(), EncodeError> {
+        let (ptr, guard) = dst.device_ptr(stream);
+        drop(guard);
+        self.convert_raw(stream, src, ptr, desc, pitch)
+    }
+
+    /// Convert into a raw device pointer, e.g. a `cuMemAllocPitch` allocation
+    /// that is registered with NVENC for zero-copy input.
+    #[allow(clippy::too_many_arguments)]
+    pub fn convert_raw(
+        &self,
+        stream: &Arc<CudaStream>,
+        src: &CudaSlice<u8>,
+        dst: u64,
+        desc: &FrameDesc,
+        pitch: u32,
+    ) -> Result<(), EncodeError> {
         if !matches!(desc.dtype, Dtype::F32 | Dtype::Bf16) {
             return Err(EncodeError::Backend(format!(
                 "GPU preprocess does not handle {:?}",
@@ -147,7 +163,7 @@ impl Nv12Converter {
         };
         let mut args = stream.launch_builder(&self.func);
         args.arg(src);
-        args.arg(dst);
+        args.arg(&dst);
         args.arg(&w);
         args.arg(&h);
         args.arg(&pitch);

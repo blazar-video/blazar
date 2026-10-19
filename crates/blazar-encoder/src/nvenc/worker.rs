@@ -23,7 +23,7 @@ use blazar_core::{
     BufferOwner, EncodedUnit, FrameBuffer, FrameDesc, FrameRef, Pts, Timebase, TrackId, VideoCodec,
 };
 use blazar_preprocess::PreprocessedFrame;
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
+use cudarc::driver::{sys, CudaContext, CudaSlice, CudaStream};
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
         GUID, NV_ENC_BUFFER_FORMAT, NV_ENC_CODEC_AV1_GUID, NV_ENC_CODEC_H264_GUID,
@@ -31,8 +31,8 @@ use nvidia_video_codec_sdk::{
         NV_ENC_PIC_FLAGS, NV_ENC_PIC_TYPE, NV_ENC_PRESET_P4_GUID, NV_ENC_QP, NV_ENC_TUNING_INFO,
         NV_ENC_VUI_COLOR_PRIMARIES, NV_ENC_VUI_MATRIX_COEFFS, NV_ENC_VUI_TRANSFER_CHARACTERISTIC,
     },
-    Bitstream, Buffer, EncodePictureParams, Encoder, EncoderInitParams, EncoderInput, ErrorKind,
-    Session,
+    Bitstream, EncodePictureParams, Encoder, EncoderInitParams, EncoderInput, ErrorKind,
+    RegisteredResource, Session,
 };
 
 use super::config::{NvencParams, NvencRateControl};
@@ -375,32 +375,24 @@ fn run_loop(
     };
     let stream = ctx.default_stream();
 
-    // Device scratch for the GPU kernel. NVENC's CUDA device-pointer
-    // registration returns ResourceRegisterFailed on this WSL driver, so the
-    // converted NV12 is copied back and written into a normal input buffer. The
-    // pixel work is still on the GPU; only the NV12 transfer is not zero-copy.
-    let mut inputs: Vec<Buffer<'_>> = match (0..POOL_CAPACITY)
-        .map(|_| session.create_input_buffer())
+    // Zero-copy input. NVENC only accepts a device pointer from a real
+    // 2D-pitch allocation: `cuMemAlloc` returns ResourceRegisterFailed even
+    // with the documented pitch == width, while `cuMemAllocPitch` plus the
+    // pitch it returns registers. Verified on Windows and WSL.
+    //
+    // `device` is declared before `inputs` so the registered resources (which
+    // borrow the session) are dropped before the allocations they point at.
+    let mut device: Vec<PitchedInput> = match (0..POOL_CAPACITY)
+        .map(|_| PitchedInput::new(params.width, params.height))
         .collect()
     {
         Ok(buffers) => buffers,
         Err(e) => {
-            fail_pending(
-                &rx,
-                EncodeError::Backend(format!("NVENC input buffer: {e:?}")),
-            );
+            fail_pending(&rx, e);
             return;
         }
     };
-    // The driver's stride is visible only on a locked buffer and can exceed the
-    // width (834 -> 896 measured). Pad to it, not to the frame width.
-    let pitch = match inputs[0].lock() {
-        Ok(lock) => lock.pitch(),
-        Err(e) => {
-            fail_pending(&rx, nvenc_error(e));
-            return;
-        }
-    };
+    let pitch = device[0].pitch;
     if pitch < params.width {
         fail_pending(
             &rx,
@@ -411,17 +403,22 @@ fn run_loop(
         );
         return;
     }
-    let chroma_rows = params.height.div_ceil(2);
-    let buffer_len = (pitch * (params.height + chroma_rows)) as usize;
-    let mut device: Vec<CudaSlice<u8>> = match (0..POOL_CAPACITY)
-        .map(|_| stream.alloc_zeros::<u8>(buffer_len))
+    let mut inputs: Vec<RegisteredResource<'_, ()>> = match (0..POOL_CAPACITY)
+        .map(|i| {
+            session.register_generic_resource(
+                (),
+                NV_ENC_INPUT_RESOURCE_TYPE::NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR,
+                device[i].ptr as *mut std::ffi::c_void,
+                pitch,
+            )
+        })
         .collect()
     {
-        Ok(buffers) => buffers,
+        Ok(resources) => resources,
         Err(e) => {
             fail_pending(
                 &rx,
-                EncodeError::Backend(format!("allocate NV12 scratch: {e}")),
+                EncodeError::Backend(format!("register CUDA input: {e:?}")),
             );
             return;
         }
@@ -547,8 +544,8 @@ enum Source {
 fn encode_one(
     session: &Session,
     stream: &Arc<CudaStream>,
-    device: &mut [CudaSlice<u8>],
-    inputs: &mut [Buffer<'_>],
+    device: &[PitchedInput],
+    inputs: &mut [RegisteredResource<'_, ()>],
     bitstreams: &mut [Bitstream<'_>],
     staging: &mut CudaSlice<u8>,
     converter: &Nv12Converter,
@@ -587,9 +584,21 @@ fn encode_one(
         }
     };
 
-    let nv12 = match source {
+    match source {
         Source::Planar(frame) => {
-            to_nv12(frame, pitch).map_err(|e| EncodeError::Backend(e.to_string()))?
+            let nv12 = to_nv12(frame, pitch).map_err(|e| EncodeError::Backend(e.to_string()))?;
+            // SAFETY: `device[slot]` is a live pitched allocation of at least
+            // `nv12.len()` bytes and the destination is not aliased.
+            unsafe {
+                sys::cuMemcpyHtoDAsync_v2(
+                    device[slot].ptr,
+                    nv12.as_ptr().cast(),
+                    nv12.len(),
+                    stream.cu_stream(),
+                )
+            }
+            .result()
+            .map_err(|e| EncodeError::Backend(format!("upload NV12: {e:?}")))?;
         }
         Source::Rgb { bytes, desc } => {
             if bytes.len() > staging.len() {
@@ -602,15 +611,14 @@ fn encode_one(
             stream
                 .memcpy_htod(bytes.as_slice(), staging)
                 .map_err(|e| EncodeError::Backend(format!("upload RGB: {e}")))?;
-            converter.convert(stream, staging, &mut device[slot], desc, pitch)?;
-            stream
-                .clone_dtoh(&device[slot])
-                .map_err(|e| EncodeError::Backend(format!("download NV12: {e}")))?
+            converter.convert_raw(stream, staging, device[slot].ptr, desc, pitch)?;
         }
-    };
-    unsafe {
-        inputs[slot].lock().map_err(nvenc_error)?.write(&nv12);
     }
+    // NVENC reads the registered resource from the same CUDA context but is not
+    // ordered against our stream; publish the writes first.
+    stream
+        .synchronize()
+        .map_err(|e| EncodeError::Backend(format!("sync before encode: {e}")))?;
 
     let flags = if force_keyframe {
         NV_ENC_PIC_FLAGS::NV_ENC_PIC_FLAG_FORCEIDR as u32
@@ -808,4 +816,39 @@ fn unit_from_bitstream(
 
 fn nvenc_error(e: nvidia_video_codec_sdk::EncodeError) -> EncodeError {
     EncodeError::Backend(format!("NVENC: {e:?}"))
+}
+
+/// A device buffer allocated with `cuMemAllocPitch`, the allocation kind NVENC
+/// accepts for `NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR`.
+struct PitchedInput {
+    ptr: u64,
+    pitch: u32,
+}
+
+impl PitchedInput {
+    /// `cuMemAllocPitch` the luma plane plus chroma rows, so the buffer holds a
+    /// full NV12 frame at the driver's stride.
+    fn new(width: u32, height: u32) -> Result<Self, EncodeError> {
+        let rows = height + height.div_ceil(2);
+        let mut ptr = 0u64;
+        let mut pitch = 0usize;
+        // SAFETY: out-pointers are valid; the current context is the worker's.
+        let status = unsafe { sys::cuMemAllocPitch_v2(&mut ptr, &mut pitch, width as usize, rows as usize, 4) };
+        if status != sys::CUresult::CUDA_SUCCESS {
+            return Err(EncodeError::Backend(format!(
+                "cuMemAllocPitch {width}x{rows}: {status:?}"
+            )));
+        }
+        Ok(Self {
+            ptr,
+            pitch: pitch as u32,
+        })
+    }
+}
+
+impl Drop for PitchedInput {
+    fn drop(&mut self) {
+        // SAFETY: the pointer came from cuMemAllocPitch and is freed once.
+        unsafe { sys::cuMemFree_v2(self.ptr) };
+    }
 }
