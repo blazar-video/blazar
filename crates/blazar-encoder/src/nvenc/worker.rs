@@ -507,7 +507,7 @@ fn run_loop(
         let result = encode_one(
             session,
             &stream,
-            &mut device,
+            &device,
             &mut inputs,
             &mut bitstreams,
             &mut staging,
@@ -535,6 +535,8 @@ fn run_loop(
 enum Source {
     Planar(PreprocessedFrame),
     Rgb {
+        // Boxed so the enum stays small; the payload is moved, never cloned.
+        #[allow(clippy::box_collection)]
         bytes: Box<Vec<u8>>,
         desc: FrameDesc,
     },
