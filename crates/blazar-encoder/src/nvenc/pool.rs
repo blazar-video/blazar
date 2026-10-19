@@ -15,6 +15,10 @@ use std::collections::VecDeque;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SlotState {
     Free,
+    /// Claimed for a slot whose frame has not been submitted to the encoder
+    /// yet. A batched conversion reserves every destination before the kernel
+    /// runs, but only submission order matters for draining.
+    Reserved,
     InFlight { expected_pts: u64 },
 }
 
@@ -45,13 +49,40 @@ impl SlotPool {
     /// Returns `None` when every slot is in flight, which means the caller must
     /// drain before submitting more.
     pub fn acquire(&mut self, expected_pts: u64) -> Option<usize> {
+        let slot = self.reserve()?;
+        self.submit(slot, expected_pts);
+        Some(slot)
+    }
+
+    /// Claim a free slot without submitting anything.
+    ///
+    /// A batch reserves all of its destinations before the kernel launch, but
+    /// `drain_ready` must not touch them until the frames are actually handed
+    /// to the encoder.
+    pub fn reserve(&mut self) -> Option<usize> {
         let slot = self
             .slots
             .iter()
             .position(|state| *state == SlotState::Free)?;
-        self.slots[slot] = SlotState::InFlight { expected_pts };
-        self.order.push_back(slot);
+        self.slots[slot] = SlotState::Reserved;
         Some(slot)
+    }
+
+    /// Move a reserved slot into the submission order.
+    pub fn submit(&mut self, slot: usize, expected_pts: u64) {
+        if let Some(state) = self.slots.get_mut(slot) {
+            *state = SlotState::InFlight { expected_pts };
+            self.order.push_back(slot);
+        }
+    }
+
+    /// Give a reserved slot back without submitting it.
+    pub fn unreserve(&mut self, slot: usize) {
+        if let Some(state) = self.slots.get_mut(slot) {
+            if *state == SlotState::Reserved {
+                *state = SlotState::Free;
+            }
+        }
     }
 
     /// Mark a slot as delivered. Safe to call on a free slot (no-op).

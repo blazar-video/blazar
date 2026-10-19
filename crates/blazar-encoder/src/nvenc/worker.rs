@@ -1005,7 +1005,7 @@ fn encode_batch_rgb(
     let mut slots = Vec::with_capacity(wanted);
     for (bytes, desc) in frames.iter().take(wanted) {
         let _ = bytes;
-        match pool.acquire(desc.pts.ticks()) {
+        match pool.reserve() {
             Some(slot) => slots.push(slot),
             None => break,
         }
@@ -1079,6 +1079,7 @@ fn encode_batch_rgb(
         } else {
             0
         };
+        pool.submit(*slot, desc.pts.ticks());
         match encode_with_retry(
             session,
             &mut inputs[*slot],
