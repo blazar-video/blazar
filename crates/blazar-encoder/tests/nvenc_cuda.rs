@@ -76,6 +76,12 @@ fn check(w: u32, h: u32, layout: Layout, dtype: Dtype, range: ColorRange) {
     stream.synchronize().expect("sync");
 
     assert_eq!(gpu.len(), cpu.len(), "NV12 buffer size");
+    let nonzero = gpu.iter().filter(|b| **b != 0).count();
+    eprintln!(
+        "diag {layout:?}/{dtype:?}/{range:?} {w}x{h}: gpu_nonzero={nonzero} gpu[0..8]={:?} cpu[0..8]={:?}",
+        &gpu[..8],
+        &cpu[..8]
+    );
     let worst = gpu
         .iter()
         .zip(&cpu)
