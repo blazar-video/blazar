@@ -10,9 +10,14 @@
 //! 4. A terminal default (full-wildcard) for each (codec, target) always
 //!    resolves, so lookup never fails.
 
-use blazar_core::{ModelIdentity, Target};
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 
-use crate::loader::Calibration;
+use blazar_core::{ModelIdentity, Target};
+use thiserror::Error;
+
+use crate::loader::{load_str, Calibration, LoadError};
 
 /// A concrete lookup query built from the running stream.
 #[derive(Debug, Clone)]
@@ -40,10 +45,31 @@ impl Query {
     }
 }
 
+/// Why a directory of calibrations could not be loaded as a whole.
+#[derive(Debug, Error)]
+pub enum LoadDirError {
+    #[error("calibrations directory I/O error at {path}: {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("no *.toml calibrations found in {path}")]
+    Empty { path: PathBuf },
+
+    #[error("invalid calibration file {path}: {source}")]
+    InvalidFile {
+        path: PathBuf,
+        #[source]
+        source: LoadError,
+    },
+}
+
 /// An in-memory index of loaded calibrations for one (codec, target) space.
 /// The runtime typically holds one index per active (codec, target) deployment,
 /// but the index itself filters on codec+target so a shared index also works.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct CalibrationIndex {
     entries: Vec<Calibration>,
 }
@@ -57,6 +83,60 @@ impl CalibrationIndex {
 
     pub fn insert(&mut self, c: Calibration) {
         self.entries.push(c);
+    }
+
+    /// Load every `*.toml` file in `dir` into a new index.
+    ///
+    /// Strict on purpose: a malformed or invalid calibration fails the whole
+    /// load and names the file. Embedders run this once at startup, where a typo
+    /// should be loud rather than silently degrade a stream to the default. The
+    /// runtime's own per-file "log and skip" policy (calibration-format §4.1) is
+    /// a separate policy; a caller that wants it can load files individually.
+    ///
+    /// Files are read in sorted path order so the index is deterministic.
+    /// Duplicate keys are allowed: resolution ranks by specificity, then source,
+    /// and logs equal-specificity ties.
+    pub fn load_dir(dir: impl AsRef<Path>) -> Result<Self, LoadDirError> {
+        let dir = dir.as_ref();
+        let read_dir = fs::read_dir(dir).map_err(|source| LoadDirError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for entry in read_dir {
+            let entry = entry.map_err(|source| LoadDirError::Io {
+                path: dir.to_path_buf(),
+                source,
+            })?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
+                paths.push(path);
+            }
+        }
+        paths.sort();
+
+        if paths.is_empty() {
+            return Err(LoadDirError::Empty {
+                path: dir.to_path_buf(),
+            });
+        }
+
+        let mut index = Self::new();
+        for path in paths {
+            let text = fs::read_to_string(&path).map_err(|source| LoadDirError::Io {
+                path: path.clone(),
+                source,
+            })?;
+            let calibration = load_str(&text, path.display().to_string()).map_err(|source| {
+                LoadDirError::InvalidFile {
+                    path: path.clone(),
+                    source,
+                }
+            })?;
+            index.insert(calibration);
+        }
+        Ok(index)
     }
 
     pub fn len(&self) -> usize {
@@ -88,11 +168,7 @@ impl CalibrationIndex {
     /// runtime state.
     pub fn resolve(&self, q: &Query) -> Option<&Calibration> {
         let eligible = self.eligible(q);
-        if eligible.is_empty() {
-            return None;
-        }
-
-        let max_spec = eligible.iter().map(|c| c.key.specificity()).max().unwrap();
+        let max_spec = eligible.iter().map(|c| c.key.specificity()).max()?;
         let mut top: Vec<&Calibration> = eligible
             .into_iter()
             .filter(|c| c.key.specificity() == max_spec)
@@ -104,7 +180,7 @@ impl CalibrationIndex {
 
         // Tie at equal specificity → source breaks it, and we LOG it.
         top.sort_by_key(|c| std::cmp::Reverse(c.source.rank()));
-        let winner = top[0];
+        let winner = *top.first()?;
         self.log_conflict(q, &top, winner);
         Some(winner)
     }

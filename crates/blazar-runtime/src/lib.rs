@@ -7,6 +7,7 @@
 //!     .submit_video(FrameRef, scene, boundary)
 //!     .flush()
 //!     .close()
+//!     .into_sink()                                       // recover the sink
 //! ```
 //!
 //! Phase 1 is synchronous and video-only: each `submit_video` runs
@@ -51,6 +52,8 @@ pub enum RuntimeError {
     MissingCodecConfig,
     #[error("stream already closed")]
     Closed,
+    #[error("internal: encoder is not initialized (stream state machine violated)")]
+    EncoderNotInitialized,
 }
 
 /// Output configuration for a deployment (architecture §3 `output`).
@@ -111,12 +114,6 @@ impl<S: Sink> Encoder<S> {
         }
     }
 
-    /// Consume the encoder and return its sink. Intended for tests/harnesses
-    /// that need to inspect sink output after `close()`.
-    pub fn into_sink_for_test(self) -> S {
-        self.sink
-    }
-
     fn codec_key(&self) -> &'static str {
         match self.output.backend {
             VideoEncoderBackend::SvtAv1 => "svtav1",
@@ -125,12 +122,18 @@ impl<S: Sink> Encoder<S> {
         }
     }
 
-    /// Bind the runtime-owned request id once and return a per-generation
+    /// Bind the runtime-owned request id once and return the per-generation
     /// handle (architecture §3). Blazar does not mint the id — the runtime owns
     /// it. The sink is opened lazily on the first submit, once frame dimensions
     /// and fps are known from the `FrameDesc` (the runtime does not expose them
     /// up front; architecture §8/§10).
-    pub fn open_stream(&mut self, request_id: impl Into<String>) -> Stream<'_, S> {
+    ///
+    /// This consumes the encoder and the stream owns it: the encoder's only
+    /// stateful purpose is to serve one stream, and ownership is what lets the
+    /// Python binding (or any embedder) hold the stream without a self-borrow.
+    /// Per-request setup that must be shared (calibrations) belongs to the
+    /// caller; `CalibrationIndex` is `Clone`.
+    pub fn open_stream(self, request_id: impl Into<String>) -> Stream<S> {
         Stream {
             enc: self,
             request_id: request_id.into(),
@@ -143,9 +146,10 @@ impl<S: Sink> Encoder<S> {
     }
 }
 
-/// Per-generation handle. Holds the one stateful video encoder for this stream.
-pub struct Stream<'a, S: Sink> {
-    enc: &'a mut Encoder<S>,
+/// Per-generation handle. Owns the encoder and holds the one stateful video
+/// encoder for this stream.
+pub struct Stream<S: Sink> {
+    enc: Encoder<S>,
     request_id: String,
     encoder: Option<Box<dyn VideoEncoder>>,
     seq: u64,
@@ -157,9 +161,15 @@ pub struct Stream<'a, S: Sink> {
     closed: bool,
 }
 
-impl<'a, S: Sink> Stream<'a, S> {
+impl<S: Sink> Stream<S> {
     pub fn request_id(&self) -> &str {
         &self.request_id
+    }
+
+    /// Consume the stream and return its sink, for harnesses that inspect the
+    /// output after `close()`.
+    pub fn into_sink(self) -> S {
+        self.enc.sink
     }
 
     /// Build the encoder from the first frame's descriptor. The sink is *not*
@@ -263,8 +273,18 @@ impl<'a, S: Sink> Stream<'a, S> {
             }
         }
 
-        let pre = self.enc.preprocess.process(&frame)?;
-        let units = self.encoder.as_mut().unwrap().encode(&pre)?;
+        let units = {
+            // A missing encoder here means the state machine was violated
+            // ("open" without a built encoder). This must be an error, not a
+            // panic: the runtime is embedded behind the Python FFI, where a
+            // panic takes the interpreter with it.
+            let encoder = self
+                .encoder
+                .as_mut()
+                .ok_or(RuntimeError::EncoderNotInitialized)?;
+            let pre = self.enc.preprocess.process(&frame)?;
+            encoder.encode(&pre)?
+        };
         // The first encode is what makes a codec configuration available, so
         // the sink opens here rather than before the encode.
         self.ensure_sink(&frame.desc)?;
@@ -348,5 +368,60 @@ fn build_encoder(
                 Err(RuntimeError::BackendUnavailable("nvenc"))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blazar_core::{
+        ColorRange, ColorSpace, Container, Dtype, FrameBuffer, FrameDesc, Layout, Pts,
+    };
+    use blazar_sink::fmp4::DebugFileSink;
+
+    #[test]
+    fn submit_without_an_encoder_errors_instead_of_panicking() {
+        let enc = Encoder::new(
+            ModelIdentity {
+                family: "wan".into(),
+                version: "2.1".into(),
+                quant: "bf16".into(),
+                size: "1.3b".into(),
+            },
+            Target::Balanced,
+            Output {
+                codec: VideoCodec::Av1,
+                backend: VideoEncoderBackend::SvtAv1,
+                container: Container::FragmentedMp4,
+                video_extradata: None,
+                audio_extradata: None,
+            },
+            DebugFileSink::new(Vec::new()),
+            CalibrationIndex::new(),
+        );
+        let mut stream = enc.open_stream("req-state-machine");
+
+        // Simulate the violation: the flag claims an encoder exists, but it does
+        // not. Python callers can drive this surface, so it must error cleanly.
+        stream.encoder_open = true;
+
+        let frame = FrameRef::new(
+            FrameBuffer::host_owned(vec![0u8; 2 * 2 * 3 * 4]),
+            FrameDesc {
+                width: 2,
+                height: 2,
+                dtype: Dtype::F32,
+                range: ColorRange::Unit01,
+                layout: Layout::Thwc,
+                colorspace: ColorSpace::AssumedBt709,
+                fps: 24.0,
+                pts: Pts(0),
+            },
+        );
+
+        let err = stream
+            .submit_video(frame, None, None)
+            .expect_err("must not panic");
+        assert!(matches!(err, RuntimeError::EncoderNotInitialized));
     }
 }

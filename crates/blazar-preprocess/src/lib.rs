@@ -112,9 +112,14 @@ impl PreprocessStage for CpuPreprocess {
         if frame.buffer.is_device() {
             return Err(PreprocessError::DeviceNotSupported);
         }
-        if desc.dtype != Dtype::F32 {
-            return Err(PreprocessError::UnsupportedDtype(desc.dtype));
-        }
+        // Phase 1 handles host f32 (both seams' numpy) and bf16 (vLLM-Omni's
+        // native VAE dtype). f16 is uncommon at these seams; reject it loudly
+        // rather than guess. The decode is exact: bf16 is the top half of f32.
+        let component_bytes = match desc.dtype {
+            Dtype::F32 => 4,
+            Dtype::Bf16 => 2,
+            other => return Err(PreprocessError::UnsupportedDtype(other)),
+        };
 
         let bytes = frame
             .buffer
@@ -124,7 +129,7 @@ impl PreprocessStage for CpuPreprocess {
         let w = desc.width as usize;
         let h = desc.height as usize;
         let pixels = w * h;
-        let expected = pixels * 3 * core::mem::size_of::<f32>();
+        let expected = pixels * 3 * component_bytes;
         if bytes.len() != expected {
             return Err(PreprocessError::SizeMismatch {
                 got: bytes.len(),
@@ -134,31 +139,37 @@ impl PreprocessStage for CpuPreprocess {
             });
         }
 
-        // Interpret the bytes as f32 RGB. Phase 1 assumes a single frame with
-        // the channel order implied by `layout`: THWC packs each pixel as
-        // [r,g,b]; BCTHW is channel-planar. Only THWC (xDiT) is exercised in
-        // Phase 1, but both are decoded so the vLLM-Omni host-fallback works.
+        // Interpret the bytes as RGB components of `desc.dtype`. Phase 1 assumes
+        // a single frame with the channel order implied by `layout`: THWC packs
+        // each pixel as [r,g,b]; BCTHW is channel-planar. Only THWC (xDiT) is
+        // exercised in Phase 1, but both are decoded so the vLLM-Omni
+        // host-fallback works.
+        //
+        // `component` is an index into the component array, not a byte offset,
+        // so the same closure serves both dtypes.
+        let read = |component: usize| -> f32 {
+            let off = component * component_bytes;
+            match desc.dtype {
+                Dtype::F32 => {
+                    f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+                }
+                Dtype::Bf16 => {
+                    let bits = u16::from_le_bytes([bytes[off], bytes[off + 1]]);
+                    // Truncation, not rounding: the payload has no low bits.
+                    f32::from_bits((bits as u32) << 16)
+                }
+                Dtype::F16 | Dtype::U8 => unreachable!("dtype checked above"),
+            }
+        };
         let read_rgb = |px: usize| -> (f32, f32, f32) {
-            let f = |byte_off: usize| {
-                let b = [
-                    bytes[byte_off],
-                    bytes[byte_off + 1],
-                    bytes[byte_off + 2],
-                    bytes[byte_off + 3],
-                ];
-                f32::from_le_bytes(b)
-            };
             match desc.layout {
                 Layout::Thwc => {
-                    let base = px * 3 * 4;
-                    (f(base), f(base + 4), f(base + 8))
+                    let base = px * 3;
+                    (read(base), read(base + 1), read(base + 2))
                 }
                 Layout::Bcthw => {
                     // planar: R plane, then G, then B.
-                    let r = f(px * 4);
-                    let g = f((pixels + px) * 4);
-                    let b = f((2 * pixels + px) * 4);
-                    (r, g, b)
+                    (read(px), read(pixels + px), read(2 * pixels + px))
                 }
             }
         };
@@ -333,5 +344,119 @@ mod tests {
         // Note: host_bytes reads the owned Vec (len 8), expected is 4*4*3*4=192.
         let err = CpuPreprocess::new().process(&fr).unwrap_err();
         assert!(matches!(err, PreprocessError::SizeMismatch { .. }));
+    }
+
+    // --- bf16 (vLLM-Omni VAE dtype) -----------------------------------------
+
+    /// bf16 is the top 16 bits of f32. Encoding by truncation (not rounding)
+    /// gives an exact reference: the same value widened back to f32.
+    fn to_bf16_bits(v: f32) -> u16 {
+        (v.to_bits() >> 16) as u16
+    }
+
+    fn as_truncated_f32(v: f32) -> f32 {
+        f32::from_bits((to_bf16_bits(v) as u32) << 16)
+    }
+
+    fn thwc_solid_bf16(w: u32, h: u32, r: f32, g: f32, b: f32) -> Vec<u8> {
+        let mut v = Vec::with_capacity((w * h * 3 * 2) as usize);
+        for _ in 0..(w * h) {
+            for c in [r, g, b] {
+                v.extend_from_slice(&to_bf16_bits(c).to_le_bytes());
+            }
+        }
+        v
+    }
+
+    fn desc_bf16(w: u32, h: u32, range: ColorRange, layout: Layout) -> FrameDesc {
+        FrameDesc {
+            dtype: Dtype::Bf16,
+            ..desc(w, h, range, layout)
+        }
+    }
+
+    #[test]
+    fn bf16_matches_the_same_values_as_f32() {
+        let (w, h) = (4, 4);
+        let (r, g, b) = (0.25f32, 0.5f32, 0.75f32);
+
+        let f32_frame = FrameRef::new(
+            FrameBuffer::host_owned(thwc_solid(w, h, r, g, b)),
+            desc(w, h, ColorRange::Unit01, Layout::Thwc),
+        );
+        let bf16_frame = FrameRef::new(
+            FrameBuffer::host_owned(thwc_solid_bf16(w, h, r, g, b)),
+            desc_bf16(w, h, ColorRange::Unit01, Layout::Thwc),
+        );
+
+        let from_f32 = CpuPreprocess::new()
+            .process(&FrameRef::new(
+                FrameBuffer::host_owned(thwc_solid(
+                    w,
+                    h,
+                    as_truncated_f32(r),
+                    as_truncated_f32(g),
+                    as_truncated_f32(b),
+                )),
+                desc(w, h, ColorRange::Unit01, Layout::Thwc),
+            ))
+            .unwrap();
+        let from_bf16 = CpuPreprocess::new().process(&bf16_frame).unwrap();
+        let direct_f32 = CpuPreprocess::new().process(&f32_frame).unwrap();
+
+        assert_eq!(
+            from_bf16.y, from_f32.y,
+            "luma must match the truncated f32 reference"
+        );
+        assert_eq!(from_bf16.u, from_f32.u);
+        assert_eq!(from_bf16.v, from_f32.v);
+        // Sanity: truncation is lossy, so the reference differs from full f32 by
+        // at most one luma level for these values.
+        assert!(from_bf16
+            .y
+            .iter()
+            .zip(&direct_f32.y)
+            .all(|(a, b)| (*a as i32 - *b as i32).abs() <= 1));
+    }
+
+    #[test]
+    fn bf16_signed_unit_range_is_normalized() {
+        // vLLM-Omni streams [-1,1] bf16 tensors: -1 must be black, not mid-gray.
+        let (w, h) = (2, 2);
+        let fr = FrameRef::new(
+            FrameBuffer::host_owned(thwc_solid_bf16(w, h, -1.0, -1.0, -1.0)),
+            desc_bf16(w, h, ColorRange::SignedUnit, Layout::Thwc),
+        );
+        let out = CpuPreprocess::new().process(&fr).unwrap();
+        assert!(out.y.iter().all(|&y| y == 0));
+    }
+
+    #[test]
+    fn bf16_size_mismatch_reports_two_byte_components() {
+        let fr = FrameRef::new(
+            FrameBuffer::host_owned(vec![0u8; 8]),
+            desc_bf16(4, 4, ColorRange::Unit01, Layout::Thwc),
+        );
+        match CpuPreprocess::new().process(&fr).unwrap_err() {
+            PreprocessError::SizeMismatch { expected, .. } => {
+                assert_eq!(expected, 4 * 4 * 3 * 2)
+            }
+            other => panic!("expected SizeMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn f16_is_still_rejected() {
+        let fr = FrameRef::new(
+            FrameBuffer::host_owned(vec![0u8; 2 * 4 * 4 * 3]),
+            FrameDesc {
+                dtype: Dtype::F16,
+                ..desc(4, 4, ColorRange::Unit01, Layout::Thwc)
+            },
+        );
+        assert_eq!(
+            CpuPreprocess::new().process(&fr).unwrap_err(),
+            PreprocessError::UnsupportedDtype(Dtype::F16)
+        );
     }
 }

@@ -92,7 +92,7 @@ fn parse_units(buf: &[u8]) -> Vec<(u8, bool, u64)> {
 
 fn run(n: u32) -> Vec<u8> {
     let sink = DebugFileSink::new(Vec::new());
-    let mut enc = Encoder::new(
+    let enc = Encoder::new(
         ModelIdentity::new("wan", "2.1", "bf16", "1.3b"),
         Target::Balanced,
         Output {
@@ -105,27 +105,16 @@ fn run(n: u32) -> Vec<u8> {
         sink,
         index(),
     );
-    {
-        let mut stream = enc.open_stream("req-1");
-        assert_eq!(stream.request_id(), "req-1");
-        for i in 0..n {
-            let seq = stream
-                .submit_video(host_frame(8, 8, 0.5, i as u64), None, None)
-                .unwrap();
-            assert_eq!(seq, i as u64);
-        }
-        stream.close().unwrap();
+    let mut stream = enc.open_stream("req-1");
+    assert_eq!(stream.request_id(), "req-1");
+    for i in 0..n {
+        let seq = stream
+            .submit_video(host_frame(8, 8, 0.5, i as u64), None, None)
+            .unwrap();
+        assert_eq!(seq, i as u64);
     }
-    // Recover the sink's buffer.
-    enc_into_buffer(enc)
-}
-
-// Helper: the Encoder owns the sink; expose it for the test by reconstructing.
-// Since Encoder has no accessor, we re-run through a local that returns bytes.
-fn enc_into_buffer(enc: Encoder<DebugFileSink<Vec<u8>>>) -> Vec<u8> {
-    // Encoder does not expose the sink; instead we rely on close() having
-    // flushed, and reach in via a dedicated test-only destructuring.
-    enc.into_sink_for_test().into_inner()
+    stream.close().unwrap();
+    stream.into_sink().into_inner()
 }
 
 #[test]
@@ -163,7 +152,7 @@ fn pts_is_monotonic_across_stream() {
 #[test]
 fn scene_cut_boundary_forces_keyframe() {
     let sink = DebugFileSink::new(Vec::new());
-    let mut enc = Encoder::new(
+    let enc = Encoder::new(
         ModelIdentity::new("wan", "2.1", "bf16", "1.3b"),
         Target::Balanced,
         Output {
@@ -176,8 +165,8 @@ fn scene_cut_boundary_forces_keyframe() {
         sink,
         index(),
     );
+    let mut stream = enc.open_stream("req-cut");
     {
-        let mut stream = enc.open_stream("req-cut");
         stream
             .submit_video(host_frame(8, 8, 0.5, 0), None, None)
             .unwrap(); // key
@@ -190,7 +179,7 @@ fn scene_cut_boundary_forces_keyframe() {
             .unwrap();
         stream.close().unwrap();
     }
-    let buf = enc.into_sink_for_test().into_inner();
+    let buf = stream.into_sink().into_inner();
     let units = parse_units(&buf);
     assert!(units[0].1, "frame 0 keyframe");
     assert!(!units[1].1, "frame 1 delta");
@@ -250,24 +239,22 @@ fn output(extradata: Option<Vec<u8>>) -> Output {
 
 #[test]
 fn sink_is_opened_with_the_supplied_codec_config_before_any_write() {
-    let mut enc = Encoder::new(
+    let enc = Encoder::new(
         ModelIdentity::new("wan", "2.1", "bf16", "1.3b"),
         Target::Balanced,
         output(Some(vec![0x81, 0x04, 0x0c, 0x00])),
         RecordingSink::new(),
         index(),
     );
-    {
-        let mut stream = enc.open_stream("req-cfg");
-        stream
-            .submit_video(host_frame(8, 8, 0.5, 0), None, None)
-            .unwrap();
-        stream
-            .submit_video(host_frame(8, 8, 0.5, 1), None, None)
-            .unwrap();
-        stream.close().unwrap();
-    }
-    let sink = enc.into_sink_for_test();
+    let mut stream = enc.open_stream("req-cfg");
+    stream
+        .submit_video(host_frame(8, 8, 0.5, 0), None, None)
+        .unwrap();
+    stream
+        .submit_video(host_frame(8, 8, 0.5, 1), None, None)
+        .unwrap();
+    stream.close().unwrap();
+    let sink = stream.into_sink();
     assert_eq!(sink.writes, 2);
     assert!(
         sink.open_before_write,
@@ -279,7 +266,7 @@ fn sink_is_opened_with_the_supplied_codec_config_before_any_write() {
 
 #[test]
 fn missing_codec_config_fails_instead_of_muxing_an_empty_config() {
-    let mut enc = Encoder::new(
+    let enc = Encoder::new(
         ModelIdentity::new("wan", "2.1", "bf16", "1.3b"),
         Target::Balanced,
         output(None),
@@ -292,13 +279,12 @@ fn missing_codec_config_fails_instead_of_muxing_an_empty_config() {
         .unwrap_err();
     assert!(matches!(err, RuntimeError::MissingCodecConfig));
     // The sink must not have been opened with a bogus configuration.
-    drop(stream);
-    assert!(enc.into_sink_for_test().opened_with.is_none());
+    assert!(stream.into_sink().opened_with.is_none());
 }
 
 #[test]
 fn empty_codec_config_override_is_rejected() {
-    let mut enc = Encoder::new(
+    let enc = Encoder::new(
         ModelIdentity::new("wan", "2.1", "bf16", "1.3b"),
         Target::Balanced,
         output(Some(Vec::new())),
@@ -315,7 +301,7 @@ fn empty_codec_config_override_is_rejected() {
 #[cfg(not(feature = "nvenc"))]
 #[test]
 fn nvenc_backend_without_the_feature_is_rejected() {
-    let mut enc = Encoder::new(
+    let enc = Encoder::new(
         ModelIdentity::new("wan", "2.1", "bf16", "1.3b"),
         Target::Balanced,
         Output {

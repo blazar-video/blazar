@@ -10,7 +10,7 @@ pub mod index;
 pub mod loader;
 pub mod schema;
 
-pub use index::{CalibrationIndex, Query};
+pub use index::{CalibrationIndex, LoadDirError, Query};
 pub use loader::{load_str, Calibration, LoadError};
 pub use schema::{
     CalibrationKey, MatchAxis, Meta, Source, VideoBody, VideoCommon, SUPPORTED_SCHEMA_VERSION,
