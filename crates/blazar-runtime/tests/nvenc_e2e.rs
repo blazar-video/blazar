@@ -85,7 +85,7 @@ fn nvenc_to_fmp4_produces_a_real_av1_container() {
     let _ = fs::remove_file(&path);
 
     let sink = Fmp4FileSink::new(fs::File::create(&path).expect("create smoke file"));
-    let mut enc = Encoder::new(
+    let enc = Encoder::new(
         ModelIdentity::new("wan", "2.1", "bf16", "1.3b"),
         Target::LowLatency,
         Output {
@@ -99,16 +99,13 @@ fn nvenc_to_fmp4_produces_a_real_av1_container() {
         sink,
         index(),
     );
-    {
-        let mut stream = enc.open_stream("nvenc-smoke");
-        for i in 0..24u64 {
-            stream
-                .submit_video(host_frame(i), None, None)
-                .expect("submit");
-        }
-        stream.close().expect("close");
+    let mut stream = enc.open_stream("nvenc-smoke");
+    for i in 0..24u64 {
+        stream
+            .submit_video(host_frame(i), None, None)
+            .expect("submit");
     }
-    drop(enc);
+    stream.close().expect("close");
 
     let bytes = fs::read(&path).expect("smoke file exists");
     assert!(
@@ -172,7 +169,7 @@ fn unaligned_width_produces_an_av1_container() {
     let _ = fs::remove_file(&path);
 
     let sink = Fmp4FileSink::new(fs::File::create(&path).expect("create unaligned file"));
-    let mut enc = Encoder::new(
+    let enc = Encoder::new(
         ModelIdentity::new("wan", "2.1", "bf16", "1.3b"),
         Target::LowLatency,
         Output {
@@ -185,16 +182,13 @@ fn unaligned_width_produces_an_av1_container() {
         sink,
         index(),
     );
-    {
-        let mut stream = enc.open_stream("nvenc-unaligned");
-        for i in 0..2u64 {
-            stream
-                .submit_video(row_frame(i), None, None)
-                .expect("submit");
-        }
-        stream.close().expect("close");
+    let mut stream = enc.open_stream("nvenc-unaligned");
+    for i in 0..2u64 {
+        stream
+            .submit_video(row_frame(i), None, None)
+            .expect("submit");
     }
-    drop(enc);
+    stream.close().expect("close");
 
     let bytes = fs::read(&path).expect("unaligned file exists");
     assert_eq!(count_box(&bytes, b"av01"), 1);
