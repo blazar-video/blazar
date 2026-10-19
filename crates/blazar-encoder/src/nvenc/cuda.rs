@@ -15,7 +15,7 @@ use blazar_core::{ColorRange, ColorSpace, Dtype, FrameDesc, Layout};
 use cudarc::driver::{
     CudaContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
 };
-use nvidia_video_codec_sdk::EncodeError;
+use crate::EncodeError;
 
 /// CUDA C source. THWC = 0, BCTHW = 1; f32 = 0, bf16 = 1; ranges 0/1/2.
 const KERNEL: &str = r#"
