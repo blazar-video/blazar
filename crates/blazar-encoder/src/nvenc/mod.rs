@@ -14,6 +14,9 @@ pub mod nv12;
 pub mod pool;
 
 #[cfg(feature = "nvenc")]
+pub mod cuda;
+
+#[cfg(feature = "nvenc")]
 mod worker;
 
 #[cfg(feature = "nvenc")]
