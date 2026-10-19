@@ -981,9 +981,19 @@ fn encode_batch_rgb(
         return Ok(());
     };
     let frame_bytes = first.len();
+    // FrameDesc carries the timestamp, so only the format fields may match.
+    let same_format = |a: &FrameDesc, b: &FrameDesc| {
+        a.width == b.width
+            && a.height == b.height
+            && a.dtype == b.dtype
+            && a.range == b.range
+            && a.layout == b.layout
+            && a.colorspace == b.colorspace
+            && (a.fps - b.fps).abs() < 1e-9
+    };
     if frames
         .iter()
-        .any(|(bytes, desc)| bytes.len() != frame_bytes || desc != desc0)
+        .any(|(bytes, desc)| bytes.len() != frame_bytes || !same_format(desc, desc0))
     {
         return Err(EncodeError::Backend(
             "batch frames must share geometry and format".into(),
