@@ -165,23 +165,44 @@ def main() -> int:
     calibrations = blazar.Calibrations.load(str(args.calibrations))
     buffered: list[np.ndarray] = []
 
-    def submit(stream, frame):
+    def submit_chunk(stream, chunk):
+        """One submission per decoded chunk: one GPU kernel launch for the batch.
+
+        Falls back to the per-frame path only if the binding predates
+        ``submit_batch``.
+        """
         nonlocal submitted, first_frame_s
-        if not args.interleave:
-            buffered.append(frame)
+        if not chunk:
             return
-        stream.submit(
-            frame,
-            width=args.width,
-            height=args.height,
-            fps=args.fps,
-            layout="bcthw",
-            range="signed_unit",
-            scene_cut=(submitted == 0),
-        )
+        if not args.interleave:
+            buffered.extend(chunk)
+            return
+        batched = getattr(stream, "submit_batch", None)
+        if batched is None:
+            for frame in chunk:
+                stream.submit(
+                    frame,
+                    width=args.width,
+                    height=args.height,
+                    fps=args.fps,
+                    layout="bcthw",
+                    range="signed_unit",
+                    scene_cut=(submitted == 0),
+                )
+                submitted += 1
+        else:
+            batched(
+                chunk,
+                width=args.width,
+                height=args.height,
+                fps=args.fps,
+                layout="bcthw",
+                range="signed_unit",
+                scene_cut=(submitted == 0),
+            )
+            submitted += len(chunk)
         if first_frame_s is None:
             first_frame_s = time.perf_counter() - encode_started
-        submitted += 1
 
     with blazar.Encoder(
         calibrations=calibrations,
@@ -202,27 +223,43 @@ def main() -> int:
 
             host = decoded[0].float().cpu().numpy()  # (3, T, H, W) in [-1, 1]
             frames = host.shape[1]
-            for t in range(frames):
-                submit(stream, np.ascontiguousarray(host[:, t, :, :]))
+            submit_chunk(
+                stream,
+                [np.ascontiguousarray(host[:, t, :, :]) for t in range(frames)],
+            )
             print(f"  chunk {index} latents {lo}:{hi} -> {frames} frames "
                   f"({decode_s * 1000 / (index + 1):.0f} ms/chunk avg)")
 
         if not args.interleave:
             decoder.release(state)
             torch.cuda.empty_cache()
-            for frame in buffered:
-                stream.submit(
-                    frame,
-                    width=args.width,
-                    height=args.height,
-                    fps=args.fps,
-                    layout="bcthw",
-                    range="signed_unit",
-                    scene_cut=(submitted == 0),
-                )
+            if buffered:
+                batched = getattr(stream, "submit_batch", None)
+                if batched is None:
+                    for frame in buffered:
+                        stream.submit(
+                            frame,
+                            width=args.width,
+                            height=args.height,
+                            fps=args.fps,
+                            layout="bcthw",
+                            range="signed_unit",
+                            scene_cut=(submitted == 0),
+                        )
+                        submitted += 1
+                else:
+                    batched(
+                        buffered,
+                        width=args.width,
+                        height=args.height,
+                        fps=args.fps,
+                        layout="bcthw",
+                        range="signed_unit",
+                        scene_cut=(submitted == 0),
+                    )
+                    submitted += len(buffered)
                 if first_frame_s is None:
                     first_frame_s = time.perf_counter() - encode_started
-                submitted += 1
         stream.flush(timeout=120.0)
         stats = stream.stats
     encode_s = time.perf_counter() - encode_started

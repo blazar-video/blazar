@@ -276,3 +276,50 @@ def test_calibrations_load_error_names_the_file(tmp_path):
 
 def test_calibrations_len(calibrations):
     assert len(calibrations) >= 3
+
+
+def test_submit_batch_encodes_every_frame_in_one_submission(calibrations, tmp_path):
+    """A chunk goes to the worker as one job and one event."""
+    out = tmp_path / "batch.mp4"
+    encoder = new_encoder(calibrations, out)
+    frames = [bcthw_frame(160, 120, 0.2 + 0.05 * index) for index in range(4)]
+
+    seq = encoder.submit_batch(
+        frames,
+        width=160,
+        height=120,
+        fps=24.0,
+        layout="bcthw",
+        range="signed_unit",
+        scene_cut=True,
+    )
+    encoder.flush(timeout=10.0)
+    stats = encoder.stats
+    events = encoder.poll()
+    encoder.close()
+
+    assert isinstance(seq, int)
+    assert stats["encoded"] == 4, f"expected 4 frames, got {stats['encoded']}"
+    encoded_events = [e for e in events if e.get("kind") == "encoded"]
+    assert len(encoded_events) == 1, f"expected one batch event, got {encoded_events}"
+    assert encoded_events[0]["units"] == 4, (
+        f"batch event reported {encoded_events[0]['units']} units"
+    )
+
+
+def test_submit_batch_rejects_mixed_geometry(calibrations, tmp_path):
+    encoder = new_encoder(calibrations, tmp_path / "mixed.mp4")
+    good = bcthw_frame(160, 120, 0.5)
+    encoder.submit_batch(
+        [good], width=160, height=120, fps=24.0, layout="bcthw", range="signed_unit"
+    )
+    with pytest.raises(ValueError):
+        encoder.submit_batch(
+            [good],
+            width=320,
+            height=240,
+            fps=24.0,
+            layout="bcthw",
+            range="signed_unit",
+        )
+    encoder.close()
