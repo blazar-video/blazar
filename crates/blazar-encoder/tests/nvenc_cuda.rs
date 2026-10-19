@@ -28,20 +28,36 @@ fn frame_desc(w: u32, h: u32, layout: Layout, dtype: Dtype, range: ColorRange) -
 fn host_rgb(w: u32, h: u32, layout: Layout, dtype: Dtype, range: ColorRange) -> Vec<u8> {
     let mut state = 0x9e37_79b9_7f4a_7c15u64;
     let components = (w * h * 3) as usize;
-    let mut bytes = Vec::with_capacity(components * if dtype == Dtype::Bf16 { 2 } else { 4 });
+    // Values are generated once in sample order (row-major, RGB interleaved) and
+    // then written in the requested memory layout. Generating them in layout
+    // order matters: BCTHW and THWC otherwise feed identical bytes to both
+    // implementations and the bcthw kernel path goes untested.
+    let mut values = Vec::with_capacity(components);
     for _ in 0..components {
         state ^= state << 13;
         state ^= state >> 7;
         state ^= state << 17;
         let unit = (state >> 40) as f32 / 16_777_215.0;
-        let value = match range {
+        values.push(match range {
             ColorRange::SignedUnit => unit * 2.0 - 1.0,
             ColorRange::FullU8 => (state >> 40) as f32 % 256.0,
             ColorRange::Unit01 => unit,
-        };
+        });
+    }
+    let order: Vec<usize> = match layout {
+        Layout::Thwc => (0..components).collect(),
+        // BCTHW with a single frame: channel, then row, then column.
+        Layout::Bcthw => (0..3)
+            .flat_map(|c| (0..(w * h) as usize).map(move |px| px * 3 + c))
+            .collect(),
+    };
+    let mut bytes = Vec::with_capacity(components * if dtype == Dtype::Bf16 { 2 } else { 4 });
+    for index in order {
         match dtype {
-            Dtype::Bf16 => bytes.extend_from_slice(&((value.to_bits() >> 16) as u16).to_le_bytes()),
-            _ => bytes.extend_from_slice(&value.to_le_bytes()),
+            Dtype::Bf16 => {
+                bytes.extend_from_slice(&((values[index].to_bits() >> 16) as u16).to_le_bytes());
+            }
+            _ => bytes.extend_from_slice(&values[index].to_le_bytes()),
         }
     }
     bytes
