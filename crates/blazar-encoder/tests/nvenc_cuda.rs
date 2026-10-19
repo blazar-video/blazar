@@ -48,7 +48,7 @@ fn host_rgb(w: u32, h: u32, layout: Layout, dtype: Dtype, range: ColorRange) -> 
 }
 
 fn check(w: u32, h: u32, layout: Layout, dtype: Dtype, range: ColorRange) {
-    let pitch = 256u32; // deliberately wider than every width below
+    let pitch = w.div_ceil(256) * 256; // driver-style aligned stride
     let desc = frame_desc(w, h, layout, dtype, range);
     let bytes = host_rgb(w, h, layout, dtype, range);
     let frame = FrameRef::new(FrameBuffer::host_owned(bytes.clone()), desc);
