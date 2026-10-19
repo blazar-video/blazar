@@ -25,8 +25,15 @@ fn frame_desc(w: u32, h: u32, layout: Layout, dtype: Dtype, range: ColorRange) -
     }
 }
 
-fn host_rgb(w: u32, h: u32, layout: Layout, dtype: Dtype, range: ColorRange) -> Vec<u8> {
-    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+fn host_rgb(
+    w: u32,
+    h: u32,
+    layout: Layout,
+    dtype: Dtype,
+    range: ColorRange,
+    seed: u64,
+) -> Vec<u8> {
+    let mut state = 0x9e37_79b9_7f4a_7c15u64 ^ seed;
     let components = (w * h * 3) as usize;
     // Values are generated once in sample order (row-major, RGB interleaved) and
     // then written in the requested memory layout. Generating them in layout
@@ -66,7 +73,7 @@ fn host_rgb(w: u32, h: u32, layout: Layout, dtype: Dtype, range: ColorRange) -> 
 fn check(w: u32, h: u32, layout: Layout, dtype: Dtype, range: ColorRange) {
     let pitch = w.div_ceil(256) * 256; // driver-style aligned stride
     let desc = frame_desc(w, h, layout, dtype, range);
-    let bytes = host_rgb(w, h, layout, dtype, range);
+    let bytes = host_rgb(w, h, layout, dtype, range, 0);
     let frame = FrameRef::new(FrameBuffer::host_owned(bytes.clone()), desc);
 
     let cpu = to_nv12(
@@ -134,4 +141,67 @@ fn gpu_matches_cpu_for_bcthw_f32_signed() {
 fn gpu_matches_cpu_for_bf16() {
     check(160, 120, Layout::Thwc, Dtype::Bf16, ColorRange::Unit01);
     check(34, 18, Layout::Bcthw, Dtype::Bf16, ColorRange::SignedUnit);
+}
+
+/// Frames in a batch must be read from their own slice of the staging buffer
+/// and written to their own destination. A seed per frame makes a wrong frame
+/// index visible: identical frames would pass even if every thread read frame 0.
+#[test]
+fn gpu_matches_cpu_for_a_batch_of_frames() {
+    let (w, h, n) = (64u32, 48u32, 3u32);
+    let pitch = w.div_ceil(256) * 256;
+    let desc = frame_desc(w, h, Layout::Thwc, Dtype::F32, ColorRange::Unit01);
+    let chroma_rows = h.div_ceil(2);
+
+    let mut bytes = Vec::new();
+    let mut expected = Vec::new();
+    for frame_index in 0..n {
+        let data = host_rgb(w, h, Layout::Thwc, Dtype::F32, ColorRange::Unit01, frame_index as u64 + 1);
+        let frame = FrameRef::new(FrameBuffer::host_owned(data.clone()), desc);
+        expected.push(
+            to_nv12(&CpuPreprocess::new().process(&frame).expect("cpu preprocess"), pitch)
+                .expect("cpu nv12"),
+        );
+        bytes.extend_from_slice(&data);
+    }
+
+    let ctx: Arc<CudaContext> = CudaContext::new(0).expect("cuda");
+    let stream = ctx.default_stream();
+    let src = stream.clone_htod(&bytes).expect("upload rgb");
+    let mut dsts: Vec<CudaSlice<u8>> = (0..n)
+        .map(|_| {
+            stream
+                .alloc_zeros::<u8>((pitch * (h + chroma_rows)) as usize)
+                .expect("alloc nv12")
+        })
+        .collect();
+    let ptrs: Vec<u64> = dsts
+        .iter()
+        .map(|dst| {
+            let (ptr, guard) = dst.device_ptr(&stream);
+            drop(guard);
+            ptr
+        })
+        .collect();
+    let ptr_buf = stream.memcpy_stod(&ptrs).expect("upload dst pointers");
+
+    let converter = Nv12Converter::new(&ctx).expect("compile kernel");
+    converter
+        .convert_batch(&stream, &src, &ptr_buf, &desc, n, pitch)
+        .expect("gpu convert batch");
+    stream.synchronize().expect("sync");
+
+    for (frame_index, dst) in dsts.iter().enumerate() {
+        let gpu = stream.clone_dtoh(dst).expect("download nv12");
+        let worst = gpu
+            .iter()
+            .zip(&expected[frame_index])
+            .map(|(g, c)| (*g as i32 - *c as i32).abs())
+            .max()
+            .unwrap_or(0);
+        assert!(
+            worst <= 1,
+            "batch frame {frame_index}: max |gpu-cpu| = {worst} (frames crossed?)"
+        );
+    }
 }
