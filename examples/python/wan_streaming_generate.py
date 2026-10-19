@@ -73,7 +73,7 @@ def chunks(total: int, size: int) -> list[tuple[int, int]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--model", default="Wan-AI/Wan2.1-T2V-1.3B-Diffusers")
-    parser.add_argument("--prompt", required=True)
+    parser.add_argument("--prompt", default="")
     parser.add_argument("--negative-prompt", default="")
     parser.add_argument("--height", type=int, default=320)
     parser.add_argument("--width", type=int, default=480)
@@ -93,6 +93,9 @@ def main() -> int:
     parser.add_argument("--save-latents", type=Path, help="write raw latents here for fast reruns")
     parser.add_argument("--from-latents", type=Path, help="skip generation, load raw latents")
     args = parser.parse_args()
+
+    if not args.from_latents and not args.prompt:
+        parser.error("--prompt is required unless --from-latents is given")
 
     import torch
     from diffusers import AutoencoderKLWan, WanPipeline
