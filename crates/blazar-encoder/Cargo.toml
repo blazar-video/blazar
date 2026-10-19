@@ -11,6 +11,8 @@ blazar-calibration.workspace = true
 blazar-preprocess.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+nvidia-video-codec-sdk = { workspace = true, optional = true }
+cudarc = { workspace = true, optional = true }
 
 [features]
 default = []
@@ -18,3 +20,7 @@ default = []
 # tests run without libsvtav1 installed; the mock backend covers the pipeline
 # contract until the bindings land.
 svtav1 = []
+# Hardware AV1 via NVENC. Needs an NVIDIA GPU + CUDA toolkit at build time; the
+# default build stays platform-neutral. Pinned to CUDA 13.1 through cudarc's
+# cuda-13010 feature.
+nvenc = ["dep:nvidia-video-codec-sdk", "dep:cudarc"]

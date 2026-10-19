@@ -32,23 +32,33 @@ fn load_all() -> CalibrationIndex {
     idx
 }
 
+/// Codec keys that must ship a terminal default for every target. A deployment
+/// whose backend has no default here fails resolution at stream open.
+const CODEC_KEYS: [&str; 2] = ["svtav1", "nvenc_av1"];
+
 #[test]
 fn all_default_files_load() {
     let idx = load_all();
-    // Three targets shipped for SVT-AV1.
-    assert_eq!(idx.len(), 3, "expected 3 default SVT-AV1 calibrations");
+    assert_eq!(
+        idx.len(),
+        CODEC_KEYS.len() * 3,
+        "expected three targets per shipped codec"
+    );
 }
 
 #[test]
-fn each_target_resolves_to_its_default() {
+fn each_codec_and_target_resolves_to_its_default() {
     let idx = load_all();
     let id = ModelIdentity::new("wan", "2.1", "bf16", "1.3b");
-    for target in [Target::LowLatency, Target::Balanced, Target::Quality] {
-        let q = Query::new(&id, "any_unseen_scene", "svtav1", target);
-        let cal = idx
-            .resolve(&q)
-            .unwrap_or_else(|| panic!("no default resolved for {:?}", target));
-        assert_eq!(cal.source, blazar_calibration::Source::Default);
-        assert_eq!(cal.key.target, target.as_key());
+    for codec in CODEC_KEYS {
+        for target in [Target::LowLatency, Target::Balanced, Target::Quality] {
+            let q = Query::new(&id, "any_unseen_scene", codec, target);
+            let cal = idx
+                .resolve(&q)
+                .unwrap_or_else(|| panic!("no default resolved for {codec}/{target:?}"));
+            assert_eq!(cal.source, blazar_calibration::Source::Default);
+            assert_eq!(cal.key.codec, codec);
+            assert_eq!(cal.key.target, target.as_key());
+        }
     }
 }

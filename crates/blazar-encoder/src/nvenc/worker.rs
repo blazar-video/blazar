@@ -1,0 +1,624 @@
+//! The driver-facing half of the NVENC backend.
+//!
+//! Everything here runs on a dedicated thread. That is not incidental:
+//!
+//! * `Encoder::start_session` consumes the `Encoder`, and `Buffer`/`Bitstream`
+//!   borrow the `Encoder` stored inside `Session`, so a struct holding both is
+//!   self-referential. Locals inside one function avoid that entirely.
+//! * CUDA contexts are thread-affine; creating the shared context and binding
+//!   it on the thread that uses it is correct by construction.
+//! * NVENC's output pipeline is asynchronous (`NeedMoreInput`), so the natural
+//!   shape is a worker owning the session, one input buffer, and the bitstream
+//!   pool, with the `VideoEncoder` impl as a request/response handle.
+//!
+//! The handle is synchronous: each call sends one command and waits for the
+//! reply. A channel round trip costs microseconds against a millisecond-scale
+//! encode.
+
+use std::sync::{mpsc, Arc, LazyLock};
+use std::thread;
+use std::time::Duration;
+
+use blazar_core::{EncodedUnit, Pts, Timebase, TrackId, VideoCodec};
+use blazar_preprocess::PreprocessedFrame;
+use cudarc::driver::CudaContext;
+use nvidia_video_codec_sdk::{
+    sys::nvEncodeAPI::{
+        NV_ENC_BUFFER_FORMAT, NV_ENC_CODEC_AV1_GUID, NV_ENC_CONFIG, NV_ENC_PARAMS_RC_MODE,
+        NV_ENC_PIC_FLAGS, NV_ENC_PIC_TYPE, NV_ENC_PRESET_P4_GUID, NV_ENC_QP, NV_ENC_TUNING_INFO,
+        NV_ENC_VUI_COLOR_PRIMARIES, NV_ENC_VUI_MATRIX_COEFFS, NV_ENC_VUI_TRANSFER_CHARACTERISTIC,
+    },
+    Bitstream, Buffer, EncodePictureParams, Encoder, EncoderInitParams, ErrorKind, Session,
+};
+
+use super::config::{NvencParams, NvencRateControl};
+use super::keyframe::KeyframeSchedule;
+use super::nv12::to_nv12;
+use super::pool::SlotPool;
+use crate::av1;
+use crate::config::EncoderConfig;
+use crate::{EncodeError, VideoEncoder};
+
+/// Output bitstreams kept in flight. NVENC's lookahead is a handful of frames;
+/// 16 leaves generous headroom and costs only a few KiB per slot.
+const POOL_CAPACITY: usize = 16;
+/// `EncoderBusy` is recoverable; wait briefly and retry a bounded number of times.
+const BUSY_RETRIES: u32 = 50;
+const BUSY_SLEEP: Duration = Duration::from_millis(2);
+
+/// Process-wide CUDA context, created once on the first NVENC worker thread.
+/// CUDA contexts are reference-counted handles; each worker binds it to itself
+/// before initializing NVENC. A failed creation is cached as an error so a
+/// broken driver does not get retried per stream.
+static CUDA_CONTEXT: LazyLock<Result<Arc<CudaContext>, String>> =
+    LazyLock::new(|| CudaContext::new(0).map_err(|e| format!("CUDA context on device 0: {e:?}")));
+
+/// One encoded frame plus any newly discovered codec configuration.
+struct EncodeOutput {
+    units: Vec<EncodedUnit>,
+    codec_config: Option<Vec<u8>>,
+}
+
+enum Command {
+    Encode {
+        frame: PreprocessedFrame,
+        force_keyframe: bool,
+        reply: mpsc::Sender<Result<EncodeOutput, EncodeError>>,
+    },
+    Flush {
+        reply: mpsc::Sender<Result<Vec<EncodedUnit>, EncodeError>>,
+    },
+    Finish {
+        reply: mpsc::Sender<Result<Vec<EncodedUnit>, EncodeError>>,
+    },
+}
+
+/// AV1 encoder backed by NVENC on the local GPU.
+///
+/// Constructing one starts a worker thread and opens the session, so hardware
+/// or configuration problems surface here rather than on the first frame.
+pub struct NvencAv1Encoder {
+    tx: Option<mpsc::Sender<Command>>,
+    join: Option<thread::JoinHandle<()>>,
+    codec_config: Option<Vec<u8>>,
+    force_keyframe: bool,
+    finished: bool,
+}
+
+impl NvencAv1Encoder {
+    /// Open an NVENC AV1 session for one stream.
+    pub fn new(
+        cfg: &EncoderConfig,
+        width: u32,
+        height: u32,
+        fps: f64,
+        timebase: Timebase,
+        codec: VideoCodec,
+    ) -> Result<Self, EncodeError> {
+        if codec != VideoCodec::Av1 {
+            return Err(EncodeError::Backend(format!(
+                "NVENC backend produces AV1, not {codec:?}"
+            )));
+        }
+        let params = NvencParams::from_encoder_config(cfg, width, height, fps)
+            .map_err(|e| EncodeError::Backend(e.to_string()))?;
+        let frame_duration = timebase.ticks_per_frame(fps);
+
+        let (tx, rx) = mpsc::channel();
+        let (init_tx, init_rx) = mpsc::channel();
+        let join = thread::Builder::new()
+            .name("blazar-nvenc".into())
+            .spawn(move || worker_main(params, frame_duration, rx, init_tx))
+            .map_err(|e| EncodeError::Backend(format!("spawn NVENC worker: {e}")))?;
+
+        match init_rx.recv() {
+            Ok(Ok(())) => Ok(Self {
+                tx: Some(tx),
+                join: Some(join),
+                codec_config: None,
+                force_keyframe: false,
+                finished: false,
+            }),
+            Ok(Err(e)) => {
+                let _ = join.join();
+                Err(e)
+            }
+            Err(_) => {
+                let _ = join.join();
+                Err(EncodeError::Backend(
+                    "NVENC worker exited during initialization".into(),
+                ))
+            }
+        }
+    }
+
+    fn request<T>(
+        &self,
+        make: impl FnOnce(mpsc::Sender<Result<T, EncodeError>>) -> Command,
+    ) -> Result<T, EncodeError> {
+        let tx = self
+            .tx
+            .as_ref()
+            .ok_or_else(|| EncodeError::Backend("NVENC worker already stopped".into()))?;
+        let (reply_tx, reply_rx) = mpsc::channel();
+        tx.send(make(reply_tx))
+            .map_err(|_| EncodeError::Backend("NVENC worker stopped".into()))?;
+        reply_rx
+            .recv()
+            .map_err(|_| EncodeError::Backend("NVENC worker stopped before replying".into()))?
+    }
+}
+
+impl VideoEncoder for NvencAv1Encoder {
+    fn encode(&mut self, frame: &PreprocessedFrame) -> Result<Vec<EncodedUnit>, EncodeError> {
+        if self.finished {
+            return Err(EncodeError::AfterFinish);
+        }
+        let force_keyframe = std::mem::take(&mut self.force_keyframe);
+        let owned = frame.clone();
+        let out: EncodeOutput = self.request(move |reply| Command::Encode {
+            frame: owned,
+            force_keyframe,
+            reply,
+        })?;
+        if out.codec_config.is_some() {
+            self.codec_config = out.codec_config;
+        }
+        Ok(out.units)
+    }
+
+    fn flush(&mut self) -> Result<Vec<EncodedUnit>, EncodeError> {
+        // NVENC cannot drain lookahead without end-of-stream. Segment
+        // boundaries are handled by forcing a keyframe on the next frame
+        // (`request_keyframe`), not by pretending to flush.
+        self.request(|reply| Command::Flush { reply })
+    }
+
+    fn finish(&mut self) -> Result<Vec<EncodedUnit>, EncodeError> {
+        let units = self.request(|reply| Command::Finish { reply })?;
+        self.finished = true;
+        Ok(units)
+    }
+
+    fn request_keyframe(&mut self) {
+        self.force_keyframe = true;
+    }
+
+    fn codec_config(&self) -> Option<Vec<u8>> {
+        self.codec_config.clone()
+    }
+}
+
+impl Drop for NvencAv1Encoder {
+    fn drop(&mut self) {
+        // Dropping the sender ends the worker's `recv` loop; join so the
+        // session and its buffers are torn down before this handle disappears.
+        self.tx = None;
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+fn worker_main(
+    params: NvencParams,
+    frame_duration: u64,
+    rx: mpsc::Receiver<Command>,
+    init: mpsc::Sender<Result<(), EncodeError>>,
+) {
+    match open_session(&params) {
+        Ok(session) => {
+            if init.send(Ok(())).is_err() {
+                return;
+            }
+            run_loop(&session, &params, frame_duration, rx);
+            // `session` drops here, after the buffers created inside
+            // `run_loop` have already been dropped.
+        }
+        Err(e) => {
+            let _ = init.send(Err(e));
+        }
+    }
+}
+
+fn open_session(params: &NvencParams) -> Result<Session, EncodeError> {
+    let ctx = match &*CUDA_CONTEXT {
+        Ok(ctx) => Arc::clone(ctx),
+        Err(e) => return Err(EncodeError::Backend(e.clone())),
+    };
+    ctx.bind_to_thread()
+        .map_err(|e| EncodeError::Backend(format!("bind CUDA context: {e:?}")))?;
+
+    let encoder = Encoder::initialize_with_cuda(ctx)
+        .map_err(|e| EncodeError::Backend(format!("NVENC init: {e:?}")))?;
+    let guids = encoder
+        .get_encode_guids()
+        .map_err(|e| EncodeError::Backend(format!("NVENC encode GUIDs: {e:?}")))?;
+    if !guids.contains(&NV_ENC_CODEC_AV1_GUID) {
+        return Err(EncodeError::Backend(
+            "this GPU does not advertise NVENC AV1".into(),
+        ));
+    }
+
+    let mut preset = encoder
+        .get_preset_config(
+            NV_ENC_CODEC_AV1_GUID,
+            NV_ENC_PRESET_P4_GUID,
+            NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_HIGH_QUALITY,
+        )
+        .map_err(|e| EncodeError::Backend(format!("NVENC preset config: {e:?}")))?;
+    apply_config(&mut preset.presetCfg, params);
+
+    let mut init = EncoderInitParams::new(NV_ENC_CODEC_AV1_GUID, params.width, params.height);
+    init.preset_guid(NV_ENC_PRESET_P4_GUID)
+        .tuning_info(NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_HIGH_QUALITY)
+        .framerate(params.fps_num, params.fps_den)
+        .encode_config(&mut preset.presetCfg)
+        // Required for AV1: with picture-type decision off, the driver coerces
+        // every frame to intra. With it on, the driver chooses I/P and we force
+        // IDRs explicitly via `NV_ENC_PIC_FLAG_FORCEIDR`.
+        .enable_picture_type_decision();
+
+    encoder
+        .start_session(NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_NV12, init)
+        .map_err(|e| EncodeError::Backend(format!("NVENC session: {e:?}")))
+}
+
+/// Apply calibration-derived settings to the preset configuration.
+fn apply_config(cfg: &mut NV_ENC_CONFIG, params: &NvencParams) {
+    cfg.gopLength = params.gop_length;
+    cfg.frameIntervalP = params.frame_interval_p;
+
+    match params.rate_control {
+        NvencRateControl::ConstQp { qp } => {
+            cfg.rcParams.rateControlMode = NV_ENC_PARAMS_RC_MODE::NV_ENC_PARAMS_RC_CONSTQP;
+            cfg.rcParams.constQP = NV_ENC_QP {
+                qpInterP: qp,
+                qpInterB: qp,
+                qpIntra: qp,
+            };
+        }
+        NvencRateControl::Vbr {
+            average_bitrate_bps,
+            max_bitrate_bps,
+            vbv_bits,
+        } => {
+            cfg.rcParams.rateControlMode = NV_ENC_PARAMS_RC_MODE::NV_ENC_PARAMS_RC_VBR;
+            cfg.rcParams.averageBitRate = average_bitrate_bps;
+            cfg.rcParams.maxBitRate = max_bitrate_bps;
+            cfg.rcParams.vbvBufferSize = vbv_bits;
+        }
+        NvencRateControl::Cbr {
+            bitrate_bps,
+            vbv_bits,
+        } => {
+            cfg.rcParams.rateControlMode = NV_ENC_PARAMS_RC_MODE::NV_ENC_PARAMS_RC_CBR;
+            cfg.rcParams.averageBitRate = bitrate_bps;
+            cfg.rcParams.maxBitRate = bitrate_bps;
+            cfg.rcParams.vbvBufferSize = vbv_bits;
+        }
+    }
+
+    // The preprocess stage emits full-range YUV using the BT.709 matrix and
+    // never tags it. Tag it here so players do not have to guess.
+    // SAFETY: the union variant matches the AV1 codec GUID used for the session.
+    unsafe {
+        let av1 = &mut cfg.encodeCodecConfig.av1Config;
+        if params.color.bt709 {
+            av1.colorPrimaries = NV_ENC_VUI_COLOR_PRIMARIES::NV_ENC_VUI_COLOR_PRIMARIES_BT709;
+            av1.transferCharacteristics =
+                NV_ENC_VUI_TRANSFER_CHARACTERISTIC::NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
+            av1.matrixCoefficients = NV_ENC_VUI_MATRIX_COEFFS::NV_ENC_VUI_MATRIX_COEFFS_BT709;
+        }
+        av1.colorRange = u32::from(params.color.full_range);
+    }
+}
+
+fn run_loop(
+    session: &Session,
+    params: &NvencParams,
+    frame_duration: u64,
+    rx: mpsc::Receiver<Command>,
+) {
+    let mut input = match session.create_input_buffer() {
+        Ok(buffer) => buffer,
+        Err(e) => {
+            fail_pending(
+                &rx,
+                EncodeError::Backend(format!("NVENC input buffer: {e:?}")),
+            );
+            return;
+        }
+    };
+    let mut bitstreams: Vec<Bitstream<'_>> = match (0..POOL_CAPACITY)
+        .map(|_| session.create_output_bitstream())
+        .collect()
+    {
+        Ok(buffers) => buffers,
+        Err(e) => {
+            fail_pending(&rx, EncodeError::Backend(format!("NVENC bitstream: {e:?}")));
+            return;
+        }
+    };
+    let pitch = input.pitch();
+    if pitch < params.width {
+        fail_pending(
+            &rx,
+            EncodeError::Backend(format!(
+                "NVENC input pitch {pitch} is smaller than width {}",
+                params.width
+            )),
+        );
+        return;
+    }
+
+    let mut pool = SlotPool::new(POOL_CAPACITY);
+    let mut keyframes = KeyframeSchedule::new(params.gop_length);
+    let mut codec_config: Option<Vec<u8>> = None;
+    let mut decode_index: u64 = 0;
+    let mut finished = false;
+
+    while let Ok(command) = rx.recv() {
+        match command {
+            Command::Encode {
+                frame,
+                force_keyframe,
+                reply,
+            } => {
+                if finished {
+                    let _ = reply.send(Err(EncodeError::AfterFinish));
+                    continue;
+                }
+                let mut units = Vec::new();
+                let force_idr = keyframes.next_is_keyframe(force_keyframe);
+                let result = encode_one(
+                    session,
+                    &mut input,
+                    &mut bitstreams,
+                    &mut pool,
+                    &mut codec_config,
+                    &mut decode_index,
+                    &frame,
+                    pitch,
+                    frame_duration,
+                    force_idr,
+                    &mut units,
+                );
+                let reply_value = result.map(|()| EncodeOutput {
+                    units,
+                    codec_config: codec_config.clone(),
+                });
+                let _ = reply.send(reply_value);
+            }
+            Command::Flush { reply } => {
+                let _ = reply.send(Ok(Vec::new()));
+            }
+            Command::Finish { reply } => {
+                finished = true;
+                let mut units = Vec::new();
+                let result = finish(
+                    session,
+                    &mut bitstreams,
+                    &mut pool,
+                    &mut decode_index,
+                    frame_duration,
+                    &mut units,
+                );
+                let _ = reply.send(result.map(|()| units));
+            }
+        }
+    }
+}
+
+/// Tell every queued caller that the worker is going away, instead of leaving
+/// them blocked on a reply that will never come.
+fn fail_pending(rx: &mpsc::Receiver<Command>, error: EncodeError) {
+    while let Ok(command) = rx.try_recv() {
+        match command {
+            Command::Encode { reply, .. } => {
+                let _ = reply.send(Err(EncodeError::Backend(error.to_string())));
+            }
+            Command::Flush { reply } | Command::Finish { reply } => {
+                let _ = reply.send(Err(EncodeError::Backend(error.to_string())));
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_one(
+    session: &Session,
+    input: &mut Buffer<'_>,
+    bitstreams: &mut [Bitstream<'_>],
+    pool: &mut SlotPool,
+    codec_config: &mut Option<Vec<u8>>,
+    decode_index: &mut u64,
+    frame: &PreprocessedFrame,
+    pitch: u32,
+    frame_duration: u64,
+    force_keyframe: bool,
+    units: &mut Vec<EncodedUnit>,
+) -> Result<(), EncodeError> {
+    let nv12 = to_nv12(frame, pitch).map_err(|e| EncodeError::Backend(e.to_string()))?;
+    let pts = frame.pts.ticks();
+
+    let slot = match pool.acquire(pts) {
+        Some(slot) => slot,
+        None => {
+            // Every slot is in flight: collect what has completed, then retry.
+            drain_ready(
+                bitstreams,
+                pool,
+                codec_config,
+                decode_index,
+                frame_duration,
+                units,
+            )?;
+            pool.acquire(pts)
+                .ok_or_else(|| EncodeError::Backend("NVENC output slot pool exhausted".into()))?
+        }
+    };
+
+    unsafe { input.lock().map_err(nvenc_error)?.write(&nv12) };
+
+    let flags = if force_keyframe {
+        NV_ENC_PIC_FLAGS::NV_ENC_PIC_FLAG_FORCEIDR as u32
+    } else {
+        0
+    };
+    match encode_with_retry(session, input, &mut bitstreams[slot], pts, flags)? {
+        EncodeCall::Emitted => {}
+        EncodeCall::NeedMoreInput => {
+            // The frame is buffered; its output appears on a later call.
+            return Ok(());
+        }
+    }
+    drain_ready(
+        bitstreams,
+        pool,
+        codec_config,
+        decode_index,
+        frame_duration,
+        units,
+    )
+}
+
+enum EncodeCall {
+    Emitted,
+    NeedMoreInput,
+}
+
+fn encode_with_retry(
+    session: &Session,
+    input: &mut Buffer<'_>,
+    output: &mut Bitstream<'_>,
+    timestamp: u64,
+    flags: u32,
+) -> Result<EncodeCall, EncodeError> {
+    for _ in 0..BUSY_RETRIES {
+        let params = EncodePictureParams {
+            input_timestamp: timestamp,
+            encode_pic_flags: flags,
+            ..Default::default()
+        };
+        match session.encode_picture(input, output, params) {
+            Ok(()) => return Ok(EncodeCall::Emitted),
+            Err(e) if e.kind() == ErrorKind::NeedMoreInput => return Ok(EncodeCall::NeedMoreInput),
+            Err(e) if e.kind() == ErrorKind::EncoderBusy => thread::sleep(BUSY_SLEEP),
+            Err(e) => return Err(nvenc_error(e)),
+        }
+    }
+    Err(EncodeError::Backend(
+        "NVENC stayed busy across retries".into(),
+    ))
+}
+
+/// Collect completed outputs in submission order.
+///
+/// A slot that has not been filled yet still contains the *previous* frame's
+/// bitstream, so completion is confirmed by matching the driver's echoed
+/// timestamp against the one recorded when the slot was acquired.
+fn drain_ready(
+    bitstreams: &mut [Bitstream<'_>],
+    pool: &mut SlotPool,
+    codec_config: &mut Option<Vec<u8>>,
+    decode_index: &mut u64,
+    frame_duration: u64,
+    units: &mut Vec<EncodedUnit>,
+) -> Result<(), EncodeError> {
+    for (slot, expected_pts) in pool.in_flight() {
+        let lock = match bitstreams[slot].try_lock() {
+            Ok(lock) => lock,
+            Err(e) if e.kind() == ErrorKind::LockBusy => break,
+            Err(e) => return Err(nvenc_error(e)),
+        };
+        if lock.data().is_empty() || lock.timestamp() != expected_pts {
+            break;
+        }
+        let unit = unit_from_bitstream(&lock, codec_config, decode_index, frame_duration)?;
+        drop(lock);
+        pool.release(slot);
+        units.push(unit);
+    }
+    Ok(())
+}
+
+/// Drain everything still in flight after end-of-stream.
+fn finish(
+    session: &Session,
+    bitstreams: &mut [Bitstream<'_>],
+    pool: &mut SlotPool,
+    decode_index: &mut u64,
+    frame_duration: u64,
+    units: &mut Vec<EncodedUnit>,
+) -> Result<(), EncodeError> {
+    let mut eos = false;
+    for _ in 0..BUSY_RETRIES {
+        match session.end_of_stream() {
+            Ok(()) => {
+                eos = true;
+                break;
+            }
+            Err(e) if e.kind() == ErrorKind::EncoderBusy => thread::sleep(BUSY_SLEEP),
+            Err(e) => return Err(nvenc_error(e)),
+        }
+    }
+    if !eos {
+        return Err(EncodeError::Backend(
+            "NVENC stayed busy while draining end-of-stream".into(),
+        ));
+    }
+
+    for (slot, expected_pts) in pool.in_flight() {
+        let lock = bitstreams[slot].lock().map_err(nvenc_error)?;
+        // Stale-data guard: only emit an output that reports the timestamp this
+        // slot was acquired with.
+        if lock.data().is_empty() || lock.timestamp() != expected_pts {
+            drop(lock);
+            pool.release(slot);
+            continue;
+        }
+        let mut no_config = None;
+        let unit = unit_from_bitstream(&lock, &mut no_config, decode_index, frame_duration)?;
+        drop(lock);
+        pool.release(slot);
+        units.push(unit);
+    }
+    Ok(())
+}
+
+fn unit_from_bitstream(
+    lock: &nvidia_video_codec_sdk::BitstreamLock<'_, '_>,
+    codec_config: &mut Option<Vec<u8>>,
+    decode_index: &mut u64,
+    frame_duration: u64,
+) -> Result<EncodedUnit, EncodeError> {
+    // With picture-type decision enabled, the driver reports the real type.
+    // Only IDR is a random-access/sync sample; INTRA_ONLY (I) is not.
+    let keyframe = matches!(lock.picture_type(), NV_ENC_PIC_TYPE::NV_ENC_PIC_TYPE_IDR);
+    let bytes = lock.data().to_vec();
+
+    if keyframe && codec_config.is_none() {
+        *codec_config = Some(
+            av1::av1c_from_keyframe(&bytes)
+                .map_err(|e| EncodeError::Backend(format!("derive av1C from keyframe: {e}")))?,
+        );
+    }
+
+    let pts = Pts(lock.timestamp());
+    let dts = Pts(decode_index.saturating_mul(frame_duration));
+    *decode_index += 1;
+
+    Ok(EncodedUnit {
+        track_id: TrackId::Video,
+        bytes,
+        pts,
+        dts,
+        keyframe,
+        duration: frame_duration,
+    })
+}
+
+fn nvenc_error(e: nvidia_video_codec_sdk::EncodeError) -> EncodeError {
+    EncodeError::Backend(format!("NVENC: {e:?}"))
+}

@@ -6,10 +6,10 @@
 use blazar_calibration::{load_str, CalibrationIndex};
 use blazar_core::{
     ColorRange, ColorSpace, Container, Dtype, FrameBuffer, FrameDesc, FrameRef, Layout,
-    ModelIdentity, Pts, Target, Timebase, VideoCodec, VideoEncoderBackend,
+    ModelIdentity, Pts, StreamParams, Target, Timebase, VideoCodec, VideoEncoderBackend,
 };
 use blazar_preprocess::rgb_f32_len;
-use blazar_runtime::{Boundary, Encoder, Output};
+use blazar_runtime::{Boundary, Encoder, Output, RuntimeError};
 use blazar_sink::fmp4::DebugFileSink;
 
 const DEFAULT_CAL: &str = r#"
@@ -30,9 +30,26 @@ pix_fmt = "yuv420p"
 svtav1 = "preset=6"
 "#;
 
+const NVENC_CAL: &str = r#"
+schema_version = 1
+source = "default"
+[key]
+model = { family = "*", version = "*", quant = "*", size = "*" }
+scene = "*"
+codec = "nvenc_av1"
+target = "balanced"
+[video.common]
+rate_control = "crf"
+crf = 30
+keyint = 4
+bframes = 0
+pix_fmt = "yuv420p"
+"#;
+
 fn index() -> CalibrationIndex {
     let mut idx = CalibrationIndex::new();
     idx.insert(load_str(DEFAULT_CAL, "default/svtav1_balanced.toml").unwrap());
+    idx.insert(load_str(NVENC_CAL, "default/nvenc_av1_balanced.toml").unwrap());
     idx
 }
 
@@ -82,7 +99,7 @@ fn run(n: u32) -> Vec<u8> {
             codec: VideoCodec::Av1,
             backend: VideoEncoderBackend::SvtAv1,
             container: Container::FragmentedMp4,
-            video_extradata: vec![0x81, 0x04, 0x0c, 0x00],
+            video_extradata: Some(vec![0x81, 0x04, 0x0c, 0x00]),
             audio_extradata: None,
         },
         sink,
@@ -153,7 +170,7 @@ fn scene_cut_boundary_forces_keyframe() {
             codec: VideoCodec::Av1,
             backend: VideoEncoderBackend::SvtAv1,
             container: Container::FragmentedMp4,
-            video_extradata: vec![0x81, 0x04, 0x0c, 0x00],
+            video_extradata: Some(vec![0x81, 0x04, 0x0c, 0x00]),
             audio_extradata: None,
         },
         sink,
@@ -178,4 +195,142 @@ fn scene_cut_boundary_forces_keyframe() {
     assert!(units[0].1, "frame 0 keyframe");
     assert!(!units[1].1, "frame 1 delta");
     assert!(units[2].1, "frame 2 forced keyframe by scene cut");
+}
+
+// ---------------------------------------------------------------------------
+// Codec configuration contract (sink opens after the first encode)
+// ---------------------------------------------------------------------------
+
+/// Records what the sink was opened with, so tests can assert that the runtime
+/// hands it the encoder's configuration rather than a hardcoded one.
+struct RecordingSink {
+    opened_with: Option<StreamParams>,
+    writes: usize,
+    open_before_write: bool,
+}
+
+impl RecordingSink {
+    fn new() -> Self {
+        Self {
+            opened_with: None,
+            writes: 0,
+            open_before_write: true,
+        }
+    }
+}
+
+impl blazar_sink::Sink for RecordingSink {
+    fn open(&mut self, params: StreamParams) -> Result<(), blazar_sink::SinkError> {
+        self.opened_with = Some(params);
+        Ok(())
+    }
+
+    fn write(&mut self, _unit: &blazar_core::EncodedUnit) -> Result<(), blazar_sink::SinkError> {
+        if self.opened_with.is_none() {
+            self.open_before_write = false;
+        }
+        self.writes += 1;
+        Ok(())
+    }
+
+    fn close(&mut self) -> Result<(), blazar_sink::SinkError> {
+        Ok(())
+    }
+}
+
+fn output(extradata: Option<Vec<u8>>) -> Output {
+    Output {
+        codec: VideoCodec::Av1,
+        backend: VideoEncoderBackend::SvtAv1,
+        container: Container::FragmentedMp4,
+        video_extradata: extradata,
+        audio_extradata: None,
+    }
+}
+
+#[test]
+fn sink_is_opened_with_the_supplied_codec_config_before_any_write() {
+    let mut enc = Encoder::new(
+        ModelIdentity::new("wan", "2.1", "bf16", "1.3b"),
+        Target::Balanced,
+        output(Some(vec![0x81, 0x04, 0x0c, 0x00])),
+        RecordingSink::new(),
+        index(),
+    );
+    {
+        let mut stream = enc.open_stream("req-cfg");
+        stream
+            .submit_video(host_frame(8, 8, 0.5, 0), None, None)
+            .unwrap();
+        stream
+            .submit_video(host_frame(8, 8, 0.5, 1), None, None)
+            .unwrap();
+        stream.close().unwrap();
+    }
+    let sink = enc.into_sink_for_test();
+    assert_eq!(sink.writes, 2);
+    assert!(
+        sink.open_before_write,
+        "sink must open before the first write"
+    );
+    let params = sink.opened_with.expect("sink was opened");
+    assert_eq!(params.video.extradata, vec![0x81, 0x04, 0x0c, 0x00]);
+}
+
+#[test]
+fn missing_codec_config_fails_instead_of_muxing_an_empty_config() {
+    let mut enc = Encoder::new(
+        ModelIdentity::new("wan", "2.1", "bf16", "1.3b"),
+        Target::Balanced,
+        output(None),
+        RecordingSink::new(),
+        index(),
+    );
+    let mut stream = enc.open_stream("req-no-cfg");
+    let err = stream
+        .submit_video(host_frame(8, 8, 0.5, 0), None, None)
+        .unwrap_err();
+    assert!(matches!(err, RuntimeError::MissingCodecConfig));
+    // The sink must not have been opened with a bogus configuration.
+    drop(stream);
+    assert!(enc.into_sink_for_test().opened_with.is_none());
+}
+
+#[test]
+fn empty_codec_config_override_is_rejected() {
+    let mut enc = Encoder::new(
+        ModelIdentity::new("wan", "2.1", "bf16", "1.3b"),
+        Target::Balanced,
+        output(Some(Vec::new())),
+        RecordingSink::new(),
+        index(),
+    );
+    let mut stream = enc.open_stream("req-empty-cfg");
+    let err = stream
+        .submit_video(host_frame(8, 8, 0.5, 0), None, None)
+        .unwrap_err();
+    assert!(matches!(err, RuntimeError::MissingCodecConfig));
+}
+
+#[cfg(not(feature = "nvenc"))]
+#[test]
+fn nvenc_backend_without_the_feature_is_rejected() {
+    let mut enc = Encoder::new(
+        ModelIdentity::new("wan", "2.1", "bf16", "1.3b"),
+        Target::Balanced,
+        Output {
+            codec: VideoCodec::Av1,
+            backend: VideoEncoderBackend::NvencAv1,
+            container: Container::FragmentedMp4,
+            video_extradata: None,
+            audio_extradata: None,
+        },
+        RecordingSink::new(),
+        index(),
+    );
+    let mut stream = enc.open_stream("req-nvenc");
+    let err = stream
+        .submit_video(host_frame(8, 8, 0.5, 0), None, None)
+        .unwrap_err();
+    assert!(matches!(err, RuntimeError::BackendUnavailable("nvenc")));
 }

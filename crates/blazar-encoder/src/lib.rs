@@ -7,7 +7,9 @@
 //! codec, so the pipeline is exercisable end-to-end before the SVT-AV1 FFI
 //! bindings land behind the `svtav1` feature.
 
+pub mod av1;
 pub mod config;
+pub mod nvenc;
 
 use blazar_core::{EncodedUnit, Timebase, TrackId};
 use blazar_preprocess::PreprocessedFrame;
@@ -40,6 +42,19 @@ pub trait VideoEncoder {
 
     /// Force the next emitted frame to be a keyframe (WebRTC PLI / scene cut).
     fn request_keyframe(&mut self);
+
+    /// Container-facing codec configuration (AV1 `av1C`, H.264 `avcC`, HEVC
+    /// `hvcC` body), once the backend knows it.
+    ///
+    /// Real encoders only learn this from their first keyframe (the sequence
+    /// header lives in the bitstream), so this returns `None` until then. The
+    /// mock has no real codec and always returns `None`; the runtime then falls
+    /// back to the explicit `Output::video_extradata` override. Returning
+    /// `None` when no override exists is a hard error in the runtime: muxing an
+    /// empty configuration would produce an unplayable stream.
+    fn codec_config(&self) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// A deterministic mock video encoder implementing the full contract.

@@ -23,8 +23,8 @@
 
 use blazar_calibration::{CalibrationIndex, Query};
 use blazar_core::{
-    FrameRef, ModelIdentity, StreamParams, Target, Timebase, VideoCodec, VideoEncoderBackend,
-    VideoTrackParams,
+    FrameDesc, FrameRef, ModelIdentity, StreamParams, Target, Timebase, VideoCodec,
+    VideoEncoderBackend, VideoTrackParams,
 };
 use blazar_encoder::{EncoderConfig, MockVideoEncoder, VideoEncoder};
 use blazar_preprocess::{CpuPreprocess, PreprocessStage};
@@ -43,6 +43,12 @@ pub enum RuntimeError {
     Sink(#[from] blazar_sink::SinkError),
     #[error("audio is not supported in Phase 1 (Opus backend is Phase 2)")]
     AudioUnsupported,
+    #[error("encoder backend {0:?} is not compiled in (enable its cargo feature)")]
+    BackendUnavailable(&'static str),
+    #[error(
+        "no codec configuration: the encoder has not produced one and no override was supplied"
+    )]
+    MissingCodecConfig,
     #[error("stream already closed")]
     Closed,
 }
@@ -55,8 +61,13 @@ pub struct Output {
     /// Backend/calibration identity that produces the wire codec.
     pub backend: VideoEncoderBackend,
     pub container: blazar_core::Container,
-    /// AV1 configuration record body for the selected video encoder.
-    pub video_extradata: Vec<u8>,
+    /// Explicit codec configuration override (AV1 `av1C`, H.264 `avcC`, HEVC
+    /// `hvcC` body). When `Some`, it is used instead of whatever the backend
+    /// derives, which is how the mock (which has no codec) supplies one. Real
+    /// encoders derive it from their first keyframe and should be left `None`:
+    /// an override that disagrees with the bitstream produces an unplayable
+    /// stream, and nothing here cross-checks it.
+    pub video_extradata: Option<Vec<u8>>,
     /// Reserved for the Phase-2 Opus path.
     pub audio_extradata: Option<Vec<u8>>,
 }
@@ -125,7 +136,8 @@ impl<S: Sink> Encoder<S> {
             request_id: request_id.into(),
             encoder: None,
             seq: 0,
-            opened: false,
+            encoder_open: false,
+            sink_open: false,
             closed: false,
         }
     }
@@ -135,9 +147,13 @@ impl<S: Sink> Encoder<S> {
 pub struct Stream<'a, S: Sink> {
     enc: &'a mut Encoder<S>,
     request_id: String,
-    encoder: Option<MockVideoEncoder>,
+    encoder: Option<Box<dyn VideoEncoder>>,
     seq: u64,
-    opened: bool,
+    /// The encoder is built as soon as the first frame's descriptor is known;
+    /// the sink is opened only once a codec configuration exists (after the
+    /// first encode for real backends), then writes start.
+    encoder_open: bool,
+    sink_open: bool,
     closed: bool,
 }
 
@@ -146,9 +162,11 @@ impl<'a, S: Sink> Stream<'a, S> {
         &self.request_id
     }
 
-    /// Open the sink + build the encoder from the first frame's descriptor.
-    fn ensure_open(&mut self, frame: &FrameRef) -> Result<(), RuntimeError> {
-        if self.opened {
+    /// Build the encoder from the first frame's descriptor. The sink is *not*
+    /// opened here: a real encoder only reveals its codec configuration when it
+    /// emits its first keyframe, so `ensure_sink` runs after the first encode.
+    fn ensure_encoder(&mut self, frame: &FrameRef) -> Result<(), RuntimeError> {
+        if self.encoder_open {
             return Ok(());
         }
         let desc = &frame.desc;
@@ -173,7 +191,41 @@ impl<'a, S: Sink> Stream<'a, S> {
             "resolved calibration"
         );
         let cfg = EncoderConfig::from_calibration(cal, self.enc.codec_key());
+        self.encoder = Some(build_encoder(
+            &cfg,
+            desc,
+            self.enc.output.codec,
+            self.enc.output.backend,
+            self.enc.timebase,
+        )?);
+        self.encoder_open = true;
+        Ok(())
+    }
 
+    /// Resolve the container codec configuration: an explicit override wins,
+    /// otherwise the backend must have produced one.
+    fn resolve_codec_config(&self) -> Result<Vec<u8>, RuntimeError> {
+        if let Some(extradata) = &self.enc.output.video_extradata {
+            if extradata.is_empty() {
+                return Err(RuntimeError::MissingCodecConfig);
+            }
+            return Ok(extradata.clone());
+        }
+        self.encoder
+            .as_ref()
+            .and_then(|enc| enc.codec_config())
+            .filter(|extradata| !extradata.is_empty())
+            .ok_or(RuntimeError::MissingCodecConfig)
+    }
+
+    /// Open the sink once the first frame has been encoded (or the override is
+    /// available). Dimensions and fps come from the frame descriptor, because
+    /// the runtime does not expose them up front (architecture §8/§10).
+    fn ensure_sink(&mut self, desc: &blazar_core::FrameDesc) -> Result<(), RuntimeError> {
+        if self.sink_open {
+            return Ok(());
+        }
+        let extradata = self.resolve_codec_config()?;
         let params = StreamParams {
             timebase: self.enc.timebase,
             video: VideoTrackParams {
@@ -181,14 +233,13 @@ impl<'a, S: Sink> Stream<'a, S> {
                 width: desc.width,
                 height: desc.height,
                 fps: desc.fps,
-                extradata: self.enc.output.video_extradata.clone(),
+                extradata,
             },
             audio: None, // video-only in Phase 1
             container: self.enc.output.container,
         };
         self.enc.sink.open(params)?;
-        self.encoder = Some(MockVideoEncoder::new(&cfg, desc.fps, self.enc.timebase));
-        self.opened = true;
+        self.sink_open = true;
         Ok(())
     }
 
@@ -204,7 +255,7 @@ impl<'a, S: Sink> Stream<'a, S> {
         if self.closed {
             return Err(RuntimeError::Closed);
         }
-        self.ensure_open(&frame)?;
+        self.ensure_encoder(&frame)?;
 
         if boundary == Some(Boundary::SceneCut) {
             if let Some(enc) = self.encoder.as_mut() {
@@ -214,6 +265,9 @@ impl<'a, S: Sink> Stream<'a, S> {
 
         let pre = self.enc.preprocess.process(&frame)?;
         let units = self.encoder.as_mut().unwrap().encode(&pre)?;
+        // The first encode is what makes a codec configuration available, so
+        // the sink opens here rather than before the encode.
+        self.ensure_sink(&frame.desc)?;
         for u in &units {
             self.enc.sink.write(u)?;
         }
@@ -235,7 +289,9 @@ impl<'a, S: Sink> Stream<'a, S> {
                 self.enc.sink.write(&u)?;
             }
         }
-        self.enc.sink.flush()?;
+        if self.sink_open {
+            self.enc.sink.flush()?;
+        }
         Ok(())
     }
 
@@ -249,10 +305,48 @@ impl<'a, S: Sink> Stream<'a, S> {
                 self.enc.sink.write(&u)?;
             }
         }
-        if self.opened {
+        if self.sink_open {
             self.enc.sink.close()?;
         }
         self.closed = true;
         Ok(())
+    }
+}
+
+/// Build the encoder for a backend.
+///
+/// `SvtAv1`/`Rav1e` still use the mock: neither real backend has landed, and the
+/// mock implements the full `VideoEncoder` contract. `NvencAv1` is real, but
+/// only when the `nvenc` feature is enabled; otherwise the deployment gets an
+/// explicit error rather than a silent mock.
+fn build_encoder(
+    cfg: &EncoderConfig,
+    desc: &FrameDesc,
+    codec: VideoCodec,
+    backend: VideoEncoderBackend,
+    timebase: Timebase,
+) -> Result<Box<dyn VideoEncoder>, RuntimeError> {
+    match backend {
+        VideoEncoderBackend::SvtAv1 | VideoEncoderBackend::Rav1e => {
+            Ok(Box::new(MockVideoEncoder::new(cfg, desc.fps, timebase)))
+        }
+        VideoEncoderBackend::NvencAv1 => {
+            #[cfg(feature = "nvenc")]
+            {
+                Ok(Box::new(blazar_encoder::nvenc::NvencAv1Encoder::new(
+                    cfg,
+                    desc.width,
+                    desc.height,
+                    desc.fps,
+                    timebase,
+                    codec,
+                )?))
+            }
+            #[cfg(not(feature = "nvenc"))]
+            {
+                let _ = (cfg, desc, codec, timebase);
+                Err(RuntimeError::BackendUnavailable("nvenc"))
+            }
+        }
     }
 }

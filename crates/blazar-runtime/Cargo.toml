@@ -13,3 +13,9 @@ blazar-sink.workspace = true
 blazar-preprocess.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[features]
+default = []
+# Forward the hardware encoder. Enables `blazar-encoder/nvenc` and the backend
+# selection path that uses it.
+nvenc = ["blazar-encoder/nvenc"]
