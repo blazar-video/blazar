@@ -21,18 +21,25 @@ use cudarc::driver::{DevicePtr,
 const KERNEL: &str = r#"
 extern "C" __global__ void rgb_to_nv12(
     const unsigned char* __restrict__ src,
-    unsigned char* __restrict__ dst,
-    int w, int h, int pitch,
+    const unsigned long long* __restrict__ dst_ptrs,
+    int w, int h, int pitch, int frames,
     int layout, int fmt, int range,
     float kr, float kg, float kb)
 {
+    int fi = blockIdx.z;
+    if (fi >= frames) return;
     int cx = blockIdx.x * blockDim.x + threadIdx.x;
     int cy = blockIdx.y * blockDim.y + threadIdx.y;
     int cw = (w + 1) >> 1;
     int ch = (h + 1) >> 1;
     if (cx >= cw || cy >= ch) return;
 
+    unsigned char* __restrict__ dst = (unsigned char*)dst_ptrs[fi];
     const int pixels = w * h;
+    // Frames are contiguous in the staging buffer: THWC is x3 interleaved
+    // samples, BCTHW has one scalar per pixel per plane.
+    const int elem = (fmt == 0) ? 4 : 2;
+    src += (unsigned long long)fi * pixels * 3 * elem;
     float cb_sum = 0.0f, cr_sum = 0.0f, n = 0.0f;
 
     for (int dy = 0; dy < 2; ++dy) {
@@ -128,6 +135,9 @@ impl Nv12Converter {
     }
 
     /// Convert one RGB frame already on the device into `dst` as NV12 at `pitch`.
+    ///
+    /// Test convenience; the encode path uses [`Self::convert_batch`] so the
+    /// batch kernel runs whether there is one frame or many.
     #[allow(clippy::too_many_arguments)]
     pub fn convert(
         &self,
@@ -139,18 +149,25 @@ impl Nv12Converter {
     ) -> Result<(), EncodeError> {
         let (ptr, guard) = dst.device_ptr(stream);
         drop(guard);
-        self.convert_raw(stream, src, ptr, desc, pitch)
+        let ptrs = stream
+            .memcpy_stod(&[ptr])
+            .map_err(|e| EncodeError::Backend(format!("upload dst pointer: {e}")))?;
+        self.convert_batch(stream, src, &ptrs, desc, 1, pitch)
     }
 
-    /// Convert into a raw device pointer, e.g. a `cuMemAllocPitch` allocation
-    /// that is registered with NVENC for zero-copy input.
+    /// Convert `frames` RGB frames already on the device into the NV12 buffers
+    /// named by `dst_ptrs`, in one launch.
+    ///
+    /// The frames must be contiguous in `src` and all share `desc`. THWC and
+    /// BCTHW both put a frame at `frame_index * width * height * 3 * elem`.
     #[allow(clippy::too_many_arguments)]
-    pub fn convert_raw(
+    pub fn convert_batch(
         &self,
         stream: &Arc<CudaStream>,
         src: &CudaSlice<u8>,
-        dst: u64,
+        dst_ptrs: &CudaSlice<u64>,
         desc: &FrameDesc,
+        frames: u32,
         pitch: u32,
     ) -> Result<(), EncodeError> {
         if !matches!(desc.dtype, Dtype::F32 | Dtype::Bf16) {
@@ -181,19 +198,21 @@ impl Nv12Converter {
         let w = desc.width as i32;
         let h = desc.height as i32;
         let pitch = pitch as i32;
+        let frames = frames.max(1) as i32;
         let cw = desc.width.div_ceil(2);
         let ch = desc.height.div_ceil(2);
         let cfg = LaunchConfig {
-            grid_dim: (cw.div_ceil(16), ch.div_ceil(16), 1),
+            grid_dim: (cw.div_ceil(16), ch.div_ceil(16), frames as u32),
             block_dim: (16, 16, 1),
             shared_mem_bytes: 0,
         };
         let mut args = stream.launch_builder(&self.func);
         args.arg(src);
-        args.arg(&dst);
+        args.arg(dst_ptrs);
         args.arg(&w);
         args.arg(&h);
         args.arg(&pitch);
+        args.arg(&frames);
         args.arg(&layout);
         args.arg(&fmt);
         args.arg(&range);

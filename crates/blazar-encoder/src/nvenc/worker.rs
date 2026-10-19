@@ -423,6 +423,18 @@ fn run_loop(
             return;
         }
     };
+    // Destination pointers for the batch kernel. One entry per pool slot, so a
+    // batch never needs a fresh allocation per frame.
+    let mut dst_ptrs: CudaSlice<u64> = match stream.alloc_zeros(POOL_CAPACITY) {
+        Ok(buffer) => buffer,
+        Err(e) => {
+            fail_pending(
+                &rx,
+                EncodeError::Backend(format!("allocate dst pointer array: {e}")),
+            );
+            return;
+        }
+    };
     let staging_len = (params.width * params.height * 3 * 4) as usize;
     let mut staging: CudaSlice<u8> = match stream.alloc_zeros(staging_len) {
         Ok(buffer) => buffer,
@@ -511,6 +523,7 @@ fn run_loop(
             &mut inputs,
             &mut bitstreams,
             &mut staging,
+            &mut dst_ptrs,
             &converter,
             &mut pool,
             &mut codec_config,
@@ -550,6 +563,7 @@ fn encode_one(
     inputs: &mut [RegisteredResource<'_, ()>],
     bitstreams: &mut [Bitstream<'_>],
     staging: &mut CudaSlice<u8>,
+    dst_ptrs: &mut CudaSlice<u64>,
     converter: &Nv12Converter,
     pool: &mut SlotPool,
     codec_config: &mut Option<Vec<u8>>,
@@ -613,7 +627,10 @@ fn encode_one(
             stream
                 .memcpy_htod(bytes.as_slice(), staging)
                 .map_err(|e| EncodeError::Backend(format!("upload RGB: {e}")))?;
-            converter.convert_raw(stream, staging, device[slot].ptr, desc, pitch)?;
+            stream
+                .memcpy_htod(&[device[slot].ptr], &mut dst_ptrs.slice_mut(0..1))
+                .map_err(|e| EncodeError::Backend(format!("upload dst pointer: {e}")))?;
+            converter.convert_batch(stream, staging, dst_ptrs, desc, 1, pitch)?;
         }
     }
     // NVENC reads the registered resource from the same CUDA context but is not
