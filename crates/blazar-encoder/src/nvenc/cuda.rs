@@ -219,7 +219,13 @@ fn assemble_cubin(ptx: &[u8], major: i32, minor: i32) -> Option<Vec<u8>> {
         .find(|path| Command::new(path).arg("--version").output().is_ok())?;
 
     let dir = std::env::temp_dir();
-    let unique = format!("blazar-nv12-{}-{}", std::process::id(), major * 10 + minor);
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let unique = format!(
+        "blazar-nv12-{}-{}-{seq}",
+        std::process::id(),
+        major * 10 + minor
+    );
     let in_path = dir.join(format!("{unique}.ptx"));
     let out_path = dir.join(format!("{unique}.cubin"));
     std::fs::write(&in_path, ptx).ok()?;
