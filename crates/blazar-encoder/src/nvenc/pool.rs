@@ -102,7 +102,7 @@ impl SlotPool {
             .iter()
             .filter_map(|slot| match self.slots[*slot] {
                 SlotState::InFlight { expected_pts } => Some((*slot, expected_pts)),
-                SlotState::Free => None,
+                SlotState::Free | SlotState::Reserved => None,
             })
             .collect()
     }
