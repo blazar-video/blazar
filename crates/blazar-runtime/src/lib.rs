@@ -41,6 +41,8 @@ pub enum RuntimeError {
     Encode(#[from] blazar_encoder::EncodeError),
     #[error("sink error: {0}")]
     Sink(#[from] blazar_sink::SinkError),
+    #[error("submit_video_batch was called with no frames")]
+    EmptyBatch,
     #[error("audio is not supported in Phase 1 (Opus backend is Phase 2)")]
     AudioUnsupported,
     #[error("encoder backend {0:?} is not compiled in (enable its cargo feature)")]
@@ -285,6 +287,50 @@ impl<S: Sink> Stream<S> {
             // Preprocessing happens inside the backend now (GPU for NVENC), so
             // this call does not do per-pixel work on the caller's thread.
             encoder.encode_frame(frame)?
+        };
+        // The first encode is what makes a codec configuration available, so
+        // the sink opens here rather than before the encode.
+        self.ensure_sink(&desc)?;
+        for u in &units {
+            self.enc.sink.write(u)?;
+        }
+
+        let seq = self.seq;
+        self.seq += 1;
+        Ok(seq)
+    }
+
+    /// Submit several frames in one encoder submission. GPU backends convert
+    /// them with a single kernel launch; the sink receives every unit in order.
+    ///
+    /// Returns one submission id for the batch. The frames must share geometry
+    /// and format.
+    pub fn submit_video_batch(
+        &mut self,
+        frames: Vec<FrameRef>,
+        boundary: Option<Boundary>,
+    ) -> Result<u64, RuntimeError> {
+        if self.closed {
+            return Err(RuntimeError::Closed);
+        }
+        let Some(first) = frames.first() else {
+            return Err(RuntimeError::EmptyBatch);
+        };
+        let desc = first.desc;
+        self.ensure_encoder(first)?;
+
+        if boundary == Some(Boundary::SceneCut) {
+            if let Some(enc) = self.encoder.as_mut() {
+                enc.request_keyframe();
+            }
+        }
+
+        let units = {
+            let encoder = self
+                .encoder
+                .as_mut()
+                .ok_or(RuntimeError::EncoderNotInitialized)?;
+            encoder.encode_batch(frames)?
         };
         // The first encode is what makes a codec configuration available, so
         // the sink opens here rather than before the encode.

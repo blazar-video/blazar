@@ -58,6 +58,8 @@ struct FrameJob {
 
 enum Job {
     Frame(Box<FrameJob>),
+    /// Several frames in one encoder submission: one GPU kernel launch.
+    Batch(Vec<Box<FrameJob>>),
     Flush(SyncSender<Result<(), String>>),
     Close(SyncSender<Result<(), String>>),
 }
@@ -239,6 +241,83 @@ fn worker_main(
                         }
                         let _ = shared.events.send(WorkerEvent::Failed {
                             seq: Some(job.seq),
+                            message,
+                        });
+                        break;
+                    }
+                }
+            }
+            Job::Batch(jobs) => {
+                shared.queued.fetch_sub(1, Ordering::Relaxed);
+                let started = Instant::now();
+                let count = jobs.len();
+                let first_seq = jobs.first().map(|job| job.seq).unwrap_or(0);
+                let boundary = jobs.first().and_then(|job| job.boundary);
+                let pts = jobs
+                    .first()
+                    .map(|job| job.desc.pts.0)
+                    .unwrap_or_default();
+                let frames: Vec<FrameRef> = jobs
+                    .into_iter()
+                    .map(|job| FrameRef::new(FrameBuffer::host_owned(job.bytes), job.desc))
+                    .collect();
+                let result = stream.submit_video_batch(frames, boundary);
+                let elapsed = started.elapsed();
+                match result {
+                    Ok(seq) => {
+                        let units: Vec<WrittenUnit> = written
+                            .lock()
+                            .map(|mut units| units.drain(..).collect())
+                            .unwrap_or_default();
+                        let bytes: usize = units.iter().map(|u| u.bytes).sum();
+                        let keyframe = units.iter().any(|u| u.keyframe);
+                        let encode_us = elapsed.as_micros() as u64;
+                        if let Ok(mut stats) = shared.stats.lock() {
+                            stats.encoded += count as u64;
+                            stats.bytes += bytes as u64;
+                            stats.last_encode_us = encode_us;
+                            stats.max_encode_us = stats.max_encode_us.max(encode_us);
+                        }
+                        tracing::debug!(
+                            target: "blazar",
+                            seq,
+                            frames = count,
+                            keyframe,
+                            units = units.len(),
+                            bytes,
+                            encode_us,
+                            "batch encoded"
+                        );
+                        if let Ok(stats) = shared.stats.lock() {
+                            if stats.encoded > 0 && stats.encoded % 24 == 0 {
+                                tracing::info!(
+                                    target: "blazar",
+                                    frames = stats.encoded,
+                                    bytes = stats.bytes,
+                                    "encode progress"
+                                );
+                            }
+                        }
+                        let _ = shared.events.send(WorkerEvent::Encoded {
+                            seq,
+                            pts,
+                            keyframe,
+                            units: units.len(),
+                            bytes,
+                            encode_us,
+                            queue_depth: shared.queued.load(Ordering::Relaxed),
+                        });
+                    }
+                    Err(err) => {
+                        let message = err.to_string();
+                        if let Ok(mut slot) = shared.error.lock() {
+                            *slot = Some(message.clone());
+                        }
+                        if let Ok(mut stats) = shared.stats.lock() {
+                            stats.failed = true;
+                        }
+                        let _ = shared.events.send(WorkerEvent::Failed {
+                            seq: Some(first_seq),
                             message,
                         });
                         break;
@@ -535,6 +614,127 @@ impl PyEncoder {
         self.seq += 1;
         self.submitted += 1;
         self.frame_index += 1;
+        self.frame_size.get_or_insert((width, height));
+        self.fps.get_or_insert(fps);
+        Ok(seq)
+    }
+
+    /// Queue several frames as one submission. GPU backends convert them with
+    /// one kernel launch, then encode them one at a time. Returns the batch's
+    /// submission id; `poll()` reports one event for the batch.
+    ///
+    /// Frames must share geometry and format. Use this for a tensor the model
+    /// already produced as a chunk (BCTHW with T > 1) instead of a Python loop.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        frames,
+        width,
+        height,
+        fps,
+        layout,
+        range,
+        pts_ticks = None,
+        scene_cut = false,
+    ))]
+    fn submit_batch(
+        &mut self,
+        py: Python<'_>,
+        frames: Vec<Bound<'_, PyAny>>,
+        width: u32,
+        height: u32,
+        fps: f64,
+        layout: &str,
+        range: &str,
+        pts_ticks: Option<u64>,
+        scene_cut: bool,
+    ) -> PyResult<u64> {
+        if frames.is_empty() {
+            return Err(PyValueError::new_err("frames is empty"));
+        }
+        if !fps.is_finite() || fps <= 0.0 {
+            return Err(PyValueError::new_err("fps must be > 0"));
+        }
+        if width == 0 || height == 0 {
+            return Err(PyValueError::new_err("width and height must be non-zero"));
+        }
+        if let Some(err) = self.error_message() {
+            return Err(PyRuntimeError::new_err(err));
+        }
+        let jobs_out = self
+            .jobs
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("encoder state lock poisoned"))?
+            .clone()
+            .ok_or_else(|| closed_error(&self.request_id))?;
+
+        let layout = parse_layout(layout)?;
+        let range = parse_range(range)?;
+
+        if let Some((prev_w, prev_h)) = self.frame_size {
+            if (prev_w, prev_h) != (width, height) {
+                return Err(PyValueError::new_err(format!(
+                    "frame size changed from {prev_w}x{prev_h} to {width}x{height}; \
+                     open a new Encoder for a new stream"
+                )));
+            }
+        }
+        if let Some(prev_fps) = self.fps {
+            if (prev_fps - fps).abs() > 1e-9 {
+                return Err(PyValueError::new_err(format!(
+                    "fps changed from {prev_fps} to {fps}; open a new Encoder for a new stream"
+                )));
+            }
+        }
+
+        let mut jobs = Vec::with_capacity(frames.len());
+        for (index, frame) in frames.iter().enumerate() {
+            let bytes = copy_float32(py, frame)?;
+            let frame_index = self.frame_index + index as u64;
+            let pts = pts_ticks
+                .map(|first| {
+                    let step = self.timebase.ticks_per_frame(fps);
+                    first + index as u64 * step
+                })
+                .unwrap_or_else(|| {
+                    Pts::from_frame_index(frame_index, fps, self.timebase).0
+                });
+            let desc = FrameDesc {
+                width,
+                height,
+                dtype: Dtype::F32,
+                range,
+                layout,
+                colorspace: ColorSpace::AssumedBt709,
+                fps,
+                pts: Pts(pts),
+            };
+            jobs.push(Box::new(FrameJob {
+                seq: self.seq,
+                bytes,
+                desc,
+                boundary: if index == 0 && scene_cut {
+                    Some(Boundary::SceneCut)
+                } else {
+                    None
+                },
+            }));
+        }
+
+        let count = jobs.len() as u64;
+        self.shared.queued.fetch_add(1, Ordering::Relaxed);
+        let sent = py.detach(move || jobs_out.send(Job::Batch(jobs)));
+        if sent.is_err() {
+            self.shared.queued.fetch_sub(1, Ordering::Relaxed);
+            return Err(PyRuntimeError::new_err(
+                self.error_message()
+                    .unwrap_or_else(|| "encoder worker stopped".to_string()),
+            ));
+        }
+
+        let seq = self.seq;
+        self.seq += 1;
+        self.submitted += count;
+        self.frame_index += count;
         self.frame_size.get_or_insert((width, height));
         self.fps.get_or_insert(fps);
         Ok(seq)
