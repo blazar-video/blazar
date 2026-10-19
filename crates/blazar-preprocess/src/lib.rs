@@ -199,6 +199,62 @@ impl PreprocessStage for CpuPreprocess {
     }
 }
 
+/// Below this, rayon's per-task overhead costs more than the parallel gain.
+/// Measured on the 28-thread mosk box: 480x320 is ~9% slower parallel, 720p is
+/// 4x faster.
+const PARALLEL_MIN_PIXELS: usize = 640 * 480;
+
+/// Everything a row-pair task needs that is constant across rows.
+struct RowCtx<'a> {
+    bytes: &'a [u8],
+    w: usize,
+    pixels: usize,
+    desc: &'a blazar_core::FrameDesc,
+    matrix: &'a Matrix,
+}
+
+#[inline]
+fn row_pair_thwc<S: Sample>(
+    ctx: &RowCtx<'_>,
+    cy: usize,
+    y_rows: &mut [u8],
+    u_row: &mut [u8],
+    v_row: &mut [u8],
+) {
+    let RowCtx {
+        bytes,
+        w,
+        desc,
+        matrix,
+        ..
+    } = *ctx;
+    for cx in 0..u_row.len() {
+        let (mut cb, mut cr, mut n) = (0.0f32, 0.0f32, 0.0f32);
+        for (dy, y_row) in y_rows.chunks_exact_mut(w).enumerate() {
+            for dx in 0..2 {
+                let sx = cx * 2 + dx;
+                if sx >= w {
+                    break;
+                }
+                let component = ((cy * 2 + dy) * w + sx) * 3;
+                let (yy, ccb, ccr) = pixel_into(
+                    S::read(bytes, component),
+                    S::read(bytes, component + 1),
+                    S::read(bytes, component + 2),
+                    desc,
+                    matrix,
+                );
+                y_row[sx] = yy;
+                cb += ccb;
+                cr += ccr;
+                n += 1.0;
+            }
+        }
+        u_row[cx] = CpuPreprocess::q8(cb / n);
+        v_row[cx] = CpuPreprocess::q8(cr / n);
+    }
+}
+
 /// THWC (xDiT): each pixel is three consecutive components.
 fn convert_thwc<S: Sample>(
     bytes: &[u8],
@@ -207,6 +263,13 @@ fn convert_thwc<S: Sample>(
     h: usize,
 ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let matrix = Matrix::new(desc.colorspace);
+    let ctx = RowCtx {
+        bytes,
+        w,
+        pixels: w * h,
+        desc,
+        matrix: &matrix,
+    };
     let cw = w.div_ceil(2);
     let ch = h.div_ceil(2);
     let mut y_plane = vec![0u8; w * h];
@@ -214,40 +277,69 @@ fn convert_thwc<S: Sample>(
     let mut v = vec![0u8; cw * ch];
 
     // One task per chroma row: it writes that row of U/V and the one or two
-    // luma rows it owns, so the chunks are disjoint by construction.
-    y_plane
-        .par_chunks_mut(2 * w)
-        .zip(u.par_chunks_mut(cw))
-        .zip(v.par_chunks_mut(cw))
-        .enumerate()
-        .for_each(|(cy, ((y_rows, u_row), v_row))| {
-            for cx in 0..cw {
-                let (mut cb, mut cr, mut n) = (0.0f32, 0.0f32, 0.0f32);
-                for (dy, y_row) in y_rows.chunks_exact_mut(w).enumerate() {
-                    for dx in 0..2 {
-                        let sx = cx * 2 + dx;
-                        if sx >= w {
-                            break;
-                        }
-                        let component = ((cy * 2 + dy) * w + sx) * 3;
-                        let (yy, ccb, ccr) = pixel_into(
-                            S::read(bytes, component),
-                            S::read(bytes, component + 1),
-                            S::read(bytes, component + 2),
-                            desc,
-                            &matrix,
-                        );
-                        y_row[sx] = yy;
-                        cb += ccb;
-                        cr += ccr;
-                        n += 1.0;
-                    }
-                }
-                u_row[cx] = CpuPreprocess::q8(cb / n);
-                v_row[cx] = CpuPreprocess::q8(cr / n);
-            }
-        });
+    // luma rows it owns, so the borrowed chunks are disjoint by construction.
+    if w * h < PARALLEL_MIN_PIXELS {
+        for (cy, ((y_rows, u_row), v_row)) in y_plane
+            .chunks_mut(2 * w)
+            .zip(u.chunks_mut(cw))
+            .zip(v.chunks_mut(cw))
+            .enumerate()
+        {
+            row_pair_thwc::<S>(&ctx, cy, y_rows, u_row, v_row);
+        }
+    } else {
+        y_plane
+            .par_chunks_mut(2 * w)
+            .zip(u.par_chunks_mut(cw))
+            .zip(v.par_chunks_mut(cw))
+            .enumerate()
+            .for_each(|(cy, ((y_rows, u_row), v_row))| {
+                row_pair_thwc::<S>(&ctx, cy, y_rows, u_row, v_row);
+            });
+    }
     (y_plane, u, v)
+}
+
+#[inline]
+fn row_pair_bcthw<S: Sample>(
+    ctx: &RowCtx<'_>,
+    cy: usize,
+    y_rows: &mut [u8],
+    u_row: &mut [u8],
+    v_row: &mut [u8],
+) {
+    let RowCtx {
+        bytes,
+        w,
+        pixels,
+        desc,
+        matrix,
+    } = *ctx;
+    for cx in 0..u_row.len() {
+        let (mut cb, mut cr, mut n) = (0.0f32, 0.0f32, 0.0f32);
+        for (dy, y_row) in y_rows.chunks_exact_mut(w).enumerate() {
+            for dx in 0..2 {
+                let sx = cx * 2 + dx;
+                if sx >= w {
+                    break;
+                }
+                let px = (cy * 2 + dy) * w + sx;
+                let (yy, ccb, ccr) = pixel_into(
+                    S::read(bytes, px),
+                    S::read(bytes, pixels + px),
+                    S::read(bytes, 2 * pixels + px),
+                    desc,
+                    matrix,
+                );
+                y_row[sx] = yy;
+                cb += ccb;
+                cr += ccr;
+                n += 1.0;
+            }
+        }
+        u_row[cx] = CpuPreprocess::q8(cb / n);
+        v_row[cx] = CpuPreprocess::q8(cr / n);
+    }
 }
 
 /// BCTHW (vLLM-Omni host fallback): three full-resolution planes.
@@ -259,45 +351,38 @@ fn convert_bcthw<S: Sample>(
 ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let matrix = Matrix::new(desc.colorspace);
     let pixels = w * h;
+    let ctx = RowCtx {
+        bytes,
+        w,
+        pixels,
+        desc,
+        matrix: &matrix,
+    };
     let cw = w.div_ceil(2);
     let ch = h.div_ceil(2);
     let mut y_plane = vec![0u8; pixels];
     let mut u = vec![0u8; cw * ch];
     let mut v = vec![0u8; cw * ch];
 
-    y_plane
-        .par_chunks_mut(2 * w)
-        .zip(u.par_chunks_mut(cw))
-        .zip(v.par_chunks_mut(cw))
-        .enumerate()
-        .for_each(|(cy, ((y_rows, u_row), v_row))| {
-            let rows = y_rows.len() / w;
-            for cx in 0..cw {
-                let (mut cb, mut cr, mut n) = (0.0f32, 0.0f32, 0.0f32);
-                for dy in 0..rows {
-                    for dx in 0..2 {
-                        let sx = cx * 2 + dx;
-                        if sx >= w {
-                            break;
-                        }
-                        let px = (cy * 2 + dy) * w + sx;
-                        let (yy, ccb, ccr) = pixel_into(
-                            S::read(bytes, px),
-                            S::read(bytes, pixels + px),
-                            S::read(bytes, 2 * pixels + px),
-                            desc,
-                            &matrix,
-                        );
-                        y_rows[dy * w + sx] = yy;
-                        cb += ccb;
-                        cr += ccr;
-                        n += 1.0;
-                    }
-                }
-                u_row[cx] = CpuPreprocess::q8(cb / n);
-                v_row[cx] = CpuPreprocess::q8(cr / n);
-            }
-        });
+    if pixels < PARALLEL_MIN_PIXELS {
+        for (cy, ((y_rows, u_row), v_row)) in y_plane
+            .chunks_mut(2 * w)
+            .zip(u.chunks_mut(cw))
+            .zip(v.chunks_mut(cw))
+            .enumerate()
+        {
+            row_pair_bcthw::<S>(&ctx, cy, y_rows, u_row, v_row);
+        }
+    } else {
+        y_plane
+            .par_chunks_mut(2 * w)
+            .zip(u.par_chunks_mut(cw))
+            .zip(v.par_chunks_mut(cw))
+            .enumerate()
+            .for_each(|(cy, ((y_rows, u_row), v_row))| {
+                row_pair_bcthw::<S>(&ctx, cy, y_rows, u_row, v_row);
+            });
+    }
     (y_plane, u, v)
 }
 
