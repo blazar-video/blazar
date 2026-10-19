@@ -89,19 +89,30 @@ pub struct Nv12Converter {
 
 impl Nv12Converter {
     pub fn new(ctx: &Arc<CudaContext>) -> Result<Self, EncodeError> {
-        // Compile to a cubin for this device instead of PTX. PTX is versioned
-        // by the toolkit that produced it, and a driver older than the toolkit
-        // rejects it with CUDA_ERROR_UNSUPPORTED_PTX_VERSION (toolkit 13.4 vs
-        // driver 610.88 on Windows). A cubin for the device's own sm_XY sidesteps
-        // that negotiation entirely.
+        // NVRTC only produces PTX, and PTX is versioned by the toolkit that
+        // made it: a driver older than the toolkit rejects it with
+        // CUDA_ERROR_UNSUPPORTED_PTX_VERSION (toolkit 13.4 vs driver 610.88 on
+        // Windows). Assemble a cubin for the device's own sm_XY with ptxas when
+        // the toolkit provides one; a cubin does not negotiate a version. Fall
+        // back to the PTX image when ptxas is unavailable.
         let (major, minor) = ctx
             .compute_capability()
             .map_err(|e| EncodeError::Backend(format!("CUDA compute capability: {e:?}")))?;
-        let arch = format!("--gpu-architecture=sm_{major}{minor}");
-        let cubin = compile_cubin(KERNEL, &arch)?;
-        let ptx = cudarc::nvrtc::Ptx::from_binary(cubin);
+        let opts = cudarc::nvrtc::CompileOptions {
+            options: vec![format!("--gpu-architecture=compute_{major}{minor}")],
+            ..Default::default()
+        };
+        let ptx = cudarc::nvrtc::compile_ptx_with_opts(KERNEL, opts)
+            .map_err(|e| EncodeError::Backend(format!("compile NV12 kernel: {e:?}")))?;
+        let image = match assemble_cubin(ptx.as_bytes().unwrap_or_default(), major, minor) {
+            Some(bytes) => {
+                tracing::debug!(target_sm = %format!("{major}{minor}"), "NV12 kernel assembled with ptxas");
+                cudarc::nvrtc::Ptx::from_binary(bytes)
+            }
+            None => ptx,
+        };
         let module = ctx
-            .load_module(ptx)
+            .load_module(image)
             .map_err(|e| EncodeError::Backend(format!("load NV12 kernel: {e}")))?;
         let func = module
             .load_function("rgb_to_nv12")
@@ -188,33 +199,43 @@ impl Nv12Converter {
     }
 }
 
-/// Compile `src` to a cubin for `arch` (e.g. `--gpu-architecture=sm_89`).
+/// Assemble PTX into a cubin for `sm_{major}{minor}` with `ptxas`.
 ///
-/// cudarc only wraps `nvrtcGetPTX`, so the cubin fetch goes through the raw
-/// NVRTC entry points. The program is destroyed on every path.
-fn compile_cubin(src: &str, arch: &str) -> Result<Vec<u8>, EncodeError> {
-    use std::ffi::CString;
-    let src = CString::new(src).expect("kernel source has no interior NUL");
-    let prog = cudarc::nvrtc::result::create_program(&src, None)
-        .map_err(|e| EncodeError::Backend(format!("create NVRTC program: {e:?}")))?;
-    let result = (|| {
-        let options = ["--cubin".to_string(), arch.to_string()];
-        unsafe { cudarc::nvrtc::result::compile_program(prog, &options) }
-            .map_err(|e| EncodeError::Backend(format!("compile NV12 kernel: {e:?}")))?;
-        let mut size = 0usize;
-        unsafe { cudarc::nvrtc::sys::nvrtcGetCUBINSize(prog, &mut size) }
-            .result()
-            .map_err(|e| EncodeError::Backend(format!("cubin size: {e:?}")))?;
-        if size == 0 {
-            return Err(EncodeError::Backend("NVRTC returned an empty cubin".into()));
+/// Returns `None` when no ptxas can be found or it fails; callers then load the
+/// PTX image and let the driver decide.
+fn assemble_cubin(ptx: &[u8], major: i32, minor: i32) -> Option<Vec<u8>> {
+    use std::process::Command;
+
+    let mut candidates: Vec<std::path::PathBuf> = vec!["ptxas".into(), "ptxas.exe".into()];
+    for var in ["CUDA_PATH", "CUDA_ROOT", "CUDA_HOME"] {
+        if let Some(root) = std::env::var_os(var) {
+            let root = std::path::PathBuf::from(root);
+            candidates.push(root.join("bin/ptxas"));
+            candidates.push(root.join("bin/ptxas.exe"));
         }
-        let mut bytes = vec![0u8; size];
-        unsafe { cudarc::nvrtc::sys::nvrtcGetCUBIN(prog, bytes.as_mut_ptr().cast()) }
-            .result()
-            .map_err(|e| EncodeError::Backend(format!("cubin fetch: {e:?}")))?;
-        Ok(bytes)
-    })();
-    // SAFETY: `prog` came from create_program and is destroyed exactly once.
-    let _ = unsafe { cudarc::nvrtc::result::destroy_program(prog) };
-    result
+    }
+    let ptxas = candidates
+        .iter()
+        .find(|path| Command::new(path).arg("--version").output().is_ok())?;
+
+    let dir = std::env::temp_dir();
+    let unique = format!("blazar-nv12-{}-{}", std::process::id(), major * 10 + minor);
+    let in_path = dir.join(format!("{unique}.ptx"));
+    let out_path = dir.join(format!("{unique}.cubin"));
+    std::fs::write(&in_path, ptx).ok()?;
+    let status = Command::new(ptxas)
+        .arg(format!("-arch=sm_{major}{minor}"))
+        .arg("-o")
+        .arg(&out_path)
+        .arg(&in_path)
+        .status()
+        .ok()?;
+    let bytes = if status.success() {
+        std::fs::read(&out_path).ok()
+    } else {
+        None
+    };
+    let _ = std::fs::remove_file(&in_path);
+    let _ = std::fs::remove_file(&out_path);
+    bytes
 }
