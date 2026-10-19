@@ -43,6 +43,36 @@ audio is additive (§3.1). End-to-end in `blazar-runtime/tests/pipeline.rs`.
   preprocess rejects it. Device path is Phase 2 (and is where vLLM-Omni's zero-copy
   seam pays off, §7).
 
+## Python bindings
+
+`bindings/python` (PyO3 + maturin) exposes the runtime to Python:
+
+```python
+import blazar
+cals = blazar.Calibrations.load("calibrations/default")
+with blazar.Encoder(calibrations=cals, identity={...}, target="balanced",
+                    backend="nvenc_av1", output="out.mp4") as stream:
+    stream.submit(frame, width=W, height=H, fps=24.0,
+                  layout="thwc", range="unit01")
+```
+
+Frames are C-contiguous float32 RGB; `layout` (`thwc` for xDiT, `bcthw` for
+vLLM-Omni), `range` (`unit01`, `signed_unit`) and the geometry are explicit per
+submit. Pull requests to "just figure it out" will be declined; the seams do not
+tag any of it.
+
+Build and test instructions: `bindings/python/README.md`. Examples:
+
+```sh
+python examples/python/xdit_encode.py --fake        # batch clip, xDiT seam shapes
+python examples/python/vllm_omni_stream.py --fake   # chunked decode, timing output
+```
+
+Both run without the models (`--fake`) and take `--from-npy` for real frames.
+Neither is a live stream yet: the only sink is a file, so these measure the
+encode path rather than deliver playback.
+
+
 ## Build & test
 
 ```

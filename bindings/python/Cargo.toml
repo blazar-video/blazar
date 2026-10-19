@@ -1,0 +1,29 @@
+[package]
+name = "blazar-python"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.95"
+publish = false
+
+# Its own workspace: maturin builds with `extension-module`, which deliberately
+# does not link libpython and therefore breaks `cargo test` linking. Keeping this
+# crate out of the main workspace means `cargo test --workspace` stays portable
+# and CUDA-free.
+[workspace]
+
+[lib]
+name = "_blazar"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "=0.30.1", features = ["extension-module"] }
+blazar-core = { path = "../../crates/blazar-core" }
+blazar-calibration = { path = "../../crates/blazar-calibration" }
+blazar-encoder = { path = "../../crates/blazar-encoder" }
+blazar-runtime = { path = "../../crates/blazar-runtime" }
+blazar-sink = { path = "../../crates/blazar-sink" }
+
+[features]
+default = []
+# Hardware AV1. Build with `maturin develop --features nvenc` on a CUDA host.
+nvenc = ["blazar-encoder/nvenc", "blazar-runtime/nvenc"]

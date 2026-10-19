@@ -1,4 +1,8 @@
 [workspace]
+# The Python binding is its own workspace: maturin builds it with
+# `extension-module`, which breaks `cargo test` linking, so it must not be part of
+# the portable test surface.
+exclude = ["bindings/python"]
 resolver = "2"
 members = [
     "crates/blazar-core",
