@@ -206,7 +206,7 @@ fn h264_and_hevc_emit_config_and_true_reordering() {
     }
 }
 
-fn rgb_frame(index: u64) -> FrameRef<'static> {
+fn rgb_frame(index: u64) -> FrameRef {
     let shift = (index * 4) as u32;
     let mut bytes = Vec::with_capacity((W * H * 3) as usize * 4);
     for row in 0..H {
@@ -259,8 +259,8 @@ fn a_batch_matches_encoding_the_same_frames_one_at_a_time() {
         batch_units.len(),
         single_units.len()
     );
-    let batch_bytes: Vec<u8> = batch_units.iter().flat_map(|u| u.payload.clone()).collect();
-    let single_bytes: Vec<u8> = single_units.iter().flat_map(|u| u.payload.clone()).collect();
+    let batch_bytes: Vec<u8> = batch_units.iter().flat_map(|u| u.bytes.clone()).collect();
+    let single_bytes: Vec<u8> = single_units.iter().flat_map(|u| u.bytes.clone()).collect();
     assert_eq!(batch_bytes, single_bytes, "batch and single payloads differ");
 
     let batch_dts: Vec<u64> = batch_units.iter().map(|u| u.dts.0).collect();
