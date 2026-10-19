@@ -143,7 +143,7 @@ const ROW_H: u32 = 480;
 fn row_frame(index: u64) -> FrameRef {
     let mut bytes = Vec::with_capacity(rgb_f32_len(ROW_W, ROW_H));
     for row in 0..ROW_H {
-        let v = if row % 2 == 0 { 0.0 } else { 1.0 };
+        let v: f32 = if row % 2 == 0 { 0.0 } else { 1.0 };
         for _ in 0..ROW_W {
             for _ in 0..3 {
                 bytes.extend_from_slice(&v.to_le_bytes());
