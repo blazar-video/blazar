@@ -59,7 +59,7 @@ struct FrameJob {
 enum Job {
     Frame(Box<FrameJob>),
     /// Several frames in one encoder submission: one GPU kernel launch.
-    Batch(Vec<Box<FrameJob>>),
+    Batch(Vec<FrameJob>),
     Flush(SyncSender<Result<(), String>>),
     Close(SyncSender<Result<(), String>>),
 }
@@ -708,7 +708,7 @@ impl PyEncoder {
                 fps,
                 pts: Pts(pts),
             };
-            jobs.push(Box::new(FrameJob {
+            jobs.push(FrameJob {
                 seq: self.seq,
                 bytes,
                 desc,
@@ -717,7 +717,7 @@ impl PyEncoder {
                 } else {
                     None
                 },
-            }));
+            });
         }
 
         let count = jobs.len() as u64;
