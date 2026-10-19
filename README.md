@@ -69,6 +69,9 @@ python examples/python/vllm_omni_stream.py --fake   # chunked decode, timing out
 ```
 
 Both run without the models (`--fake`) and take `--from-npy` for real frames.
+`vllm_omni_stream.py --real` drives vLLM-Omni's own `WanStreamingDecoder` with
+real Wan VAE weights on the GPU (needs `torch`, `diffusers`, and a vLLM-Omni
+checkout; latents are noise, since the AR transformer is not part of that path).
 Neither is a live stream yet: the only sink is a file, so these measure the
 encode path rather than deliver playback.
 
