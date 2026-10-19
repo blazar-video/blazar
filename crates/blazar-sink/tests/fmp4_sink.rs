@@ -181,3 +181,59 @@ fn hevc_maps_to_hvc1_sample_entry() {
     assert_eq!(count_box(&bytes, b"hvc1"), 1);
     let _ = fs::remove_file(path);
 }
+
+/// First `mdhd` timescale (version 0 or 1).
+fn media_timescale(bytes: &[u8]) -> u32 {
+    let pos = bytes
+        .windows(4)
+        .position(|window| window == b"mdhd")
+        .expect("mdhd box");
+    let version = bytes[pos + 4];
+    let body = pos + 8; // fourcc + version/flags
+    let at = if version == 1 { body + 16 } else { body + 8 };
+    u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap())
+}
+
+/// First `tfhd` default-sample-duration (flag 0x000008).
+fn default_sample_duration(bytes: &[u8]) -> u32 {
+    let pos = bytes
+        .windows(4)
+        .position(|window| window == b"tfhd")
+        .expect("tfhd box");
+    let flags = u32::from_be_bytes(bytes[pos + 4..pos + 8].try_into().unwrap()) & 0x00ff_ffff;
+    assert_eq!(
+        flags & 0x000008,
+        0x000008,
+        "fragmented muxer must write a default sample duration"
+    );
+    // version/flags + track_id, then default_sample_duration
+    let at = pos + 8 + 4;
+    u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap())
+}
+
+#[test]
+fn media_timescale_preserves_exact_frame_durations() {
+    let path = temp_path("fmp4-timescale");
+    let file = fs::File::create(&path).unwrap();
+    let mut sink = Fmp4FileSink::new(file);
+
+    sink.open(av1_params()).unwrap();
+    sink.write(&video_unit(0, true)).unwrap();
+    sink.write(&video_unit(1, false)).unwrap();
+    sink.flush().unwrap();
+    sink.close().unwrap();
+    drop(sink);
+
+    let bytes = fs::read(&path).unwrap();
+    assert_eq!(
+        media_timescale(&bytes),
+        90_000,
+        "90 kHz packet timebase must be the video media timescale"
+    );
+    assert_eq!(
+        default_sample_duration(&bytes),
+        3750,
+        "24 fps is exactly 3750 ticks at 90 kHz; 41 ms would drift"
+    );
+    let _ = fs::remove_file(path);
+}

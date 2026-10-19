@@ -136,12 +136,14 @@ fn nvenc_to_fmp4_produces_a_real_av1_container() {
 const ROW_W: u32 = 834;
 const ROW_H: u32 = 480;
 
-/// Every row is one constant colour. A stride mistake mixes adjacent rows, so
-/// decoding this and checking row uniformity catches the pitch bug directly.
+/// Every row is one constant colour, alternating black and white. Adjacent rows
+/// differ maximally, so a stride mistake (which mixes neighbouring rows within a
+/// decoded row) is unmistakable, and it cannot be confused with quantization
+/// noise the way a low-contrast ramp can.
 fn row_frame(index: u64) -> FrameRef {
     let mut bytes = Vec::with_capacity(rgb_f32_len(ROW_W, ROW_H));
     for row in 0..ROW_H {
-        let v = row as f32 / ROW_H as f32;
+        let v = if row % 2 == 0 { 0.0 } else { 1.0 };
         for _ in 0..ROW_W {
             for _ in 0..3 {
                 bytes.extend_from_slice(&v.to_le_bytes());

@@ -227,10 +227,17 @@ impl<W: Write + Seek + Send + 'static> Sink for Fmp4FileSink<W> {
         }
         let streams = Self::stream_infos(&params)?;
         let writer = self.writer.take().ok_or(SinkError::NotOpen)?;
+        // Honour the packet timebase as the track's media timescale. The muxer
+        // otherwise defaults video to 1/1000, which truncates frame durations
+        // (3750 ticks at 90 kHz is 41.667 ms, not 41) and drifts over a stream.
+        let video_timescale = params.timebase.ticks_per_second();
         let mut muxer = open_fragmented_typed(
             Box::new(writer),
             &streams,
-            Mp4MuxerOptions::default(),
+            Mp4MuxerOptions {
+                video_media_timescale: Some(video_timescale),
+                ..Mp4MuxerOptions::default()
+            },
             FragmentedOptions {
                 cadence: FragmentCadence::EverySeconds(2.0),
                 ..FragmentedOptions::default()

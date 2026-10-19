@@ -259,7 +259,7 @@ dependencies = [
 [[package]]
 name = "oxideav-mp4"
 version = "0.0.10"
-source = "git+https://github.com/jgh-/oxideav-mp4?rev=1c042b8b58438cb36c7b1f9e14fe607aa1de8257#1c042b8b58438cb36c7b1f9e14fe607aa1de8257"
+source = "git+https://github.com/jgh-/oxideav-mp4?rev=6433b27699b77f0de5fc720ebcb9e42078bfca29#6433b27699b77f0de5fc720ebcb9e42078bfca29"
 dependencies = [
  "aes",
  "cbc",
