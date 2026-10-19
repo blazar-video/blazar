@@ -629,15 +629,10 @@ fn encode_one(
     )
 }
 
-enum EncodeCall {
-    Emitted,
-    NeedMoreInput,
-}
-
 fn fail_pending(rx: &mpsc::Receiver<Command>, error: EncodeError) {
     while let Ok(command) = rx.try_recv() {
         match command {
-            Command::Encode { reply, .. } => {
+            Command::Encode { reply, .. } | Command::EncodeFrame { reply, .. } => {
                 let _ = reply.send(Err(EncodeError::Backend(error.to_string())));
             }
             Command::Flush { reply } | Command::Finish { reply } => {
