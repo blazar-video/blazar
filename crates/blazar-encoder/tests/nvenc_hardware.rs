@@ -7,7 +7,7 @@
 
 #![cfg(feature = "nvenc")]
 
-use blazar_core::Pts;
+use blazar_core::{ColorRange, ColorSpace, Dtype, FrameBuffer, FrameDesc, FrameRef, Layout, Pts};
 use blazar_core::{Timebase, VideoCodec};
 use blazar_encoder::config::{EncoderConfig, RateControl};
 use blazar_encoder::nvenc::NvencEncoder;
@@ -204,4 +204,66 @@ fn h264_and_hevc_emit_config_and_true_reordering() {
             assert_length_prefixed(unit);
         }
     }
+}
+
+fn rgb_frame(index: u64) -> FrameRef<'static> {
+    let shift = (index * 4) as u32;
+    let mut bytes = Vec::with_capacity((W * H * 3) as usize * 4);
+    for row in 0..H {
+        for col in 0..W {
+            let v = ((col + row + shift) & 0xff) as f32 / 255.0;
+            for channel in 0..3 {
+                // Offsets per channel so a crossed frame or plane is visible.
+                bytes.extend_from_slice(&(v * (1.0 - channel as f32 * 0.1)).to_le_bytes());
+            }
+        }
+    }
+    let desc = FrameDesc {
+        width: W,
+        height: H,
+        dtype: Dtype::F32,
+        range: ColorRange::Unit01,
+        layout: Layout::Thwc,
+        colorspace: ColorSpace::AssumedBt709,
+        fps: FPS,
+        pts: Pts(index * FRAME_TICKS),
+    };
+    FrameRef::new(FrameBuffer::host_owned(bytes), desc)
+}
+
+/// A batch must produce the same packets as the same frames encoded one at a
+/// time. NVENC is deterministic for identical input and settings, so the
+/// payloads are compared byte for byte, not just counted.
+#[test]
+fn a_batch_matches_encoding_the_same_frames_one_at_a_time() {
+    const N: u64 = 8;
+
+    let frames: Vec<_> = (0..N).map(rgb_frame).collect();
+    let mut batched = encoder(0);
+    let batch_units = batched.encode_batch(frames).expect("batch encode");
+
+    let mut single = encoder(0);
+    let mut single_units = Vec::new();
+    for index in 0..N {
+        single_units.extend(
+            single
+                .encode_frame(rgb_frame(index))
+                .expect("single encode"),
+        );
+    }
+
+    assert_eq!(
+        batch_units.len(),
+        single_units.len(),
+        "batch emitted {} packets, singles emitted {}",
+        batch_units.len(),
+        single_units.len()
+    );
+    let batch_bytes: Vec<u8> = batch_units.iter().flat_map(|u| u.payload.clone()).collect();
+    let single_bytes: Vec<u8> = single_units.iter().flat_map(|u| u.payload.clone()).collect();
+    assert_eq!(batch_bytes, single_bytes, "batch and single payloads differ");
+
+    let batch_dts: Vec<u64> = batch_units.iter().map(|u| u.dts.0).collect();
+    let single_dts: Vec<u64> = single_units.iter().map(|u| u.dts.0).collect();
+    assert_eq!(batch_dts, single_dts, "batch and single decode order differ");
 }
