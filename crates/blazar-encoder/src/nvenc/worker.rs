@@ -1041,9 +1041,38 @@ fn encode_batch_rgb(
             &idr[start..end],
             units,
         )?;
-        // `consumed == 0` means the pool could not supply a single slot; the
-        // chunk helper drained and left the frame for the single-frame path.
-        start += consumed.max(1);
+        if consumed == 0 {
+            // The pool had nothing free even after the helper drained. Encode
+            // this one frame through the single-frame path, which acquires a
+            // slot itself, then continue with the rest of the batch.
+            let (bytes, desc) = &frames[start];
+            let source = Source::Rgb {
+                bytes: Box::new(bytes.clone()),
+                desc: *desc,
+            };
+            encode_one(
+                session,
+                stream,
+                device,
+                inputs,
+                bitstreams,
+                staging,
+                dst_ptrs,
+                converter,
+                pool,
+                codec_config,
+                decode_index,
+                frame_duration,
+                codec,
+                pitch,
+                idr[start],
+                &source,
+                units,
+            )?;
+            start += 1;
+        } else {
+            start += consumed;
+        }
     }
     Ok(())
 }
