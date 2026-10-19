@@ -78,8 +78,18 @@ def frame_array(frames, source_range: str) -> np.ndarray:
             array = array.astype(np.float32) / 255.0
         elif array.dtype != np.float32:
             array = array.astype(np.float32)
-        if source_range == "negative_one_to_one":
-            array = np.clip(array, -1, 1) * 0.5 + 0.5
+        # The engine normalises frames to [0, 1] before returning them (its own
+        # export path only applies the model's tensor range to torch.Tensor
+        # items), so numpy output must NOT be mapped again: doing that lifts
+        # blacks to 0.5 and halves the range. Fail loudly if a pipeline ever
+        # hands over raw signed values instead of guessing.
+        low = float(array.min())
+        if low < -0.01:
+            raise SystemExit(
+                f"numpy frames have min {low:.3f}, outside [0,1]; the engine is "
+                "returning unnormalised tensor-range values, revisit frame_array()"
+            )
+        np.clip(array, 0.0, 1.0, out=array)
         return array
 
     if isinstance(frames, (list, tuple)):
