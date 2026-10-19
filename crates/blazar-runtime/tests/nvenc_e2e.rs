@@ -5,7 +5,8 @@
 //! here is a real AV1 bitstream, so the output can be handed to a decoder.
 //!
 //! The file is left in the temp directory and its path printed, so an external
-//! probe (ffprobe/ffmpeg/dav1d) can validate it. See `scripts/validate-mosk.sh`.
+//! probe (ffprobe/ffmpeg/dav1d) can validate it: `ffmpeg -xerror -i <file> -f null -`
+//! must decode cleanly and `ffprobe -count_frames` must report every frame.
 
 #![cfg(feature = "nvenc")]
 

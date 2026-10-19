@@ -47,19 +47,33 @@ audio is additive (§3.1). End-to-end in `blazar-runtime/tests/pipeline.rs`.
 
 ```
 cargo build
-cargo test        # 106 tests
+cargo test        # 107 tests
 cargo clippy --all-targets
 ```
 
-Hardware path (CUDA host only):
+### Hardware validation (manual)
+
+The `nvenc` tests encode on a real GPU, so they never run in CI and no script in
+this repo wraps them: the environment below is specific to the host. On a CUDA
+machine with NVENC (bare metal or WSL2):
 
 ```
-./scripts/validate-mosk.sh
+export CUDA_ROOT=/usr/local/cuda                       # your toolkit
+export NVIDIA_VIDEO_CODEC_SDK_PATH=<dir with libnvidia-encode.so.1>
+                                                       # WSL2: /usr/lib/wsl/lib
+export LD_LIBRARY_PATH=$NVIDIA_VIDEO_CODEC_SDK_PATH:$CUDA_ROOT/lib64:$LD_LIBRARY_PATH
+
+cargo test --workspace
+cargo test -p blazar-encoder --features nvenc --test nvenc_hardware -- --test-threads=1
+cargo test -p blazar-runtime --features nvenc --test nvenc_e2e -- --nocapture
 ```
 
-That runs the workspace tests plus the feature-gated NVENC encoder tests, writes a
-real fMP4 to `/tmp/blazar-nvenc-smoke.mp4`, and decodes it with ffmpeg when
-available.
+That writes real fMP4s to `/tmp/blazar-nvenc-smoke.mp4` (320x240) and
+`/tmp/blazar-nvenc-unaligned.mp4` (834x480, driver stride 896). Then verify the
+media, not just the container: `ffprobe` the stream metadata and duration, decode
+with `ffmpeg -xerror -i <file> -f null -`, and for the unaligned file decode one
+frame to raw gray and check no row mixes neighbours. A container that parses is
+not a stream that decodes.
 
 Toolchain: the arm64 toolchain must be the rustup default on Apple Silicon
 (`rustup default <version>-aarch64-apple-darwin`); the x86_64 one fails with
