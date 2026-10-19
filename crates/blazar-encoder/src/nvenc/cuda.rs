@@ -84,7 +84,7 @@ extern "C" __global__ void rgb_to_nv12(
 
 /// Compiled once per process, in the worker's CUDA context.
 pub struct Nv12Converter {
-    func: Arc<CudaFunction>,
+    func: CudaFunction,
 }
 
 impl Nv12Converter {
