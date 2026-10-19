@@ -11,7 +11,7 @@ live outside this repo for now.
 | `blazar-core` | Shared contract types: `FrameRef`/`FrameDesc`, `EncodedUnit`/`TrackId`, `StreamParams`, `ModelIdentity`, `Target`, `Pts`/`Timebase`. No I/O. | §3, §3.1, §6, §7.1 |
 | `blazar-calibration` | TOML calibration: schema, validating loader (per-file safe failure), specificity index with source tie-break + logging. | calibration-format.md; §5.1 |
 | `blazar-preprocess` | Preprocess stage trait + CPU impl (RGB→YUV, range-normalize, 4:2:0 subsample, 8-bit quantize). Parameterized by `FrameDesc` (two ingest conventions). | §7 |
-| `blazar-encoder` | `VideoEncoder` trait + `MockVideoEncoder` (full contract, no real codec yet); calibration→`EncoderConfig` translation; AV1 `av1C` derivation from a keyframe. Real NVENC-AV1 behind the `nvenc` feature. | §3.1, §6 |
+| `blazar-encoder` | `VideoEncoder` trait + `MockVideoEncoder` (full contract, no real codec yet); calibration→`EncoderConfig` translation; AV1 `av1C` derivation from a keyframe. Real NVENC backends for AV1, H.264 and HEVC behind the `nvenc` feature. | §3.1, §6 |
 | `blazar-sink` | `Sink` trait + `Feedback` channel + `OrderGuard`; `DebugFileSink` (working, inspectable) and `Fmp4FileSink` backed by the forked `oxideav-mp4` muxer (AV1/H.264/HEVC + Opus/AAC). | §6 |
 | `blazar-runtime` | Operator API (`Encoder::new` → `open_stream` → `submit_video`/`flush`/`close`) and the Phase-1 synchronous pipeline spine. | §3, §4, §9 |
 
@@ -29,7 +29,9 @@ audio is additive (§3.1). End-to-end in `blazar-runtime/tests/pipeline.rs`.
 - `MockVideoEncoder` implements the encoder *contract* (keyframe cadence, ordering,
   flush/finish) but does not compress. It stands in for SVT-AV1/rav1e until those
   backends land.
-- The NVENC-AV1 backend is real (`--features nvenc`) and hardware-tested on mosk.
+- The NVENC backends are real (`--features nvenc`) and hardware-tested on mosk:
+AV1, H.264 and HEVC. H.264/HEVC input is Annex B from the driver; `nal.rs`
+turns it into length-prefixed samples plus `avcC`/`hvcC`.
   It derives `av1C` from the first keyframe, forces IDRs itself (driver GOP
   boundaries produce intra-only frames, which are not sync samples), and does not
   support B-frames yet. `VideoEncoder::flush` cannot drain NVENC lookahead without
