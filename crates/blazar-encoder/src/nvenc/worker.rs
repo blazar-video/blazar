@@ -45,9 +45,13 @@ use crate::config::EncoderConfig;
 use crate::nal::{self, AnnexB};
 use crate::{EncodeError, VideoEncoder};
 
-/// Output bitstreams kept in flight. NVENC's lookahead is a handful of frames;
-/// 16 leaves generous headroom and costs only a few KiB per slot.
-const POOL_CAPACITY: usize = 16;
+/// Output slots, and therefore the largest batch converted in one launch.
+///
+/// Every slot owns a pitched NV12 buffer that stays registered with NVENC, so
+/// this is VRAM: roughly `3 * width * height` bytes per slot (1.6 MB at 480p,
+/// 3.1 MB at 1080p). 32 allows a 30-frame chunk in one launch; the bitstream
+/// side is only a few KiB per slot.
+const POOL_CAPACITY: usize = 32;
 /// `EncoderBusy` is recoverable; wait briefly and retry a bounded number of times.
 const BUSY_RETRIES: u32 = 50;
 const BUSY_SLEEP: Duration = Duration::from_millis(2);

@@ -236,7 +236,9 @@ fn rgb_frame(index: u64) -> FrameRef {
 /// payloads are compared byte for byte, not just counted.
 #[test]
 fn a_batch_matches_encoding_the_same_frames_one_at_a_time() {
-    const N: u64 = 8;
+    // 30 is the chunk size a 480p vLLM-Omni rollout produces per second of
+    // video, and it exceeds the old 16-slot pool.
+    const N: u64 = 30;
 
     // Consumer GPUs cap concurrent NVENC sessions, and the rest of this suite
     // runs in parallel, so the two encoders are not held at the same time.
