@@ -96,8 +96,14 @@ impl Nv12Converter {
         let (major, minor) = ctx.compute_capability().map_err(|e| {
             EncodeError::Backend(format!("CUDA compute capability: {e:?}"))
         })?;
+        // NVRTC's PTX ISA version follows the requested architecture, and the
+        // installed driver may predate the toolkit (13.4 toolkit vs a 13.1
+        // driver rejects anything newer than sm_86 PTX). Ampere PTX is forward
+        // compatible with every newer GPU, so only pre-Ampere parts need their
+        // own target.
+        let (arch_major, arch_minor) = if major >= 8 { (8, 0) } else { (major, minor) };
         let opts = cudarc::nvrtc::CompileOptions {
-            options: vec![format!("--gpu-architecture=compute_{major}{minor}")],
+            options: vec![format!("--gpu-architecture=compute_{arch_major}{arch_minor}")],
             ..Default::default()
         };
         let ptx = cudarc::nvrtc::compile_ptx_with_opts(KERNEL, opts)
