@@ -199,7 +199,7 @@ fn compile_cubin(src: &str, arch: &str) -> Result<Vec<u8>, EncodeError> {
         .map_err(|e| EncodeError::Backend(format!("create NVRTC program: {e:?}")))?;
     let result = (|| {
         let options = ["--cubin".to_string(), arch.to_string()];
-        cudarc::nvrtc::result::compile_program(prog, &options)
+        unsafe { cudarc::nvrtc::result::compile_program(prog, &options) }
             .map_err(|e| EncodeError::Backend(format!("compile NV12 kernel: {e:?}")))?;
         let mut size = 0usize;
         unsafe { cudarc::nvrtc::sys::nvrtcGetCUBINSize(prog, &mut size) }
