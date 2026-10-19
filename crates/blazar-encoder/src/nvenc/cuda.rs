@@ -64,7 +64,7 @@ extern "C" __global__ void rgb_to_nv12(
 
             float y = kr * r + kg * g + kb * b;
             float yq = roundf(y * 255.0f);
-            dst[p] = (unsigned char)fminf(fmaxf(yq, 0.0f), 255.0f);
+            dst[sy * pitch + sx] = (unsigned char)fminf(fmaxf(yq, 0.0f), 255.0f);
 
             float cb = (b - y) / (2.0f * (1.0f - kb)) + 0.5f;
             float cr = (r - y) / (2.0f * (1.0f - kr)) + 0.5f;
