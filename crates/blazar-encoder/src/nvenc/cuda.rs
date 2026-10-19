@@ -89,7 +89,18 @@ pub struct Nv12Converter {
 
 impl Nv12Converter {
     pub fn new(ctx: &Arc<CudaContext>) -> Result<Self, EncodeError> {
-        let ptx = cudarc::nvrtc::compile_ptx(KERNEL)
+        // NVRTC otherwise targets the toolkit's newest virtual architecture,
+        // and a driver older than the toolkit rejects that PTX with
+        // CUDA_ERROR_UNSUPPORTED_PTX_VERSION (hit on Windows: toolkit 13.4,
+        // driver 610). Compile for the device actually present instead.
+        let (major, minor) = ctx.compute_capability().map_err(|e| {
+            EncodeError::Backend(format!("CUDA compute capability: {e:?}"))
+        })?;
+        let opts = cudarc::nvrtc::CompileOptions {
+            options: vec![format!("--gpu-architecture=compute_{major}{minor}")],
+            ..Default::default()
+        };
+        let ptx = cudarc::nvrtc::compile_ptx_with_opts(KERNEL, opts)
             .map_err(|e| EncodeError::Backend(format!("compile NV12 kernel: {e}")))?;
         let module = ctx
             .load_module(ptx)
