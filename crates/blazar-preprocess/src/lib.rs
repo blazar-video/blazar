@@ -81,26 +81,68 @@ impl CpuPreprocess {
         .clamp(0.0, 1.0)
     }
 
-    /// RGB (each in `[0,1]`) → full-range 8-bit YUV using the BT.709 or BT.601
-    /// matrix. Full-range (0..255) keeps Phase 1 simple; studio-range swing is a
-    /// later refinement tied to the colorspace signalling the encoder emits.
-    #[inline]
-    fn rgb_to_yuv(r: f32, g: f32, b: f32, cs: ColorSpace) -> (f32, f32, f32) {
-        let (kr, kb) = match cs {
-            ColorSpace::AssumedBt709 => (0.2126_f32, 0.0722_f32),
-            ColorSpace::AssumedBt601 => (0.299_f32, 0.114_f32),
-        };
-        let kg = 1.0 - kr - kb;
-        let y = kr * r + kg * g + kb * b;
-        // Cb/Cr in [-0.5, 0.5], then shifted to [0,1] around 0.5.
-        let cb = (b - y) / (2.0 * (1.0 - kb));
-        let cr = (r - y) / (2.0 * (1.0 - kr));
-        (y, cb + 0.5, cr + 0.5)
-    }
-
     #[inline]
     fn q8(v: f32) -> u8 {
         (v * 255.0).round().clamp(0.0, 255.0) as u8
+    }
+}
+
+/// Component reader, generic so the per-pixel loop has no dtype branch.
+trait Sample {
+    fn component_bytes() -> usize;
+    fn read(bytes: &[u8], component: usize) -> f32;
+}
+
+struct F32Sample;
+struct Bf16Sample;
+
+impl Sample for F32Sample {
+    #[inline(always)]
+    fn component_bytes() -> usize {
+        4
+    }
+    #[inline(always)]
+    fn read(bytes: &[u8], component: usize) -> f32 {
+        let off = component * 4;
+        f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+    }
+}
+
+impl Sample for Bf16Sample {
+    #[inline(always)]
+    fn component_bytes() -> usize {
+        2
+    }
+    #[inline(always)]
+    fn read(bytes: &[u8], component: usize) -> f32 {
+        let off = component * 2;
+        // Truncation, not rounding: bf16 is the top half of f32.
+        f32::from_bits((u16::from_le_bytes([bytes[off], bytes[off + 1]]) as u32) << 16)
+    }
+}
+
+/// BT.709/BT.601 matrix coefficients, computed once per frame.
+struct Matrix {
+    kr: f32,
+    kg: f32,
+    kb: f32,
+    cb_scale: f32,
+    cr_scale: f32,
+}
+
+impl Matrix {
+    fn new(colorspace: ColorSpace) -> Self {
+        let (kr, kb) = match colorspace {
+            ColorSpace::AssumedBt709 => (0.2126_f32, 0.0722_f32),
+            ColorSpace::AssumedBt601 => (0.299_f32, 0.114_f32),
+        };
+        Self {
+            kr,
+            kg: 1.0 - kr - kb,
+            kb,
+            cb_scale: 1.0 / (2.0 * (1.0 - kb)),
+            cr_scale: 1.0 / (2.0 * (1.0 - kr)),
+        }
     }
 }
 
@@ -108,16 +150,12 @@ impl PreprocessStage for CpuPreprocess {
     fn process(&self, frame: &FrameRef) -> Result<PreprocessedFrame, PreprocessError> {
         let desc = &frame.desc;
 
-        // Phase 1 only handles host F32 RGB. Device buffers are Phase 2.
         if frame.buffer.is_device() {
             return Err(PreprocessError::DeviceNotSupported);
         }
-        // Phase 1 handles host f32 (both seams' numpy) and bf16 (vLLM-Omni's
-        // native VAE dtype). f16 is uncommon at these seams; reject it loudly
-        // rather than guess. The decode is exact: bf16 is the top half of f32.
         let component_bytes = match desc.dtype {
-            Dtype::F32 => 4,
-            Dtype::Bf16 => 2,
+            Dtype::F32 => F32Sample::component_bytes(),
+            Dtype::Bf16 => Bf16Sample::component_bytes(),
             other => return Err(PreprocessError::UnsupportedDtype(other)),
         };
 
@@ -139,100 +177,169 @@ impl PreprocessStage for CpuPreprocess {
             });
         }
 
-        // Interpret the bytes as RGB components of `desc.dtype`. Phase 1 assumes
-        // a single frame with the channel order implied by `layout`: THWC packs
-        // each pixel as [r,g,b]; BCTHW is channel-planar. Only THWC (xDiT) is
-        // exercised in Phase 1, but both are decoded so the vLLM-Omni
-        // host-fallback works.
-        //
-        // `component` is an index into the component array, not a byte offset,
-        // so the same closure serves both dtypes.
-        let read = |component: usize| -> f32 {
-            let off = component * component_bytes;
-            match desc.dtype {
-                Dtype::F32 => {
-                    f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
-                }
-                Dtype::Bf16 => {
-                    let bits = u16::from_le_bytes([bytes[off], bytes[off + 1]]);
-                    // Truncation, not rounding: the payload has no low bits.
-                    f32::from_bits((bits as u32) << 16)
-                }
-                Dtype::F16 | Dtype::U8 => unreachable!("dtype checked above"),
-            }
+        // Dispatch dtype+layout once; the pixel loops then have no branches on
+        // either. This is the difference between ~19 ms and a few ms at 1080p.
+        let (y, u, v) = match (desc.layout, desc.dtype) {
+            (Layout::Thwc, Dtype::F32) => convert_thwc::<F32Sample>(bytes, desc, w, h),
+            (Layout::Thwc, Dtype::Bf16) => convert_thwc::<Bf16Sample>(bytes, desc, w, h),
+            (Layout::Bcthw, Dtype::F32) => convert_bcthw::<F32Sample>(bytes, desc, w, h),
+            (Layout::Bcthw, Dtype::Bf16) => convert_bcthw::<Bf16Sample>(bytes, desc, w, h),
+            (_, other) => return Err(PreprocessError::UnsupportedDtype(other)),
         };
-        let read_rgb = |px: usize| -> (f32, f32, f32) {
-            match desc.layout {
-                Layout::Thwc => {
-                    let base = px * 3;
-                    (read(base), read(base + 1), read(base + 2))
-                }
-                Layout::Bcthw => {
-                    // planar: R plane, then G, then B.
-                    (read(px), read(pixels + px), read(2 * pixels + px))
-                }
-            }
-        };
-
-        let mut y_plane = vec![0u8; pixels];
-        // Store full-res chroma first, then box-average down to 4:2:0.
-        let mut cb_full = vec![0f32; pixels];
-        let mut cr_full = vec![0f32; pixels];
-
-        for px in 0..pixels {
-            let (r, g, b) = read_rgb(px);
-            let r = Self::to_unit(r, desc.range);
-            let g = Self::to_unit(g, desc.range);
-            let b = Self::to_unit(b, desc.range);
-            let (y, cb, cr) = Self::rgb_to_yuv(r, g, b, desc.colorspace);
-            y_plane[px] = Self::q8(y);
-            cb_full[px] = cb;
-            cr_full[px] = cr;
-        }
-
-        // 4:2:0 subsample: average each 2x2 block (edge blocks clamp).
-        let cw = (desc.width).div_ceil(2) as usize;
-        let ch = (desc.height).div_ceil(2) as usize;
-        let mut u_plane = vec![0u8; cw * ch];
-        let mut v_plane = vec![0u8; cw * ch];
-
-        for cy in 0..ch {
-            for cx in 0..cw {
-                let mut cb_sum = 0f32;
-                let mut cr_sum = 0f32;
-                let mut n = 0f32;
-                for dy in 0..2 {
-                    for dx in 0..2 {
-                        let sx = cx * 2 + dx;
-                        let sy = cy * 2 + dy;
-                        if sx < w && sy < h {
-                            let idx = sy * w + sx;
-                            cb_sum += cb_full[idx];
-                            cr_sum += cr_full[idx];
-                            n += 1.0;
-                        }
-                    }
-                }
-                u_plane[cy * cw + cx] = Self::q8(cb_sum / n);
-                v_plane[cy * cw + cx] = Self::q8(cr_sum / n);
-            }
-        }
 
         Ok(PreprocessedFrame {
             width: desc.width,
             height: desc.height,
-            y: y_plane,
-            u: u_plane,
-            v: v_plane,
+            y,
+            u,
+            v,
             pts: desc.pts,
         })
     }
 }
 
-/// Expected RGB-f32 byte length for a frame of `w*h`. Exposed for adapters that
-/// build host frames.
-pub fn rgb_f32_len(w: u32, h: u32) -> usize {
-    (w as usize) * (h as usize) * 3 * core::mem::size_of::<f32>()
+/// THWC (xDiT): each pixel is three consecutive components.
+fn convert_thwc<S: Sample>(
+    bytes: &[u8],
+    desc: &blazar_core::FrameDesc,
+    w: usize,
+    h: usize,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let matrix = Matrix::new(desc.colorspace);
+    let mut y_plane = vec![0u8; w * h];
+    let mut chroma = Plane::new(w, h);
+    for cy in 0..chroma.ch {
+        for cx in 0..chroma.cw {
+            let mut cb = 0.0f32;
+            let mut cr = 0.0f32;
+            let mut n = 0.0f32;
+            for dy in 0..2 {
+                let sy = cy * 2 + dy;
+                if sy >= h {
+                    break;
+                }
+                for dx in 0..2 {
+                    let sx = cx * 2 + dx;
+                    if sx >= w {
+                        break;
+                    }
+                    let px = sy * w + sx;
+                    let base = px * 3;
+                    let (yy, ccb, ccr) = pixel_into(
+                        S::read(bytes, base),
+                        S::read(bytes, base + 1),
+                        S::read(bytes, base + 2),
+                        desc,
+                        &matrix,
+                    );
+                    y_plane[px] = yy;
+                    cb += ccb;
+                    cr += ccr;
+                    n += 1.0;
+                }
+            }
+            chroma.store(cx, cy, cb / n, cr / n);
+        }
+    }
+    (y_plane, chroma.u, chroma.v)
+}
+
+/// BCTHW (vLLM-Omni host fallback): three full-resolution planes.
+fn convert_bcthw<S: Sample>(
+    bytes: &[u8],
+    desc: &blazar_core::FrameDesc,
+    w: usize,
+    h: usize,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let matrix = Matrix::new(desc.colorspace);
+    let pixels = w * h;
+    let mut y_plane = vec![0u8; pixels];
+    let mut chroma = Plane::new(w, h);
+    for cy in 0..chroma.ch {
+        for cx in 0..chroma.cw {
+            let mut cb = 0.0f32;
+            let mut cr = 0.0f32;
+            let mut n = 0.0f32;
+            for dy in 0..2 {
+                let sy = cy * 2 + dy;
+                if sy >= h {
+                    break;
+                }
+                for dx in 0..2 {
+                    let sx = cx * 2 + dx;
+                    if sx >= w {
+                        break;
+                    }
+                    let px = sy * w + sx;
+                    let (yy, ccb, ccr) = pixel_into(
+                        S::read(bytes, px),
+                        S::read(bytes, pixels + px),
+                        S::read(bytes, 2 * pixels + px),
+                        desc,
+                        &matrix,
+                    );
+                    y_plane[px] = yy;
+                    cb += ccb;
+                    cr += ccr;
+                    n += 1.0;
+                }
+            }
+            chroma.store(cx, cy, cb / n, cr / n);
+        }
+    }
+    (y_plane, chroma.u, chroma.v)
+}
+
+struct Plane {
+    cw: usize,
+    ch: usize,
+    u: Vec<u8>,
+    v: Vec<u8>,
+}
+
+impl Plane {
+    fn new(w: usize, h: usize) -> Self {
+        let cw = w.div_ceil(2);
+        let ch = h.div_ceil(2);
+        Self {
+            cw,
+            ch,
+            u: vec![0u8; cw * ch],
+            v: vec![0u8; cw * ch],
+        }
+    }
+
+    #[inline(always)]
+    fn store(&mut self, cx: usize, cy: usize, cb: f32, cr: f32) {
+        let idx = cy * self.cw + cx;
+        self.u[idx] = CpuPreprocess::q8(cb);
+        self.v[idx] = CpuPreprocess::q8(cr);
+    }
+}
+
+/// Normalize, convert and quantize one pixel. Returns `(Y, Cb, Cr)` with chroma
+/// as the shifted `[0,1]` value, so blocks can be averaged before quantizing.
+#[inline(always)]
+fn pixel_into(
+    r: f32,
+    g: f32,
+    b: f32,
+    desc: &blazar_core::FrameDesc,
+    matrix: &Matrix,
+) -> (u8, f32, f32) {
+    let r = CpuPreprocess::to_unit(r, desc.range);
+    let g = CpuPreprocess::to_unit(g, desc.range);
+    let b = CpuPreprocess::to_unit(b, desc.range);
+    let y = matrix.kr * r + matrix.kg * g + matrix.kb * b;
+    let cb = (b - y) * matrix.cb_scale + 0.5;
+    let cr = (r - y) * matrix.cr_scale + 0.5;
+    (CpuPreprocess::q8(y), cb, cr)
+}
+
+/// Byte length of an RGB `f32` frame. Callers (and tests) allocate buffers with
+/// this so they cannot disagree with the stage about the expected size.
+pub fn rgb_f32_len(width: u32, height: u32) -> usize {
+    width as usize * height as usize * 3 * 4
 }
 
 #[cfg(test)]
@@ -372,6 +479,142 @@ mod tests {
         FrameDesc {
             dtype: Dtype::Bf16,
             ..desc(w, h, range, layout)
+        }
+    }
+
+    /// The original two-pass algorithm, kept as the regression oracle.
+    fn reference(frame: &FrameRef) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let desc = &frame.desc;
+        let bytes = frame.buffer.host_bytes().unwrap();
+        let w = desc.width as usize;
+        let h = desc.height as usize;
+        let pixels = w * h;
+        let comp = if desc.dtype == Dtype::Bf16 { 2 } else { 4 };
+        let read = |component: usize| -> f32 {
+            let off = component * comp;
+            match desc.dtype {
+                Dtype::Bf16 => {
+                    f32::from_bits((u16::from_le_bytes([bytes[off], bytes[off + 1]]) as u32) << 16)
+                }
+                _ => {
+                    f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+                }
+            }
+        };
+        let read_rgb = |px: usize| match desc.layout {
+            Layout::Thwc => (read(px * 3), read(px * 3 + 1), read(px * 3 + 2)),
+            Layout::Bcthw => (read(px), read(pixels + px), read(2 * pixels + px)),
+        };
+        let to_unit = |v: f32| {
+            match desc.range {
+                ColorRange::Unit01 => v,
+                ColorRange::SignedUnit => (v + 1.0) * 0.5,
+                ColorRange::FullU8 => v / 255.0,
+            }
+            .clamp(0.0, 1.0)
+        };
+        let q8 = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+        let (kr, kb) = match desc.colorspace {
+            ColorSpace::AssumedBt709 => (0.2126_f32, 0.0722_f32),
+            ColorSpace::AssumedBt601 => (0.299_f32, 0.114_f32),
+        };
+        let kg = 1.0 - kr - kb;
+        let mut y_plane = vec![0u8; pixels];
+        let mut cb_full = vec![0f32; pixels];
+        let mut cr_full = vec![0f32; pixels];
+        for px in 0..pixels {
+            let (r, g, b) = read_rgb(px);
+            let (r, g, b) = (to_unit(r), to_unit(g), to_unit(b));
+            let y = kr * r + kg * g + kb * b;
+            let cb = (b - y) / (2.0 * (1.0 - kb));
+            let cr = (r - y) / (2.0 * (1.0 - kr));
+            y_plane[px] = q8(y);
+            cb_full[px] = cb + 0.5;
+            cr_full[px] = cr + 0.5;
+        }
+        let cw = desc.width.div_ceil(2) as usize;
+        let ch = desc.height.div_ceil(2) as usize;
+        let mut u = vec![0u8; cw * ch];
+        let mut v = vec![0u8; cw * ch];
+        for cy in 0..ch {
+            for cx in 0..cw {
+                let (mut cb, mut cr, mut n) = (0f32, 0f32, 0f32);
+                for dy in 0..2 {
+                    for dx in 0..2 {
+                        let (sx, sy) = (cx * 2 + dx, cy * 2 + dy);
+                        if sx < w && sy < h {
+                            cb += cb_full[sy * w + sx];
+                            cr += cr_full[sy * w + sx];
+                            n += 1.0;
+                        }
+                    }
+                }
+                u[cy * cw + cx] = q8(cb / n);
+                v[cy * cw + cx] = q8(cr / n);
+            }
+        }
+        (y_plane, u, v)
+    }
+
+    fn filled_frame(w: u32, h: u32, layout: Layout, dtype: Dtype, range: ColorRange) -> FrameRef {
+        // Deterministic pseudo-random pixels, odd dimensions included.
+        let mut state = 0x1234_5678_9abc_def0u64;
+        let components = (w * h * 3) as usize;
+        let mut bytes = Vec::new();
+        for _ in 0..components {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let v = match range {
+                ColorRange::SignedUnit => ((state >> 40) as f32 / 16_777_215.0) * 2.0 - 1.0,
+                ColorRange::FullU8 => ((state >> 40) % 256) as f32,
+                ColorRange::Unit01 => (state >> 40) as f32 / 16_777_215.0,
+            };
+            match dtype {
+                Dtype::Bf16 => {
+                    let bits = (v.to_bits() >> 16) as u16;
+                    bytes.extend_from_slice(&bits.to_le_bytes());
+                }
+                _ => bytes.extend_from_slice(&v.to_le_bytes()),
+            }
+        }
+        let mut d = desc(w, h, range, layout);
+        d.dtype = dtype;
+        FrameRef::new(FrameBuffer::host_owned(bytes), d)
+    }
+
+    #[test]
+    fn matches_the_two_pass_reference_across_conventions() {
+        for layout in [Layout::Thwc, Layout::Bcthw] {
+            for dtype in [Dtype::F32, Dtype::Bf16] {
+                for range in [
+                    ColorRange::Unit01,
+                    ColorRange::SignedUnit,
+                    ColorRange::FullU8,
+                ] {
+                    for (w, h) in [(7, 5), (16, 16), (33, 17)] {
+                        let frame = filled_frame(w, h, layout, dtype, range);
+                        let new = CpuPreprocess::new().process(&frame).unwrap();
+                        let (ry, ru, rv) = reference(&frame);
+                        assert_eq!(new.y, ry, "luma {layout:?}/{dtype:?}/{range:?} {w}x{h}");
+                        // Chroma divides by a precomputed reciprocal, so a
+                        // last-ulp difference can round one level apart.
+                        let close = |a: &[u8], b: &[u8]| {
+                            a.iter()
+                                .zip(b)
+                                .all(|(x, y)| (*x as i32 - *y as i32).abs() <= 1)
+                        };
+                        assert!(
+                            close(&new.u, &ru),
+                            "Cb {layout:?}/{dtype:?}/{range:?} {w}x{h}"
+                        );
+                        assert!(
+                            close(&new.v, &rv),
+                            "Cr {layout:?}/{dtype:?}/{range:?} {w}x{h}"
+                        );
+                    }
+                }
+            }
         }
     }
 
