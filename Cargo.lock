@@ -148,6 +148,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "blazar-vpx-sys"
+version = "0.0.0"
+dependencies = [
+ "bindgen 0.69.5",
+ "pkg-config",
+]
+
+[[package]]
 name = "block-padding"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
