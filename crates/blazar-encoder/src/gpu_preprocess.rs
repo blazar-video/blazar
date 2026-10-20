@@ -109,6 +109,60 @@ impl GpuPreprocess {
         Ok(depitch(&nv12, desc.width, desc.height, self.pitch, desc.pts))
     }
 
+    /// Convert `frames` frames that already live on the GPU, returning packed
+    /// NV12 for each. Nothing is uploaded: the kernel reads the caller's
+    /// memory, which is what a model's VAE output looks like.
+    pub fn convert_device_frames(
+        &mut self,
+        ptr: u64,
+        desc: &FrameDesc,
+        frames: u32,
+    ) -> Result<Vec<PreprocessedFrame>, EncodeError> {
+        if frames == 0 {
+            return Ok(Vec::new());
+        }
+        if !matches!(desc.dtype, Dtype::F32 | Dtype::Bf16) {
+            return Err(EncodeError::Backend(format!(
+                "GPU preprocess does not handle {:?}",
+                desc.dtype
+            )));
+        }
+        self.resize(desc)?;
+        let elem = if matches!(desc.dtype, Dtype::F32) { 4 } else { 2 };
+        let pixels = desc.width as u64 * desc.height as u64;
+        // Device layout: (C,T,H,W) advances one plane per frame; THWC advances
+        // a whole frame.
+        let step = match desc.layout {
+            blazar_core::Layout::Thwc => pixels * 3 * elem,
+            blazar_core::Layout::Bcthw => pixels * elem,
+        };
+
+        let (device_ptr, guard) = self.device.device_ptr(&self.stream);
+        drop(guard);
+        let mut out = Vec::with_capacity(frames as usize);
+        for index in 0..frames {
+            self.stream
+                .memcpy_htod(&[device_ptr], &mut self.dst_ptrs.slice_mut(0..1))
+                .map_err(|e| EncodeError::Backend(format!("upload dst pointer: {e}")))?;
+            self.converter.convert_batch_ptr(
+                &self.stream,
+                ptr + index as u64 * step,
+                &self.dst_ptrs,
+                desc,
+                1,
+                frames,
+                false,
+                self.pitch,
+            )?;
+            let nv12 = self
+                .stream
+                .clone_dtoh(&self.device)
+                .map_err(|e| EncodeError::Backend(format!("download nv12: {e}")))?;
+            out.push(depitch(&nv12, desc.width, desc.height, self.pitch, desc.pts));
+        }
+        Ok(out)
+    }
+
     /// (Re)allocate buffers when the frame geometry changes.
     fn resize(&mut self, desc: &FrameDesc) -> Result<(), EncodeError> {
         if self.width == desc.width && self.height == desc.height && self.pitch != 0 {
@@ -167,5 +221,75 @@ fn depitch(nv12: &[u8], width: u32, height: u32, pitch: u32, pts: Pts) -> Prepro
         u,
         v,
         pts,
+    }
+}
+
+/// A CPU encoder fed by the GPU preprocess stage.
+///
+/// Host frames keep the CPU preprocess: at 1080p the scalar pass costs ~5 ms,
+/// while a pageable upload of f32 RGB costs ~21 ms. Device frames are the case
+/// this exists for: the model already has the pixels on the GPU, so only NV12
+/// comes back over the bus.
+pub struct GpuPreprocessEncoder {
+    preprocess: GpuPreprocess,
+    inner: Box<dyn crate::VideoEncoder>,
+}
+
+impl GpuPreprocessEncoder {
+    pub fn new(inner: Box<dyn crate::VideoEncoder>) -> Result<Self, EncodeError> {
+        Ok(Self {
+            preprocess: GpuPreprocess::new()?,
+            inner,
+        })
+    }
+}
+
+impl crate::VideoEncoder for GpuPreprocessEncoder {
+    fn encode(
+        &mut self,
+        frame: &PreprocessedFrame,
+    ) -> Result<Vec<blazar_core::EncodedUnit>, EncodeError> {
+        self.inner.encode(frame)
+    }
+
+    fn encode_frame(
+        &mut self,
+        frame: blazar_core::FrameRef,
+    ) -> Result<Vec<blazar_core::EncodedUnit>, EncodeError> {
+        // Host frames: converting on the CPU beats uploading 24 B/px.
+        self.inner.encode_frame(frame)
+    }
+
+    fn encode_device_batch(
+        &mut self,
+        ptr: u64,
+        desc: FrameDesc,
+        frames: u32,
+        keep_alive: Option<Box<dyn std::any::Any + Send>>,
+    ) -> Result<Vec<blazar_core::EncodedUnit>, EncodeError> {
+        let nv12 = self.preprocess.convert_device_frames(ptr, &desc, frames)?;
+        let mut units = Vec::new();
+        for frame in &nv12 {
+            units.extend(self.inner.encode(frame)?);
+        }
+        // The caller's allocation is no longer read at this point.
+        drop(keep_alive);
+        Ok(units)
+    }
+
+    fn flush(&mut self) -> Result<Vec<blazar_core::EncodedUnit>, EncodeError> {
+        self.inner.flush()
+    }
+
+    fn finish(&mut self) -> Result<Vec<blazar_core::EncodedUnit>, EncodeError> {
+        self.inner.finish()
+    }
+
+    fn request_keyframe(&mut self) {
+        self.inner.request_keyframe()
+    }
+
+    fn codec_config(&self) -> Option<Vec<u8>> {
+        self.inner.codec_config()
     }
 }

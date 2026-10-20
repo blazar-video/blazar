@@ -35,3 +35,5 @@ nvenc = ["blazar-encoder/nvenc", "blazar-runtime/nvenc"]
 enc-svtav1 = ["blazar-encoder/enc-svtav1", "blazar-runtime/enc-svtav1"]
 enc-x264 = ["blazar-encoder/enc-x264", "blazar-runtime/enc-x264"]
 enc-vp9 = ["blazar-encoder/enc-vp9", "blazar-runtime/enc-vp9"]
+# GPU preprocessing for CPU codecs (device tensors).
+gpu-preprocess = ["nvenc", "blazar-runtime/gpu-preprocess"]

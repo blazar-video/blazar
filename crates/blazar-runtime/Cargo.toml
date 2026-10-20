@@ -25,3 +25,6 @@ enc-x264 = ["blazar-encoder/enc-x264"]
 enc-svtav1 = ["blazar-encoder/enc-svtav1"]
 # Software VP9 via libvpx (BSD).
 enc-vp9 = ["blazar-encoder/enc-vp9"]
+# Feed CPU encoders from the GPU preprocess stage. Needs CUDA (the encoder crate's
+# nvenc feature carries cudarc), so it is opt-in.
+gpu-preprocess = ["blazar-encoder/nvenc"]

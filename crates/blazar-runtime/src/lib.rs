@@ -470,6 +470,19 @@ impl<S: Sink> Stream<S> {
 /// mock implements the full `VideoEncoder` contract. `NvencAv1` is real, but
 /// only when the `nvenc` feature is enabled; otherwise the deployment gets an
 /// explicit error rather than a silent mock.
+/// Wrap a CPU encoder so device tensors are converted on the GPU.
+#[cfg(feature = "gpu-preprocess")]
+fn wrap_gpu(enc: Box<dyn VideoEncoder>) -> Result<Box<dyn VideoEncoder>, RuntimeError> {
+    Ok(Box::new(
+        blazar_encoder::gpu_preprocess::GpuPreprocessEncoder::new(enc)?,
+    ))
+}
+
+#[cfg(not(feature = "gpu-preprocess"))]
+fn wrap_gpu(enc: Box<dyn VideoEncoder>) -> Result<Box<dyn VideoEncoder>, RuntimeError> {
+    Ok(enc)
+}
+
 fn build_encoder(
     cfg: &EncoderConfig,
     desc: &FrameDesc,
@@ -484,7 +497,7 @@ fn build_encoder(
             #[cfg(feature = "enc-svtav1")]
             {
                 let frame_duration = timebase.ticks_per_frame(desc.fps);
-                Ok(Box::new(blazar_encoder::svtav1::SvtAv1Encoder::new(
+                wrap_gpu(Box::new(blazar_encoder::svtav1::SvtAv1Encoder::new(
                     cfg,
                     desc.width,
                     desc.height,
@@ -502,7 +515,7 @@ fn build_encoder(
             #[cfg(feature = "enc-x264")]
             {
                 let frame_duration = timebase.ticks_per_frame(desc.fps);
-                Ok(Box::new(blazar_encoder::x264::X264Encoder::new(
+                wrap_gpu(Box::new(blazar_encoder::x264::X264Encoder::new(
                     cfg,
                     desc.width,
                     desc.height,
@@ -520,7 +533,7 @@ fn build_encoder(
             #[cfg(feature = "enc-vp9")]
             {
                 let frame_duration = timebase.ticks_per_frame(desc.fps);
-                Ok(Box::new(blazar_encoder::vp9::Vp9Encoder::new(
+                wrap_gpu(Box::new(blazar_encoder::vp9::Vp9Encoder::new(
                     cfg,
                     desc.width,
                     desc.height,
