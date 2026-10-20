@@ -368,8 +368,22 @@ fn open_session(params: &NvencParams, codec: VideoCodec) -> Result<Session, Enco
     ctx.bind_to_thread()
         .map_err(|e| EncodeError::Backend(format!("bind CUDA context: {e:?}")))?;
 
-    let encoder = Encoder::initialize_with_cuda(ctx)
-        .map_err(|e| EncodeError::Backend(format!("NVENC init: {e:?}")))?;
+    let encoder = Encoder::initialize_with_cuda(ctx).map_err(|e| {
+        // INVALID_ENCODERDEVICE means the driver refused a session, and the
+        // common cause by far is the concurrent-session cap on consumer cards.
+        // The raw error names neither the cap nor what to do about it.
+        let message = format!("NVENC init: {e:?}");
+        if message.contains("InvalidEncoderDevice") {
+            EncodeError::Backend(format!(
+                "{}: the driver refused a new encoder session. Consumer GPUs cap concurrent \
+                 NVENC sessions (measured: 9 on an RTX 4080 SUPER); datacenter GPUs do not. \
+                 Close streams you are not using, or move to a datacenter GPU.",
+                message
+            ))
+        } else {
+            EncodeError::Backend(message)
+        }
+    })?;
     let guids = encoder
         .get_encode_guids()
         .map_err(|e| EncodeError::Backend(format!("NVENC encode GUIDs: {e:?}")))?;

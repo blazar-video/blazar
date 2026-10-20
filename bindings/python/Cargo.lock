@@ -99,6 +99,7 @@ dependencies = [
  "blazar-preprocess",
  "blazar-svtav1-sys",
  "blazar-vpx-sys",
+ "blazar-x265-sys",
  "cudarc",
  "nvidia-video-codec-sdk",
  "thiserror",
@@ -164,6 +165,14 @@ dependencies = [
 
 [[package]]
 name = "blazar-vpx-sys"
+version = "0.0.0"
+dependencies = [
+ "bindgen 0.69.5",
+ "pkg-config",
+]
+
+[[package]]
+name = "blazar-x265-sys"
 version = "0.0.0"
 dependencies = [
  "bindgen 0.69.5",

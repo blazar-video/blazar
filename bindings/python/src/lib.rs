@@ -996,7 +996,12 @@ impl PyEncoder {
         let (ack_tx, ack_rx) = mpsc::sync_channel(1);
         py.detach(move || jobs.send(Job::Flush(ack_tx)))
             .map_err(|_| PyRuntimeError::new_err("encoder worker stopped"))?;
-        wait_ack(py, ack_rx, timeout)
+        wait_ack(py, ack_rx, timeout).map_err(|error| {
+            PyRuntimeError::new_err(prefer_recorded(
+                error.to_string(),
+                self.error_message(),
+            ))
+        })
     }
 
     /// Drain the queue, finalize the container and stop the worker. Idempotent.
@@ -1020,7 +1025,10 @@ impl PyEncoder {
         if let Some(worker) = self.worker.take() {
             let _ = py.detach(move || worker.join());
         }
-        outcome?;
+        outcome = outcome.map_err(|error| {
+            let recorded = self.error_message().or_else(|| self.failed_event_message());
+            PyRuntimeError::new_err(prefer_recorded(error.to_string(), recorded))
+        });
         if let Some(err) = self.error_message() {
             return Err(PyRuntimeError::new_err(err));
         }
@@ -1072,6 +1080,20 @@ impl PyEncoder {
 }
 
 impl PyEncoder {
+    /// A failure the worker reported as an event but never wrote to the error
+    /// slot. The event carries the cause; the slot occasionally does not, and
+    /// reporting the transport symptom then hides an actionable error.
+    fn failed_event_message(&self) -> Option<String> {
+        let receiver = self.events.lock().ok()?;
+        let mut found = None;
+        while let Ok(event) = receiver.try_recv() {
+            if let WorkerEvent::Failed { message, .. } = &event {
+                found = Some(message.clone());
+            }
+        }
+        found
+    }
+
     fn error_message(&self) -> Option<String> {
         self.shared.error.lock().ok().and_then(|slot| slot.clone())
     }
@@ -1099,6 +1121,19 @@ fn record_extra_bytes(shared: &Shared, written: &Mutex<Vec<WrittenUnit>>) {
         if let Ok(mut stats) = shared.stats.lock() {
             stats.bytes += extra as u64;
         }
+    }
+}
+
+/// Combine the transport symptom with the error the worker recorded.
+///
+/// A dead channel means the worker stopped; *why* it stopped is in the shared
+/// error slot, and reporting only "worker stopped before replying" hides causes
+/// that are entirely actionable, such as an NVENC session-limit failure.
+fn prefer_recorded(symptom: String, recorded: Option<String>) -> String {
+    match recorded {
+        Some(reason) if !symptom.contains(&reason) => format!("{symptom}: {reason}"),
+        Some(reason) => reason,
+        None => symptom,
     }
 }
 
