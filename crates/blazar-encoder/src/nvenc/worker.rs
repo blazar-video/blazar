@@ -1334,6 +1334,12 @@ fn encode_device_batch(
     units: &mut Vec<EncodedUnit>,
 ) -> Result<(), EncodeError> {
     let frame_bytes = device_frame_bytes(&desc);
+    // A device frame advances by one plane in (C,T,H,W); THWC frames are whole.
+    let pixels = desc.width as usize * desc.height as usize;
+    let frame_step = match desc.layout {
+        blazar_core::Layout::Thwc => pixels * 3 * if matches!(desc.dtype, blazar_core::Dtype::F32) { 4 } else { 2 },
+        blazar_core::Layout::Bcthw => pixels * if matches!(desc.dtype, blazar_core::Dtype::F32) { 4 } else { 2 },
+    };
     let budget = (BATCH_STAGING_BUDGET / frame_bytes.max(1)).max(1);
     let max_per_chunk = POOL_CAPACITY.min(budget).max(1);
 
@@ -1356,7 +1362,7 @@ fn encode_device_batch(
             frame_duration,
             codec,
             pitch,
-            ptr + (start as u64) * frame_bytes as u64,
+            ptr + (start as u64) * frame_step as u64,
             desc,
             (end - start) as u32,
             frames,
@@ -1427,7 +1433,7 @@ fn encode_device_chunk(
     stream
         .memcpy_htod(&ptrs, &mut dst_ptrs.slice_mut(0..batched))
         .map_err(|e| EncodeError::Backend(format!("upload dst pointers: {e}")))?;
-    converter.convert_batch_ptr(stream, ptr, dst_ptrs, &desc, batched as u32, total_frames, pitch)?;
+    converter.convert_batch_ptr(stream, ptr, dst_ptrs, &desc, batched as u32, total_frames, false, pitch)?;
     stream
         .synchronize()
         .map_err(|e| EncodeError::Backend(format!("sync before encode: {e}")))?;

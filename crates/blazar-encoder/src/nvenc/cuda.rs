@@ -22,7 +22,8 @@ const KERNEL: &str = r#"
 extern "C" __global__ void rgb_to_nv12(
     const unsigned char* __restrict__ src,
     const unsigned long long* __restrict__ dst_ptrs,
-    int w, int h, int pitch, int frames, int total_frames,
+    int w, int h, int pitch, int frames,
+    int frame_stride, int channel_stride,
     int layout, int fmt, int range,
     float kr, float kg, float kb)
 {
@@ -41,13 +42,10 @@ extern "C" __global__ void rgb_to_nv12(
     // BCTHW is B,C,T,H,W: frame t of channel c is at c*T*H*W + t*H*W, so the
     // channel stride is frames*pixels, not pixels. With T == 1 the two agree,
     // which is why per-frame batches never exposed this.
-    const unsigned long long channel_stride =
-        (layout == 1) ? (unsigned long long)total_frames * pixels : 0;
-    if (layout == 0) {
-        src += (unsigned long long)fi * pixels * 3 * elem;
-    } else {
-        src += (unsigned long long)fi * pixels * elem;
-    }
+    // frame_stride/channel_stride are in samples and depend on how the caller
+    // laid the frames out; the host path stacks whole frames, a device tensor
+    // is (C,T,H,W).
+    src += (unsigned long long)fi * (unsigned long long)frame_stride * elem;
     float cb_sum = 0.0f, cr_sum = 0.0f, n = 0.0f;
 
     for (int dy = 0; dy < 2; ++dy) {
@@ -180,9 +178,8 @@ impl Nv12Converter {
     ) -> Result<(), EncodeError> {
         let (ptr, guard) = src.device_ptr(stream);
         drop(guard);
-        // Host batches are packed per launch, so the tensor depth equals the
-        // number of frames being converted.
-        self.convert_batch_ptr(stream, ptr, dst_ptrs, desc, frames, frames, pitch)
+        // Host batches are packed as whole frames back to back: (T, C, H, W).
+        self.convert_batch_ptr(stream, ptr, dst_ptrs, desc, frames, frames, true, pitch)
     }
 
     /// Convert `frames` frames starting at a raw device pointer. Used for
@@ -196,6 +193,7 @@ impl Nv12Converter {
         desc: &FrameDesc,
         frames: u32,
         total_frames: u32,
+        stacked: bool,
         pitch: u32,
     ) -> Result<(), EncodeError> {
         if !matches!(desc.dtype, Dtype::F32 | Dtype::Bf16) {
@@ -227,8 +225,15 @@ impl Nv12Converter {
         let h = desc.height as i32;
         let pitch = pitch as i32;
         let frames = frames.max(1) as i32;
-        // BCTHW channel stride uses the tensor depth, not the chunk size.
-        let total_frames = total_frames.max(1) as i32;
+        let pixels = desc.width as i32 * desc.height as i32;
+        let (frame_stride, channel_stride) = match (desc.layout, stacked) {
+            // THWC: samples interleaved per pixel, a frame is 3*pixels wide.
+            (Layout::Thwc, _) => (3 * pixels, 0),
+            // Stacked host frames: (T, C, H, W).
+            (Layout::Bcthw, true) => (3 * pixels, pixels),
+            // Device tensor: (C, T, H, W), depth is the whole tensor.
+            (Layout::Bcthw, false) => (pixels, total_frames.max(1) as i32 * pixels),
+        };
         let cw = desc.width.div_ceil(2);
         let ch = desc.height.div_ceil(2);
         let cfg = LaunchConfig {
@@ -243,7 +248,8 @@ impl Nv12Converter {
         args.arg(&h);
         args.arg(&pitch);
         args.arg(&frames);
-        args.arg(&total_frames);
+        args.arg(&frame_stride);
+        args.arg(&channel_stride);
         args.arg(&layout);
         args.arg(&fmt);
         args.arg(&range);
