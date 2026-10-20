@@ -154,8 +154,11 @@ def test_submit_returns_before_the_encode_finishes(calibrations, tmp_path):
     )
 
 
-def test_python_threads_run_while_the_queue_is_full(calibrations, tmp_path):
+def test_python_threads_run_while_the_queue_is_full(calibrations, tmp_path, monkeypatch):
     """A full queue blocks submit, but with the GIL released."""
+    # The mock has no real encode cost; ask it to simulate one so the queue can
+    # actually fill.
+    monkeypatch.setenv("BLAZAR_MOCK_DELAY_MS", "10")
     encoder = new_encoder(calibrations, tmp_path / "gil.mp4", queue_depth=1)
     ticks = 0
     stop = False

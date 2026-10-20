@@ -153,6 +153,13 @@ impl VideoEncoder for MockVideoEncoder {
         if self.finished {
             return Err(EncodeError::AfterFinish);
         }
+        // Test hook: a real encode takes milliseconds, so queue/backpressure
+        // tests need a mock that does too. Off unless the variable is set.
+        if let Ok(ms) = std::env::var("BLAZAR_MOCK_DELAY_MS") {
+            if let Ok(ms) = ms.parse::<u64>() {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
+        }
         // Keyframe if it's the first frame, a forced key, or keyint elapsed.
         let keyframe =
             self.frame_count == 0 || self.force_key || self.frames_since_key >= self.keyint;
