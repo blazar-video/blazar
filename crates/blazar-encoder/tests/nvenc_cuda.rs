@@ -206,35 +206,35 @@ fn gpu_matches_cpu_for_a_batch_of_frames() {
     }
 }
 
-/// BCTHW with T > 1 has frame stride H*W and channel stride T*H*W. Two frames
-/// of distinct data catch a kernel that assumes per-frame channel planes.
-#[test]
-fn gpu_matches_cpu_for_a_bcthw_batch() {
+/// BCTHW batches come in two layouts: a device tensor is (C,T,H,W) and a
+/// stacked host batch is (T,C,H,W). Both must match the CPU reference.
+fn check_bcthw_batch(device_layout: bool) {
     let (w, h, n) = (48u32, 32u32, 3u32);
     let pitch = w.div_ceil(256) * 256;
     let desc = frame_desc(w, h, Layout::Bcthw, Dtype::F32, ColorRange::Unit01);
     let chroma_rows = h.div_ceil(2);
     let pixels = (w * h) as usize;
 
-    // (C, T, H, W) host buffer, which is what (1, C, T, H, W) puts on the wire.
     let mut bytes = vec![0u8; 3 * n as usize * pixels * 4];
     let mut expected = Vec::new();
     for frame_index in 0..n {
         let data = host_rgb(w, h, Layout::Thwc, Dtype::F32, ColorRange::Unit01, frame_index as u64 + 7);
-        // The CPU reference must see the same samples in the layout its desc
-        // claims: one frame of BCTHW is (C, 1, H, W).
         let cpu_data = host_rgb(w, h, Layout::Bcthw, Dtype::F32, ColorRange::Unit01, frame_index as u64 + 7);
         let frame = FrameRef::new(FrameBuffer::host_owned(cpu_data), desc);
         expected.push(
             to_nv12(&CpuPreprocess::new().process(&frame).expect("cpu preprocess"), pitch)
                 .expect("cpu nv12"),
         );
-        // Copy the THWC samples into BCTHW planes: channel, frame, row, col.
         for c in 0..3usize {
             for p in 0..pixels {
                 let src = (p * 3 + c) * 4;
-                let dst = ((c * n as usize + frame_index as usize) * pixels + p) * 4;
-                bytes[dst..dst + 4].copy_from_slice(&data[src..src + 4]);
+                // Device tensor: channel-major (C,T,H,W). Stacked: (T,C,H,W).
+                let index = if device_layout {
+                    (c * n as usize + frame_index as usize) * pixels + p
+                } else {
+                    (frame_index as usize * 3 + c) * pixels + p
+                };
+                bytes[index * 4..index * 4 + 4].copy_from_slice(&data[src..src + 4]);
             }
         }
     }
@@ -259,9 +259,17 @@ fn gpu_matches_cpu_for_a_bcthw_batch() {
         .collect();
     let ptr_buf = stream.clone_htod(&ptrs).expect("upload dst pointers");
     let converter = Nv12Converter::new(&ctx).expect("compile kernel");
-    converter
-        .convert_batch(&stream, &src, &ptr_buf, &desc, n, pitch)
-        .expect("gpu convert");
+    if device_layout {
+        let (src_ptr, guard) = src.device_ptr(&stream);
+        drop(guard);
+        converter
+            .convert_batch_ptr(&stream, src_ptr, &ptr_buf, &desc, n, n, false, pitch)
+            .expect("gpu convert");
+    } else {
+        converter
+            .convert_batch(&stream, &src, &ptr_buf, &desc, n, pitch)
+            .expect("gpu convert");
+    }
     stream.synchronize().expect("sync");
 
     for (frame_index, dst) in dsts.iter().enumerate() {
@@ -274,7 +282,18 @@ fn gpu_matches_cpu_for_a_bcthw_batch() {
             .unwrap_or(0);
         assert!(
             worst <= 1,
-            "bcthw batch frame {frame_index}: max |gpu-cpu| = {worst} (channel/frame stride wrong?)"
+            "bcthw batch frame {frame_index} (device_layout={device_layout}): \
+             max |gpu-cpu| = {worst} (channel/frame stride wrong?)"
         );
     }
+}
+
+#[test]
+fn gpu_matches_cpu_for_a_bcthw_device_batch() {
+    check_bcthw_batch(true);
+}
+
+#[test]
+fn gpu_matches_cpu_for_a_stacked_bcthw_batch() {
+    check_bcthw_batch(false);
 }
