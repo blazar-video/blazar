@@ -221,7 +221,10 @@ fn gpu_matches_cpu_for_a_bcthw_batch() {
     let mut expected = Vec::new();
     for frame_index in 0..n {
         let data = host_rgb(w, h, Layout::Thwc, Dtype::F32, ColorRange::Unit01, frame_index as u64 + 7);
-        let frame = FrameRef::new(FrameBuffer::host_owned(data.clone()), desc);
+        // The CPU reference must see the same samples in the layout its desc
+        // claims: one frame of BCTHW is (C, 1, H, W).
+        let cpu_data = host_rgb(w, h, Layout::Bcthw, Dtype::F32, ColorRange::Unit01, frame_index as u64 + 7);
+        let frame = FrameRef::new(FrameBuffer::host_owned(cpu_data), desc);
         expected.push(
             to_nv12(&CpuPreprocess::new().process(&frame).expect("cpu preprocess"), pitch)
                 .expect("cpu nv12"),
