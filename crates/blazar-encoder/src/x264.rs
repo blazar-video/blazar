@@ -305,11 +305,12 @@ impl VideoEncoder for X264Encoder {
         self.finished = true;
         let mut units = Vec::new();
         loop {
-            // SAFETY: the context is valid; zero means nothing is buffered.
-            let delayed = unsafe { x264_encoder_delayed_frames(self.enc) };
-            if delayed <= 0 {
-                break;
-            }
+            // Drain by asking for output, not by asking how much is buffered:
+            // `x264_encoder_delayed_frames` counts the reorder queue and not
+            // the lookahead, so with a short stream (fewer frames than the
+            // lookahead depth) it reports 0 while every frame is still held.
+            // Feeding a null picture pops one frame; the loop ends when a call
+            // produces nothing.
             let mut nals: *mut x264_nal_t = ptr::null_mut();
             let mut nal_count: c_int = 0;
             let mut pic_out: x264_picture_t = unsafe { std::mem::zeroed() };

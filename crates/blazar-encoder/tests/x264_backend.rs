@@ -106,3 +106,25 @@ fn bframes_reorder_decode_timestamps() {
     let dts: Vec<u64> = units.iter().map(|u| u.dts.0).collect();
     assert!(dts.windows(2).all(|w| w[0] < w[1]), "DTS must increase");
 }
+
+#[test]
+fn finish_drains_frames_held_in_the_lookahead() {
+    // The regression: keyint 120 and only 24 frames means x264 holds every
+    // frame in its lookahead, and `x264_encoder_delayed_frames` reports only
+    // the reorder queue. Draining on that count produced zero bytes.
+    let mut enc = X264Encoder::new(&cfg(120, 3), W, H, 24.0, 3750).expect("open x264");
+    let mut units = Vec::new();
+    for index in 0..24 {
+        units.extend(enc.encode(&frame(index)).expect("encode"));
+    }
+    units.extend(enc.finish().expect("finish"));
+
+    assert_eq!(units.len(), 24, "finish must drain the lookahead");
+    assert!(
+        units.iter().all(|u| !u.bytes.is_empty()),
+        "every unit must carry a payload"
+    );
+    let mut pts: Vec<u64> = units.iter().map(|u| u.pts.0).collect();
+    pts.sort_unstable();
+    assert_eq!(pts, (0..24).map(|i| i * 3750).collect::<Vec<_>>());
+}
