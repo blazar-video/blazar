@@ -1,0 +1,12 @@
+[package]
+name = "blazar-x265-sys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Bindings to libx265 (HEVC), generated from the system header"
+links = "x265"
+
+[build-dependencies]
+bindgen = "=0.69.5"
+pkg-config = "0.3"
