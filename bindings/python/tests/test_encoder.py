@@ -146,12 +146,13 @@ def test_submit_returns_before_the_encode_finishes(calibrations, tmp_path):
     stats = encoder.stats
     encoder.close()
 
-    # Four 320x240 mock encodes take far longer than four enqueues.
-    total_us = stats["max_encode_us"] * stats["encoded"]
-    assert submit_seconds * 1_000_000 < total_us, (
-        f"submit loop took {submit_seconds:.3f}s while encoding took "
-        f"{total_us / 1000:.1f}ms - encode is blocking the caller"
+    # With queue_depth=8 the four enqueues must not wait for any encode. An
+    # absolute bound is used rather than comparing against encode time: under
+    # load the loop itself can be slow without the encoder blocking it.
+    assert submit_seconds < 0.05, (
+        f"submit loop took {submit_seconds:.3f}s - encode is blocking the caller"
     )
+    assert stats["encoded"] == 4
 
 
 def test_python_threads_run_while_the_queue_is_full(calibrations, tmp_path, monkeypatch):
