@@ -304,6 +304,9 @@ impl VideoEncoder for X264Encoder {
         }
         self.finished = true;
         let mut units = Vec::new();
+        // A flush call can come back empty before the encoder is drained, so
+        // stop after a run of empty calls rather than on the first one.
+        let mut empty_streak = 0u32;
         loop {
             // Drain by asking for output, not by asking how much is buffered:
             // `x264_encoder_delayed_frames` counts the reorder queue and not
@@ -323,9 +326,24 @@ impl VideoEncoder for X264Encoder {
                     &mut pic_out,
                 )
             };
-            if size < 0 || nal_count == 0 || nals.is_null() {
-                break;
+            if size < 0 {
+                return Err(EncodeError::Backend(format!("x264 flush ({size})")));
             }
+            if nal_count == 0 || nals.is_null() {
+                // An empty call does not mean the encoder is drained: frames
+                // still in the lookahead can need several flush calls before
+                // the first one emerges. Stop when the reorder queue reports
+                // empty, with a hard cap so a misbehaving library cannot spin
+                // here forever.
+                empty_streak += 1;
+                // SAFETY: the context is open.
+                let delayed = unsafe { x264_encoder_delayed_frames(self.enc) };
+                if (delayed <= 0 && empty_streak >= 2) || empty_streak > 64 {
+                    break;
+                }
+                continue;
+            }
+            empty_streak = 0;
             let mut au = Vec::new();
             for index in 0..nal_count as usize {
                 let nal = unsafe { &*nals.add(index) };

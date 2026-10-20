@@ -115,17 +115,60 @@ impl<W: Write> Sink for DebugFileSink<W> {
 /// `styp? + moof + mdat` fragment through the contribution in the forked
 /// oxideav revision, and `close` writes the final trailer/index.
 pub struct Fmp4FileSink<W: Write + Seek + Send + 'static> {
-    writer: Option<W>,
+    /// Kept so the sink can flush the writer itself. The muxer takes ownership
+    /// of a handle, not the writer, so a buffered writer can be flushed before
+    /// `close` returns instead of whenever the muxer happens to be dropped.
+    writer: Option<std::sync::Arc<std::sync::Mutex<W>>>,
     muxer: Option<FragmentedMuxer>,
     params: Option<StreamParams>,
     guard: OrderGuard,
     closed: bool,
 }
 
+/// `Write + Seek` handle the muxer can own while the sink keeps flushing it.
+struct SharedWriter<W> {
+    inner: std::sync::Arc<std::sync::Mutex<W>>,
+}
+
+impl<W: Write> Write for SharedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.inner
+            .lock()
+            .map_err(|_| std::io::Error::other("sink writer poisoned"))?
+            .write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| std::io::Error::other("sink writer poisoned"))?
+            .flush()
+    }
+}
+
+impl<W: Seek> Seek for SharedWriter<W> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.inner
+            .lock()
+            .map_err(|_| std::io::Error::other("sink writer poisoned"))?
+            .seek(pos)
+    }
+}
+
 impl<W: Write + Seek + Send + 'static> Fmp4FileSink<W> {
+    fn flush_writer(&self) -> Result<(), SinkError> {
+        self.writer
+            .as_ref()
+            .ok_or(SinkError::NotOpen)?
+            .lock()
+            .map_err(|_| SinkError::InvalidConfiguration("sink writer poisoned".into()))?
+            .flush()
+            .map_err(|e| SinkError::Io(e.to_string()))
+    }
+
     pub fn new(writer: W) -> Self {
         Self {
-            writer: Some(writer),
+            writer: Some(std::sync::Arc::new(std::sync::Mutex::new(writer))),
             muxer: None,
             params: None,
             guard: OrderGuard::default(),
@@ -227,13 +270,17 @@ impl<W: Write + Seek + Send + 'static> Sink for Fmp4FileSink<W> {
             ));
         }
         let streams = Self::stream_infos(&params)?;
-        let writer = self.writer.take().ok_or(SinkError::NotOpen)?;
+        let writer = self
+            .writer
+            .as_ref()
+            .ok_or(SinkError::NotOpen)?
+            .clone();
         // Honour the packet timebase as the track's media timescale. The muxer
         // otherwise defaults video to 1/1000, which truncates frame durations
         // (3750 ticks at 90 kHz is 41.667 ms, not 41) and drifts over a stream.
         let video_timescale = params.timebase.ticks_per_second();
         let mut muxer = open_fragmented_typed(
-            Box::new(writer),
+            Box::new(SharedWriter { inner: writer }),
             &streams,
             Mp4MuxerOptions {
                 video_media_timescale: Some(video_timescale),
@@ -274,7 +321,9 @@ impl<W: Write + Seek + Send + 'static> Sink for Fmp4FileSink<W> {
             .as_mut()
             .ok_or(SinkError::NotOpen)?
             .flush_fragment()
-            .map_err(|e| SinkError::Muxer(e.to_string()))
+            .map_err(|e| SinkError::Muxer(e.to_string()))?;
+        // The fragment is only in the writer's buffer until this lands.
+        self.flush_writer()
     }
 
     fn close(&mut self) -> Result<(), SinkError> {
@@ -286,14 +335,10 @@ impl<W: Write + Seek + Send + 'static> Sink for Fmp4FileSink<W> {
             .ok_or(SinkError::NotOpen)?
             .write_trailer()
             .map_err(|e| SinkError::Muxer(e.to_string()))?;
-        // The muxer owns the writer, and callers hand us a buffered one. Drop
-        // it here so the buffer flushes before `close` returns: otherwise a
-        // stream whose frames only arrive at finish (an encoder holding a
-        // lookahead) leaves every byte in the buffer, and the file is empty
-        // when the caller looks at it. Dropping is the only way to flush a
-        // writer the muxer took ownership of; the trailer write above already
-        // surfaces I/O errors.
-        drop(self.muxer.take());
+        // Callers hand us a buffered writer. Flush it here: an encoder that
+        // holds frames until finish puts the whole payload in that buffer, and
+        // the caller must not have to wait for a destructor to see the file.
+        self.flush_writer()?;
         self.closed = true;
         Ok(())
     }
