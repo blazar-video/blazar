@@ -5,6 +5,7 @@
 exclude = ["bindings/python"]
 resolver = "2"
 members = [
+    "crates/blazar-svtav1-sys",
     "crates/blazar-core",
     "crates/blazar-calibration",
     "crates/blazar-encoder",
