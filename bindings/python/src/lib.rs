@@ -575,6 +575,7 @@ impl PyEncoder {
         queue_depth = 4,
     ))]
     fn new(
+        py: Python<'_>,
         calibrations: &PyCalibrations,
         identity: &Bound<'_, PyDict>,
         target: &str,
@@ -607,8 +608,9 @@ impl PyEncoder {
             VideoEncoderBackend::NvencAv1
             | VideoEncoderBackend::NvencH264
             | VideoEncoderBackend::NvencHevc => Some(
-                session_limiter()
-                    .acquire(Duration::from_secs(30))
+                // Waiting for a slot must not hold the GIL: every other thread
+                // that would release one needs it.
+                py.detach(|| session_limiter().acquire(Duration::from_secs(30)))
                     .ok_or_else(|| {
                         PyRuntimeError::new_err(format!(
                             "no NVENC session available after 30s: {} already open in this \
