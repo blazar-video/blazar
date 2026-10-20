@@ -12,6 +12,8 @@
 
 use std::arch::x86_64::*;
 
+use rayon::prelude::*;
+
 use blazar_core::FrameDesc;
 
 use crate::CpuPreprocess;
