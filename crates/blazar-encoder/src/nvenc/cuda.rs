@@ -36,10 +36,17 @@ extern "C" __global__ void rgb_to_nv12(
 
     unsigned char* __restrict__ dst = (unsigned char*)dst_ptrs[fi];
     const int pixels = w * h;
-    // Frames are contiguous in the staging buffer: THWC is x3 interleaved
-    // samples, BCTHW has one scalar per pixel per plane.
     const int elem = (fmt == 0) ? 4 : 2;
-    src += (unsigned long long)fi * pixels * 3 * elem;
+    // THWC is B,T,H,W,C: every frame owns 3*pixels samples in a row.
+    // BCTHW is B,C,T,H,W: frame t of channel c is at c*T*H*W + t*H*W, so the
+    // channel stride is frames*pixels, not pixels. With T == 1 the two agree,
+    // which is why per-frame batches never exposed this.
+    const unsigned long long ch = (layout == 1) ? (unsigned long long)frames * pixels : 0;
+    if (layout == 0) {
+        src += (unsigned long long)fi * pixels * 3 * elem;
+    } else {
+        src += (unsigned long long)fi * pixels * elem;
+    }
     float cb_sum = 0.0f, cr_sum = 0.0f, n = 0.0f;
 
     for (int dy = 0; dy < 2; ++dy) {
@@ -53,12 +60,12 @@ extern "C" __global__ void rgb_to_nv12(
             if (fmt == 0) {
                 const float* f = (const float*)src;
                 if (layout == 0) { r = f[p*3]; g = f[p*3+1]; b = f[p*3+2]; }
-                else { r = f[p]; g = f[pixels + p]; b = f[2*pixels + p]; }
+                else { r = f[p]; g = f[ch + p]; b = f[2*ch + p]; }
             } else {
                 const unsigned short* s = (const unsigned short*)src;
                 unsigned short vr, vg, vb;
                 if (layout == 0) { vr = s[p*3]; vg = s[p*3+1]; vb = s[p*3+2]; }
-                else { vr = s[p]; vg = s[pixels + p]; vb = s[2*pixels + p]; }
+                else { vr = s[p]; vg = s[ch + p]; vb = s[2*ch + p]; }
                 r = __uint_as_float(((unsigned)vr) << 16);
                 g = __uint_as_float(((unsigned)vg) << 16);
                 b = __uint_as_float(((unsigned)vb) << 16);
