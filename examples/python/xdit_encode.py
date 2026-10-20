@@ -90,7 +90,10 @@ def main() -> int:
 
     # The mock encoder cannot produce a codec configuration; supply a placeholder
     # so the container structure is exercised. nvenc derives the real av1C.
-    extradata = None if args.backend == "nvenc_av1" else FAKE_AV1C
+    # Only the mock (rav1e) needs a canned av1C. SVT-AV1 and NVENC derive a real
+    # one from the first keyframe, and overriding it would put a lie in the
+    # container that a decoder may or may not ignore.
+    extradata = FAKE_AV1C if args.backend == "rav1e" else None
     if extradata is not None:
         print("note: mock backend - output is NOT decodable, structure only")
 
