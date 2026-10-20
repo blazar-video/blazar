@@ -1359,6 +1359,7 @@ fn encode_device_batch(
             ptr + (start as u64) * frame_bytes as u64,
             desc,
             (end - start) as u32,
+            frames,
             &idr[start..end],
             units,
         )?;
@@ -1398,6 +1399,7 @@ fn encode_device_chunk(
     ptr: u64,
     desc: FrameDesc,
     frames: u32,
+    total_frames: u32,
     idr: &[bool],
     units: &mut Vec<EncodedUnit>,
 ) -> Result<usize, EncodeError> {
@@ -1425,7 +1427,7 @@ fn encode_device_chunk(
     stream
         .memcpy_htod(&ptrs, &mut dst_ptrs.slice_mut(0..batched))
         .map_err(|e| EncodeError::Backend(format!("upload dst pointers: {e}")))?;
-    converter.convert_batch_ptr(stream, ptr, dst_ptrs, &desc, batched as u32, pitch)?;
+    converter.convert_batch_ptr(stream, ptr, dst_ptrs, &desc, batched as u32, total_frames, pitch)?;
     stream
         .synchronize()
         .map_err(|e| EncodeError::Backend(format!("sync before encode: {e}")))?;

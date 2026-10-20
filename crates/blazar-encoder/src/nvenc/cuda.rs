@@ -22,7 +22,7 @@ const KERNEL: &str = r#"
 extern "C" __global__ void rgb_to_nv12(
     const unsigned char* __restrict__ src,
     const unsigned long long* __restrict__ dst_ptrs,
-    int w, int h, int pitch, int frames,
+    int w, int h, int pitch, int frames, int total_frames,
     int layout, int fmt, int range,
     float kr, float kg, float kb)
 {
@@ -41,7 +41,8 @@ extern "C" __global__ void rgb_to_nv12(
     // BCTHW is B,C,T,H,W: frame t of channel c is at c*T*H*W + t*H*W, so the
     // channel stride is frames*pixels, not pixels. With T == 1 the two agree,
     // which is why per-frame batches never exposed this.
-    const unsigned long long channel_stride = (layout == 1) ? (unsigned long long)frames * pixels : 0;
+    const unsigned long long channel_stride =
+        (layout == 1) ? (unsigned long long)total_frames * pixels : 0;
     if (layout == 0) {
         src += (unsigned long long)fi * pixels * 3 * elem;
     } else {
@@ -179,7 +180,9 @@ impl Nv12Converter {
     ) -> Result<(), EncodeError> {
         let (ptr, guard) = src.device_ptr(stream);
         drop(guard);
-        self.convert_batch_ptr(stream, ptr, dst_ptrs, desc, frames, pitch)
+        // Host batches are packed per launch, so the tensor depth equals the
+        // number of frames being converted.
+        self.convert_batch_ptr(stream, ptr, dst_ptrs, desc, frames, frames, pitch)
     }
 
     /// Convert `frames` frames starting at a raw device pointer. Used for
@@ -192,6 +195,7 @@ impl Nv12Converter {
         dst_ptrs: &CudaSlice<u64>,
         desc: &FrameDesc,
         frames: u32,
+        total_frames: u32,
         pitch: u32,
     ) -> Result<(), EncodeError> {
         if !matches!(desc.dtype, Dtype::F32 | Dtype::Bf16) {
@@ -223,6 +227,8 @@ impl Nv12Converter {
         let h = desc.height as i32;
         let pitch = pitch as i32;
         let frames = frames.max(1) as i32;
+        // BCTHW channel stride uses the tensor depth, not the chunk size.
+        let total_frames = total_frames.max(1) as i32;
         let cw = desc.width.div_ceil(2);
         let ch = desc.height.div_ceil(2);
         let cfg = LaunchConfig {
@@ -237,6 +243,7 @@ impl Nv12Converter {
         args.arg(&h);
         args.arg(&pitch);
         args.arg(&frames);
+        args.arg(&total_frames);
         args.arg(&layout);
         args.arg(&fmt);
         args.arg(&range);
