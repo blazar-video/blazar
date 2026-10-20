@@ -11,6 +11,20 @@ fn main() {
         .expect("SVT-AV1 development files (pkg-config SvtAv1Enc) are required");
     println!("cargo:rerun-if-changed=build.rs");
 
+    // The 2.x and 4.x APIs differ (init_handle takes app_data before 3.x, and
+    // pred_structure is a raw uint8_t there). Expose the major version so the
+    // backend can compile against whichever library is installed.
+    println!("cargo:rustc-check-cfg=cfg(svt_av1_2)");
+    let major: u32 = lib
+        .version
+        .split('.')
+        .next()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4);
+    if major < 3 {
+        println!("cargo:rustc-cfg=svt_av1_2");
+    }
+
     let mut builder = bindgen::Builder::default()
         .header_contents("svt.h", "#include <EbSvtAv1Enc.h>\n")
         .allowlist_function("svt_av1_.*")
