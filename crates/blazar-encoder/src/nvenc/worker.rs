@@ -439,6 +439,8 @@ fn apply_config(cfg: &mut NV_ENC_CONFIG, params: &NvencParams, codec: VideoCodec
     unsafe {
         let full_range = u32::from(params.color.full_range);
         match codec {
+            // NVENC has no VP9 encoder; the session can never be opened for it.
+            VideoCodec::Vp9 => {}
             VideoCodec::Av1 => {
                 let av1 = &mut cfg.encodeCodecConfig.av1Config;
                 if params.color.bt709 {
@@ -1003,6 +1005,10 @@ fn unit_from_bitstream(
     let keyframe = matches!(lock.picture_type(), NV_ENC_PIC_TYPE::NV_ENC_PIC_TYPE_IDR);
     let raw = lock.data();
     let sample = match codec {
+        // Unreachable: `open_session` rejects VP9 before this runs.
+        VideoCodec::Vp9 => {
+            return Err(EncodeError::Backend("NVENC cannot encode VP9".into()))
+        }
         VideoCodec::Av1 => {
             if keyframe && codec_config.is_none() {
                 *codec_config = Some(av1::av1c_from_keyframe(raw).map_err(|e| {
