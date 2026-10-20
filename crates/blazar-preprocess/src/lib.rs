@@ -13,6 +13,9 @@
 
 use blazar_core::{ColorRange, ColorSpace, Dtype, FrameRef, Layout, Pts};
 use rayon::prelude::*;
+
+#[cfg(target_arch = "x86_64")]
+mod simd;
 use thiserror::Error;
 
 /// An 8-bit planar YUV 4:2:0 frame — the small representation encoders consume
@@ -64,6 +67,23 @@ pub trait PreprocessStage {
 /// CPU preprocess for the host ingest path (Phase 1).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CpuPreprocess;
+
+/// Vectorised planar f32 conversion, or `None` when it does not apply.
+fn try_simd_bcthw_f32(
+    bytes: &[u8],
+    desc: &blazar_core::FrameDesc,
+    w: usize,
+    h: usize,
+) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if desc.range == ColorRange::Unit01 && simd::available() {
+            // SAFETY: availability was checked above.
+            return Some(unsafe { simd::convert_bcthw_f32(bytes, desc, w, h) });
+        }
+    }
+    None
+}
 
 impl CpuPreprocess {
     pub fn new() -> Self {
@@ -183,7 +203,12 @@ impl PreprocessStage for CpuPreprocess {
         let (y, u, v) = match (desc.layout, desc.dtype) {
             (Layout::Thwc, Dtype::F32) => convert_thwc::<F32Sample>(bytes, desc, w, h),
             (Layout::Thwc, Dtype::Bf16) => convert_thwc::<Bf16Sample>(bytes, desc, w, h),
-            (Layout::Bcthw, Dtype::F32) => convert_bcthw::<F32Sample>(bytes, desc, w, h),
+            // Model-shaped frames (planar f32, unit range) get the vectorised
+            // path when the CPU has AVX2; everything else stays scalar.
+            (Layout::Bcthw, Dtype::F32) => match try_simd_bcthw_f32(bytes, desc, w, h) {
+                Some(planes) => planes,
+                None => convert_bcthw::<F32Sample>(bytes, desc, w, h),
+            },
             (Layout::Bcthw, Dtype::Bf16) => convert_bcthw::<Bf16Sample>(bytes, desc, w, h),
             (_, other) => return Err(PreprocessError::UnsupportedDtype(other)),
         };
