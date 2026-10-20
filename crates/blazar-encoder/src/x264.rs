@@ -271,9 +271,11 @@ impl X264Encoder {
         let keyframe = pic_out.i_type == X264_TYPE_IDR as c_int || pic_out.i_type == X264_TYPE_I as c_int;
         let dts = self.emitted * self.frame_duration;
         self.emitted += 1;
+        // The packet emitted on this call belongs to whichever frame x264 has
+        // finished, which with B-frames is not the frame just submitted.
         Ok(vec![EncodedUnit::video(
             parsed.sample,
-            Pts(pts.max(0) as u64),
+            Pts(pic_out.i_pts.max(0) as u64),
             Pts(dts),
             keyframe,
             self.frame_duration,

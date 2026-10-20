@@ -76,10 +76,17 @@ fn encodes_frames_and_reports_avcc() {
         assert!(nals >= 1);
         assert_eq!(unit.duration, 3750);
     }
+    // The set of presentation timestamps must be exactly the frames we fed,
+    // whatever order the encoder emits them in.
     let pts: Vec<u64> = units.iter().map(|u| u.pts.0).collect();
     let mut sorted = pts.clone();
     sorted.sort_unstable();
-    assert_eq!(pts.len(), sorted.len());
+    assert_eq!(
+        sorted,
+        (0..units.len() as u64).map(|i| i * 3750).collect::<Vec<_>>(),
+        "PTS set does not match the submitted frames"
+    );
+    assert_eq!(units[0].pts.0, 0, "first emitted unit must be frame 0");
 }
 
 #[test]
