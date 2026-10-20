@@ -75,9 +75,13 @@ fn try_simd_bcthw_f32(
     w: usize,
     h: usize,
 ) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    // Disabled: this vectorises luma in a separate pass, which re-reads every
+    // f32 plane and is SLOWER end to end than the fused scalar single pass
+    // (16.1 vs 11.2 ms/frame at 1080p). The vectorised version has to compute
+    // luma and the 2x2 chroma in one pass over the frame. Kept for that work.
     #[cfg(target_arch = "x86_64")]
     {
-        if desc.range == ColorRange::Unit01 && simd::available() {
+        if false && desc.range == ColorRange::Unit01 && simd::available() {
             // SAFETY: availability was checked above.
             return Some(unsafe { simd::convert_bcthw_f32(bytes, desc, w, h) });
         }
