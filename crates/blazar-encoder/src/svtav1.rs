@@ -13,10 +13,6 @@ use crate::av1::av1c_from_keyframe;
 use crate::config::{EncoderConfig, RateControl};
 use crate::{EncodeError, VideoEncoder};
 
-/// SVT-AV1's `rate_control_mode` values (macros in the C header, not bindings).
-const RC_CQP_CRF: u8 = 0;
-const RC_VBR: u8 = 1;
-
 pub struct SvtAv1Encoder {
     handle: *mut sys::EbComponentType,
     frame_duration: u64,
@@ -58,13 +54,10 @@ impl SvtAv1Encoder {
         let mut config: sys::EbSvtAv1EncConfiguration = unsafe { std::mem::zeroed() };
         let mut handle: *mut sys::EbComponentType = ptr::null_mut();
         // SAFETY: fresh handle + zeroed config, as the API expects.
-        #[cfg(svt_av1_2)]
-        let rc = unsafe {
-            sys::svt_av1_enc_init_handle(&mut handle, ptr::null_mut(), &mut config)
-        };
-        #[cfg(not(svt_av1_2))]
-        let rc = unsafe { sys::svt_av1_enc_init_handle(&mut handle, &mut config) };
-        status(rc, "svt_av1_enc_init_handle")?;
+        status(
+            unsafe { sys::enc_init_handle(&mut handle, &mut config) },
+            "svt_av1_enc_init_handle",
+        )?;
 
         config.source_width = width;
         config.source_height = height;
@@ -76,38 +69,12 @@ impl SvtAv1Encoder {
         // blocks until a packet is ready, which turns a request/response
         // encoder into a hang on the first frame.
         let _ = cfg.bframes;
-        // 2.x types the field as uint8_t with macro constants; 3.x+ has an enum.
-        #[cfg(svt_av1_2)]
-        {
-            config.pred_structure = 2; // SVT_AV1_RANDOM_ACCESS
-        }
-        #[cfg(not(svt_av1_2))]
-        {
-            config.pred_structure = sys::PredStructure::RANDOM_ACCESS;
-        }
+        sys::set_random_access(&mut config);
         config.enc_mode = preset_from(&cfg.codec_params).unwrap_or(8);
         match &cfg.rate_control {
-            RateControl::Crf(crf) => {
-                #[cfg(svt_av1_2)]
-                {
-                    config.rate_control_mode = RC_CQP_CRF as u32;
-                }
-                #[cfg(not(svt_av1_2))]
-                {
-                    config.rate_control_mode = RC_CQP_CRF;
-                }
-                config.qp = *crf;
-            }
+            RateControl::Crf(crf) => sys::set_rate_control_cqp(&mut config, *crf),
             RateControl::Vbr(bps) | RateControl::Cbr(bps) => {
-                #[cfg(svt_av1_2)]
-                {
-                    config.rate_control_mode = RC_VBR as u32;
-                }
-                #[cfg(not(svt_av1_2))]
-                {
-                    config.rate_control_mode = RC_VBR;
-                }
-                config.target_bit_rate = *bps / 1000;
+                sys::set_rate_control_vbr(&mut config, *bps / 1000)
             }
         }
 
