@@ -59,9 +59,11 @@ impl X264Encoder {
 
         let mut par: x264_param_t = unsafe { std::mem::zeroed() };
         let preset = CString::new("medium").expect("static");
-        let tune = CString::new("zerolatency").expect("static");
+        // No tune: `zerolatency` disables lookahead and psy, which costs ~1.8 dB
+        // at the same bitrate. Latency is the caller's concern (the low_latency
+        // target sets bframes = 0), not a global tuning choice.
         // SAFETY: `par` is fully initialised by the call.
-        let rc = unsafe { x264_param_default_preset(&mut par, preset.as_ptr(), tune.as_ptr()) };
+        let rc = unsafe { x264_param_default_preset(&mut par, preset.as_ptr(), ptr::null()) };
         if rc != 0 {
             return Err(EncodeError::Backend(format!(
                 "x264_param_default_preset failed ({rc})"
