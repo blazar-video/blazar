@@ -348,10 +348,18 @@ fn guid_for(codec: VideoCodec) -> GUID {
         VideoCodec::Av1 => NV_ENC_CODEC_AV1_GUID,
         VideoCodec::H264 => NV_ENC_CODEC_H264_GUID,
         VideoCodec::Hevc => NV_ENC_CODEC_HEVC_GUID,
+        // Never reached: `open_session` rejects VP9 before opening anything.
+        // AV1 is returned only because the function must produce a GUID.
+        VideoCodec::Vp9 => NV_ENC_CODEC_AV1_GUID,
     }
 }
 
 fn open_session(params: &NvencParams, codec: VideoCodec) -> Result<Session, EncodeError> {
+    if matches!(codec, VideoCodec::Vp9) {
+        return Err(EncodeError::Backend(
+            "NVENC has no VP9 encoder; use the vp9 backend".into(),
+        ));
+    }
     let guid = guid_for(codec);
     let ctx = match &*CUDA_CONTEXT {
         Ok(ctx) => Arc::clone(ctx),
@@ -1022,7 +1030,7 @@ fn unit_from_bitstream(
             let format = match codec {
                 VideoCodec::H264 => AnnexB::H264,
                 VideoCodec::Hevc => AnnexB::Hevc,
-                VideoCodec::Av1 => unreachable!("handled above"),
+                VideoCodec::Av1 | VideoCodec::Vp9 => unreachable!("handled above"),
             };
             let parsed = nal::parse_access_unit(raw, format)
                 .map_err(|e| EncodeError::Backend(format!("parse {codec:?} access unit: {e}")))?;
