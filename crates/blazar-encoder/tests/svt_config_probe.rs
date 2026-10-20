@@ -17,8 +17,8 @@ unsafe fn attempt(name: &str, apply: impl FnOnce(&mut sys::EbSvtAv1EncConfigurat
         return;
     }
     // Baseline that must work everywhere.
-    config.source_width = 64;
-    config.source_height = 48;
+    config.source_width = 96;
+    config.source_height = 64;
     config.frame_rate_numerator = 24;
     config.frame_rate_denominator = 1;
     config.encoder_color_format = sys::EbColorFormat::EB_YUV420;
@@ -66,8 +66,8 @@ fn probe_config_fields() {
                  std::mem::size_of::<sys::EbBufferHeaderType>());
         attempt_untouched("untouched", |_| {});
         attempt_untouched("full 2.x default-ish", |c| {
-            c.source_width = 64;
-            c.source_height = 48;
+            c.source_width = 96;
+            c.source_height = 64;
             c.frame_rate_numerator = 24;
             c.frame_rate_denominator = 1;
             c.encoder_color_format = sys::EbColorFormat::EB_YUV420;
@@ -76,8 +76,8 @@ fn probe_config_fields() {
             sys::set_rate_control_cqp(c, 32);
         });
         attempt_untouched("full + random levels3", |c| {
-            c.source_width = 64;
-            c.source_height = 48;
+            c.source_width = 96;
+            c.source_height = 64;
             c.frame_rate_numerator = 24;
             c.frame_rate_denominator = 1;
             c.encoder_color_format = sys::EbColorFormat::EB_YUV420;
@@ -88,8 +88,8 @@ fn probe_config_fields() {
             sys::set_rate_control_cqp(c, 32);
         });
         attempt_untouched("full + random levels0", |c| {
-            c.source_width = 64;
-            c.source_height = 48;
+            c.source_width = 96;
+            c.source_height = 64;
             c.frame_rate_numerator = 24;
             c.frame_rate_denominator = 1;
             c.encoder_color_format = sys::EbColorFormat::EB_YUV420;
@@ -100,8 +100,8 @@ fn probe_config_fields() {
             sys::set_rate_control_cqp(c, 32);
         });
         attempt_untouched("full, intra=5", |c| {
-            c.source_width = 64;
-            c.source_height = 48;
+            c.source_width = 96;
+            c.source_height = 64;
             c.frame_rate_numerator = 24;
             c.frame_rate_denominator = 1;
             c.encoder_color_format = sys::EbColorFormat::EB_YUV420;
@@ -111,7 +111,7 @@ fn probe_config_fields() {
             sys::set_random_access(c);
             sys::set_rate_control_cqp(c, 32);
         });
-        attempt_untouched("width/height only", |c| { c.source_width = 64; c.source_height = 48; });
+        attempt_untouched("width/height only", |c| { c.source_width = 96; c.source_height = 64; });
         attempt_untouched("format only", |c| { c.encoder_color_format = sys::EbColorFormat::EB_YUV420; });
         attempt_untouched("rc only", |c| sys::set_rate_control_cqp(c, 32));
         attempt("baseline", |_| {});

@@ -8,8 +8,9 @@ use blazar_encoder::svtav1::SvtAv1Encoder;
 use blazar_encoder::VideoEncoder;
 use blazar_preprocess::PreprocessedFrame;
 
-const W: u32 = 64;
-const H: u32 = 48;
+// SVT-AV1 2.x rejects frames shorter than 64 rows.
+const W: u32 = 96;
+const H: u32 = 64;
 
 fn cfg(keyint: u32, bframes: u32) -> EncoderConfig {
     EncoderConfig {
