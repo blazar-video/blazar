@@ -31,3 +31,7 @@ blazar-sink = { path = "../../crates/blazar-sink" }
 default = []
 # Hardware AV1. Build with `maturin develop --features nvenc` on a CUDA host.
 nvenc = ["blazar-encoder/nvenc", "blazar-runtime/nvenc"]
+# CPU codecs. Each needs its library at build time (see the encoder crate).
+enc-svtav1 = ["blazar-encoder/enc-svtav1", "blazar-runtime/enc-svtav1"]
+enc-x264 = ["blazar-encoder/enc-x264", "blazar-runtime/enc-x264"]
+enc-vp9 = ["blazar-encoder/enc-vp9", "blazar-runtime/enc-vp9"]
