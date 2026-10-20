@@ -30,6 +30,24 @@ pix_fmt = "yuv420p"
 svtav1 = "preset=6"
 "#;
 
+// The mock backend is used for pipeline contract tests; its calibration is the
+// same ladder with the codec key swapped.
+const MOCK_CAL: &str = r#"
+schema_version = 1
+source = "default"
+[key]
+model = { family = "*", version = "*", quant = "*", size = "*" }
+scene = "*"
+codec = "rav1e"
+target = "balanced"
+[video.common]
+rate_control = "crf"
+crf = 30
+keyint = 4
+bframes = 0
+pix_fmt = "yuv420p"
+"#;
+
 const NVENC_CAL: &str = r#"
 schema_version = 1
 source = "default"
@@ -49,6 +67,7 @@ pix_fmt = "yuv420p"
 fn index() -> CalibrationIndex {
     let mut idx = CalibrationIndex::new();
     idx.insert(load_str(DEFAULT_CAL, "default/svtav1_balanced.toml").unwrap());
+    idx.insert(load_str(MOCK_CAL, "default/rav1e_balanced.toml").unwrap());
     idx.insert(load_str(NVENC_CAL, "default/nvenc_av1_balanced.toml").unwrap());
     idx
 }
@@ -97,7 +116,9 @@ fn run(n: u32) -> Vec<u8> {
         Target::Balanced,
         Output {
             codec: VideoCodec::Av1,
-            backend: VideoEncoderBackend::SvtAv1,
+            // The pipeline contract is tested on the mock; real backends have their own
+            // tests, and a real encoder's keyframe cadence is its own business.
+            backend: VideoEncoderBackend::Rav1e,
             container: Container::FragmentedMp4,
             video_extradata: Some(vec![0x81, 0x04, 0x0c, 0x00]),
             audio_extradata: None,
@@ -157,7 +178,9 @@ fn scene_cut_boundary_forces_keyframe() {
         Target::Balanced,
         Output {
             codec: VideoCodec::Av1,
-            backend: VideoEncoderBackend::SvtAv1,
+            // The pipeline contract is tested on the mock; real backends have their own
+            // tests, and a real encoder's keyframe cadence is its own business.
+            backend: VideoEncoderBackend::Rav1e,
             container: Container::FragmentedMp4,
             video_extradata: Some(vec![0x81, 0x04, 0x0c, 0x00]),
             audio_extradata: None,
@@ -230,7 +253,9 @@ impl blazar_sink::Sink for RecordingSink {
 fn output(extradata: Option<Vec<u8>>) -> Output {
     Output {
         codec: VideoCodec::Av1,
-        backend: VideoEncoderBackend::SvtAv1,
+        // The pipeline contract is tested on the mock; real backends have their own
+            // tests, and a real encoder's keyframe cadence is its own business.
+            backend: VideoEncoderBackend::Rav1e,
         container: Container::FragmentedMp4,
         video_extradata: extradata,
         audio_extradata: None,
@@ -295,7 +320,10 @@ fn empty_codec_config_override_is_rejected() {
     let err = stream
         .submit_video(host_frame(8, 8, 0.5, 0), None, None)
         .unwrap_err();
-    assert!(matches!(err, RuntimeError::MissingCodecConfig));
+    assert!(
+        matches!(err, RuntimeError::MissingCodecConfig),
+        "expected MissingCodecConfig, got {err:?}"
+    );
 }
 
 #[cfg(not(feature = "nvenc"))]

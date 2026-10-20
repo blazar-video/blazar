@@ -441,9 +441,26 @@ fn build_encoder(
     timebase: Timebase,
 ) -> Result<Box<dyn VideoEncoder>, RuntimeError> {
     match backend {
-        VideoEncoderBackend::SvtAv1 | VideoEncoderBackend::Rav1e => {
-            Ok(Box::new(MockVideoEncoder::new(cfg, desc.fps, timebase)))
+        // Without the feature the mock keeps the pipeline contract testable on
+        // machines that do not have libsvtav1.
+        VideoEncoderBackend::SvtAv1 => {
+            #[cfg(feature = "enc-svtav1")]
+            {
+                let frame_duration = timebase.ticks_per_frame(desc.fps);
+                Ok(Box::new(blazar_encoder::svtav1::SvtAv1Encoder::new(
+                    cfg,
+                    desc.width,
+                    desc.height,
+                    desc.fps,
+                    frame_duration,
+                )?))
+            }
+            #[cfg(not(feature = "enc-svtav1"))]
+            {
+                Ok(Box::new(MockVideoEncoder::new(cfg, desc.fps, timebase)))
+            }
         }
+        VideoEncoderBackend::Rav1e => Ok(Box::new(MockVideoEncoder::new(cfg, desc.fps, timebase))),
         VideoEncoderBackend::X264 => {
             #[cfg(feature = "enc-x264")]
             {

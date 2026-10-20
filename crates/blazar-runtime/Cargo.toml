@@ -21,3 +21,5 @@ default = []
 nvenc = ["blazar-encoder/nvenc"]
 # Software H.264. GPL: enabling this opts the binary into x264's licence.
 enc-x264 = ["blazar-encoder/enc-x264"]
+# Software AV1 via SVT-AV1 (BSD).
+enc-svtav1 = ["blazar-encoder/enc-svtav1"]

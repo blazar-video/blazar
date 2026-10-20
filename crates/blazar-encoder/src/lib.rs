@@ -13,6 +13,8 @@ pub mod gpu_preprocess;
 pub mod config;
 #[cfg(feature = "enc-x264")]
 pub mod x264;
+#[cfg(feature = "enc-svtav1")]
+pub mod svtav1;
 pub mod nal;
 pub mod nvenc;
 

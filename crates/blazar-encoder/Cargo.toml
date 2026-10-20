@@ -14,6 +14,10 @@ tracing.workspace = true
 nvidia-video-codec-sdk = { workspace = true, optional = true }
 cudarc = { workspace = true, optional = true }
 
+[dependencies.blazar-svtav1-sys]
+path = "../blazar-svtav1-sys"
+optional = true
+
 [dependencies.x264]
 version = "0.5"
 optional = true
@@ -27,7 +31,10 @@ default = []
 # Real SVT-AV1 backend via FFI. Off by default so the workspace builds and
 # tests run without libsvtav1 installed; the mock backend covers the pipeline
 # contract until the bindings land.
-svtav1 = []
+svtav1 = ["enc-svtav1"]
+# Software AV1 via SVT-AV1 (BSD). The bindings crate generates from the system
+# header, so libsvtav1 must be installed to build this feature.
+enc-svtav1 = ["dep:blazar-svtav1-sys"]
 # Software H.264 (x264). GPL: enabling this makes the resulting binary GPL.
 enc-x264 = ["dep:x264", "dep:x264-sys"]
 # Hardware AV1 via NVENC. Needs an NVIDIA GPU + CUDA toolkit at build time; the
