@@ -530,7 +530,23 @@ fn build_encoder(
                 Err(RuntimeError::BackendUnavailable("x264"))
             }
         }
-        VideoEncoderBackend::X265 => Err(RuntimeError::BackendUnavailable("x265")),
+        VideoEncoderBackend::X265 => {
+            #[cfg(feature = "enc-x265")]
+            {
+                let frame_duration = timebase.ticks_per_frame(desc.fps);
+                wrap_gpu(Box::new(blazar_encoder::x265::X265Encoder::new(
+                    cfg,
+                    desc.width,
+                    desc.height,
+                    desc.fps,
+                    frame_duration,
+                )?))
+            }
+            #[cfg(not(feature = "enc-x265"))]
+            {
+                Err(RuntimeError::BackendUnavailable("x265"))
+            }
+        }
         VideoEncoderBackend::Vp9 => {
             #[cfg(feature = "enc-vp9")]
             {
