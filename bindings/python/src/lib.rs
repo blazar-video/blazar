@@ -1226,8 +1226,9 @@ fn parse_codec(value: &str) -> PyResult<VideoCodec> {
         "av1" => Ok(VideoCodec::Av1),
         "h264" => Ok(VideoCodec::H264),
         "hevc" => Ok(VideoCodec::Hevc),
+        "vp9" => Ok(VideoCodec::Vp9),
         other => Err(PyValueError::new_err(format!(
-            "unknown codec {other:?} (expected av1|h264|hevc)"
+            "unknown codec {other:?} (expected av1|h264|hevc|vp9)"
         ))),
     }
 }

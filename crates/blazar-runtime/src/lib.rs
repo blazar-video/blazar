@@ -479,7 +479,23 @@ fn build_encoder(
             }
         }
         VideoEncoderBackend::X265 => Err(RuntimeError::BackendUnavailable("x265")),
-        VideoEncoderBackend::Vp9 => Err(RuntimeError::BackendUnavailable("vp9")),
+        VideoEncoderBackend::Vp9 => {
+            #[cfg(feature = "enc-vp9")]
+            {
+                let frame_duration = timebase.ticks_per_frame(desc.fps);
+                Ok(Box::new(blazar_encoder::vp9::Vp9Encoder::new(
+                    cfg,
+                    desc.width,
+                    desc.height,
+                    desc.fps,
+                    frame_duration,
+                )?))
+            }
+            #[cfg(not(feature = "enc-vp9"))]
+            {
+                Err(RuntimeError::BackendUnavailable("vp9"))
+            }
+        }
         VideoEncoderBackend::NvencAv1
         | VideoEncoderBackend::NvencH264
         | VideoEncoderBackend::NvencHevc => {

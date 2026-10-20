@@ -98,6 +98,7 @@ dependencies = [
  "blazar-core",
  "blazar-preprocess",
  "blazar-svtav1-sys",
+ "blazar-vpx-sys",
  "cudarc",
  "nvidia-video-codec-sdk",
  "thiserror",

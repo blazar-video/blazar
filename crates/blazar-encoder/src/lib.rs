@@ -15,6 +15,8 @@ pub mod config;
 pub mod x264;
 #[cfg(feature = "enc-svtav1")]
 pub mod svtav1;
+#[cfg(feature = "enc-vp9")]
+pub mod vp9;
 pub mod nal;
 pub mod nvenc;
 

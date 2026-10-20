@@ -150,6 +150,7 @@ impl<W: Write + Seek + Send + 'static> Fmp4FileSink<W> {
             VideoCodec::Av1 => "av1",
             VideoCodec::H264 => "h264",
             VideoCodec::Hevc => "h265",
+            VideoCodec::Vp9 => "vp9",
         };
         let mut video = CodecParameters::video(CodecId::new(video_codec));
         video.width = Some(params.video.width);

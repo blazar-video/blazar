@@ -15,6 +15,7 @@ pub enum VideoCodec {
     Av1,
     H264,
     Hevc,
+    Vp9,
 }
 
 /// Encoder backend selected by the deployment. This is separate from

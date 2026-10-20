@@ -23,3 +23,5 @@ nvenc = ["blazar-encoder/nvenc"]
 enc-x264 = ["blazar-encoder/enc-x264"]
 # Software AV1 via SVT-AV1 (BSD).
 enc-svtav1 = ["blazar-encoder/enc-svtav1"]
+# Software VP9 via libvpx (BSD).
+enc-vp9 = ["blazar-encoder/enc-vp9"]
