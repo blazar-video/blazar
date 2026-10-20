@@ -75,6 +75,9 @@ impl Vp9Encoder {
         enc_cfg.g_timebase.num = 1;
         enc_cfg.g_timebase.den = 90_000;
         enc_cfg.g_threads = 1;
+        // Streaming: never hold frames for lookahead, or nothing is emitted
+        // until the lag fills and the sink cannot open.
+        enc_cfg.g_lag_in_frames = 0;
         enc_cfg.g_pass = sys::vpx_enc_pass::VPX_RC_ONE_PASS;
         match &cfg.rate_control {
             RateControl::Crf(crf) => {

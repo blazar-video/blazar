@@ -145,6 +145,7 @@ impl<S: Sink> Encoder<S> {
             seq: 0,
             encoder_open: false,
             sink_open: false,
+            last_desc: None,
             closed: false,
         }
     }
@@ -162,6 +163,9 @@ pub struct Stream<S: Sink> {
     /// first encode for real backends), then writes start.
     encoder_open: bool,
     sink_open: bool,
+    /// Descriptor of the most recent frame, so a sink that only opens on the
+    /// first emitted unit (lookahead encoders) can still be created at flush.
+    last_desc: Option<FrameDesc>,
     closed: bool,
 }
 
@@ -239,6 +243,17 @@ impl<S: Sink> Stream<S> {
     /// Open the sink once the first frame has been encoded (or the override is
     /// available). Dimensions and fps come from the frame descriptor, because
     /// the runtime does not expose them up front (architecture §8/§10).
+    /// Open the sink from the last frame's descriptor, if it is not open yet.
+    fn open_sink_if_needed(&mut self) -> Result<(), RuntimeError> {
+        if self.sink_open {
+            return Ok(());
+        }
+        if let Some(desc) = self.last_desc {
+            self.ensure_sink(&desc)?;
+        }
+        Ok(())
+    }
+
     fn ensure_sink(&mut self, desc: &blazar_core::FrameDesc) -> Result<(), RuntimeError> {
         if self.sink_open {
             return Ok(());
@@ -299,6 +314,7 @@ impl<S: Sink> Stream<S> {
         // lookahead or B-frames return nothing for the first frames; the
         // configuration arrives with their first packet, not with the first
         // submit.
+        self.last_desc.get_or_insert(desc);
         if !units.is_empty() {
             self.ensure_sink(&desc)?;
             for u in &units {
@@ -343,6 +359,7 @@ impl<S: Sink> Stream<S> {
                 .ok_or(RuntimeError::EncoderNotInitialized)?;
             encoder.encode_device_batch(ptr, desc, frames, keep_alive)?
         };
+        self.last_desc.get_or_insert(desc);
         if !units.is_empty() {
             self.ensure_sink(&desc)?;
             for u in &units {
@@ -390,6 +407,7 @@ impl<S: Sink> Stream<S> {
         // lookahead or B-frames return nothing for the first frames; the
         // configuration arrives with their first packet, not with the first
         // submit.
+        self.last_desc.get_or_insert(desc);
         if !units.is_empty() {
             self.ensure_sink(&desc)?;
             for u in &units {
@@ -410,8 +428,12 @@ impl<S: Sink> Stream<S> {
     /// Drain buffered frames without ending the stream (segment boundary).
     pub fn flush(&mut self) -> Result<(), RuntimeError> {
         if let Some(enc) = self.encoder.as_mut() {
-            for u in enc.flush()? {
-                self.enc.sink.write(&u)?;
+            let units = enc.flush()?;
+            if !units.is_empty() {
+                self.open_sink_if_needed()?;
+            }
+            for u in &units {
+                self.enc.sink.write(u)?;
             }
         }
         if self.sink_open {
@@ -426,8 +448,12 @@ impl<S: Sink> Stream<S> {
             return Ok(());
         }
         if let Some(enc) = self.encoder.as_mut() {
-            for u in enc.finish()? {
-                self.enc.sink.write(&u)?;
+            let units = enc.finish()?;
+            if !units.is_empty() {
+                self.open_sink_if_needed()?;
+            }
+            for u in &units {
+                self.enc.sink.write(u)?;
             }
         }
         if self.sink_open {
