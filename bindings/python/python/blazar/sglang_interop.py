@@ -59,9 +59,22 @@ DEVICE_OUTPUT_CLASS = (
     "DiffusersExecutionStage",
     "_postprocess_output",
 )
-"""Module path, class, method. Verified against sglang 0.5.22, where the method
-lives on the *execution stage*, not on `DiffusersPipeline` (patching the latter
-silently does nothing)."""
+"""Hook for checkpoints loaded straight from diffusers. Verified against sglang
+0.5.22, where the method lives on the *execution stage*, not on
+`DiffusersPipeline` (patching the latter silently does nothing)."""
+
+WAN_DECODE_CLASS = (
+    "sglang.multimodal_gen.runtime.pipelines_core.stages.decoding",
+    "DecodingStage",
+    "decode",
+)
+"""Hook for the native Wan pipeline, which does not use the diffusers stage.
+
+`DecodingStage.decode` returns the decoded frames on the device. Its caller
+`forward` is the wrong target: when an output file is requested it returns
+`output=None` and `output_file_paths=[...]`, because SGLang encodes inside
+`_encode_while_decoding`. Verified on a real Wan 2.1 T2V 1.3B generation, which
+delivered `[1, 3, 9, 320, 480]` float32 on `cuda:0`, values in `[0, 1]`."""
 
 
 class SwizzleError(RuntimeError):
@@ -93,8 +106,8 @@ def postprocess_on_device(output: Any) -> Any:
     return output.clamp(0, 1)
 
 
-def _resolve() -> type:
-    module_path, class_name, method = DEVICE_OUTPUT_CLASS
+def _resolve(target: tuple[str, str, str] | None = None) -> type:
+    module_path, class_name, method = target or DEVICE_OUTPUT_CLASS
     try:
         module = __import__(module_path, fromlist=[class_name])
     except ImportError as error:
@@ -115,6 +128,7 @@ def install(
     on_frames: Callable[[Any], None],
     *,
     encoder_cls: type | None = None,
+    target: tuple[str, str, str] | None = None,
 ) -> Callable[[], None]:
     """Patch SGLang so each output's frames are handed to `on_frames` on device.
 
@@ -125,8 +139,9 @@ def install(
         LOGGER.info("BLAZAR_SGLANG_DEVICE_OUTPUT=0: keeping sglang's host path")
         return lambda: None
 
-    cls = encoder_cls if encoder_cls is not None else _resolve()
-    _, class_name, method_name = DEVICE_OUTPUT_CLASS
+    chosen = target or DEVICE_OUTPUT_CLASS
+    cls = encoder_cls if encoder_cls is not None else _resolve(chosen)
+    _, class_name, method_name = chosen
     original = getattr(cls, method_name, None)
     if original is None:
         raise SwizzleError(f"{class_name}.{method_name} not found; refusing to install a no-op")
