@@ -340,7 +340,7 @@ fn open_session(params: &NvencParams, codec: VideoCodec) -> Result<Session, Enco
             NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_HIGH_QUALITY,
         )
         .map_err(|e| EncodeError::Backend(format!("NVENC preset config: {e:?}")))?;
-    apply_config(&mut preset.presetCfg, params);
+    apply_config(&mut preset.presetCfg, params, codec);
 
     let mut init = EncoderInitParams::new(guid, params.width, params.height);
     init.preset_guid(NV_ENC_PRESET_P4_GUID)
@@ -358,7 +358,7 @@ fn open_session(params: &NvencParams, codec: VideoCodec) -> Result<Session, Enco
 }
 
 /// Apply calibration-derived settings to the preset configuration.
-fn apply_config(cfg: &mut NV_ENC_CONFIG, params: &NvencParams) {
+fn apply_config(cfg: &mut NV_ENC_CONFIG, params: &NvencParams, codec: VideoCodec) {
     cfg.gopLength = params.gop_length;
     cfg.frameIntervalP = params.frame_interval_p;
 
@@ -392,18 +392,54 @@ fn apply_config(cfg: &mut NV_ENC_CONFIG, params: &NvencParams) {
         }
     }
 
-    // The preprocess stage emits full-range YUV using the BT.709 matrix and
-    // never tags it. Tag it here so players do not have to guess.
-    // SAFETY: the union variant matches the AV1 codec GUID used for the session.
+    // The preprocess stage emits YUV using the BT.709 matrix and never tags it.
+    // Tag it here so players do not have to guess. Each codec keeps the colour
+    // metadata in its own structure: AV1 in the codec config, H.264 and HEVC in
+    // their VUI. Leaving the H.264/HEVC VUI unset makes decoders assume BT.601,
+    // which is visibly wrong for BT.709 content.
+    // SAFETY: the union variant matches the codec GUID of the open session.
     unsafe {
-        let av1 = &mut cfg.encodeCodecConfig.av1Config;
-        if params.color.bt709 {
-            av1.colorPrimaries = NV_ENC_VUI_COLOR_PRIMARIES::NV_ENC_VUI_COLOR_PRIMARIES_BT709;
-            av1.transferCharacteristics =
-                NV_ENC_VUI_TRANSFER_CHARACTERISTIC::NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
-            av1.matrixCoefficients = NV_ENC_VUI_MATRIX_COEFFS::NV_ENC_VUI_MATRIX_COEFFS_BT709;
+        let full_range = u32::from(params.color.full_range);
+        match codec {
+            VideoCodec::Av1 => {
+                let av1 = &mut cfg.encodeCodecConfig.av1Config;
+                if params.color.bt709 {
+                    av1.colorPrimaries =
+                        NV_ENC_VUI_COLOR_PRIMARIES::NV_ENC_VUI_COLOR_PRIMARIES_BT709;
+                    av1.transferCharacteristics =
+                        NV_ENC_VUI_TRANSFER_CHARACTERISTIC::NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
+                    av1.matrixCoefficients =
+                        NV_ENC_VUI_MATRIX_COEFFS::NV_ENC_VUI_MATRIX_COEFFS_BT709;
+                }
+                av1.colorRange = full_range;
+            }
+            VideoCodec::H264 => {
+                let vui = &mut cfg.encodeCodecConfig.h264Config.h264VUIParameters;
+                vui.videoSignalTypePresentFlag = 1;
+                vui.videoFullRangeFlag = full_range;
+                vui.colourDescriptionPresentFlag = u32::from(params.color.bt709);
+                if params.color.bt709 {
+                    vui.colourPrimaries =
+                        NV_ENC_VUI_COLOR_PRIMARIES::NV_ENC_VUI_COLOR_PRIMARIES_BT709;
+                    vui.transferCharacteristics =
+                        NV_ENC_VUI_TRANSFER_CHARACTERISTIC::NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
+                    vui.colourMatrix = NV_ENC_VUI_MATRIX_COEFFS::NV_ENC_VUI_MATRIX_COEFFS_BT709;
+                }
+            }
+            VideoCodec::Hevc => {
+                let vui = &mut cfg.encodeCodecConfig.hevcConfig.hevcVUIParameters;
+                vui.videoSignalTypePresentFlag = 1;
+                vui.videoFullRangeFlag = full_range;
+                vui.colourDescriptionPresentFlag = u32::from(params.color.bt709);
+                if params.color.bt709 {
+                    vui.colourPrimaries =
+                        NV_ENC_VUI_COLOR_PRIMARIES::NV_ENC_VUI_COLOR_PRIMARIES_BT709;
+                    vui.transferCharacteristics =
+                        NV_ENC_VUI_TRANSFER_CHARACTERISTIC::NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
+                    vui.colourMatrix = NV_ENC_VUI_MATRIX_COEFFS::NV_ENC_VUI_MATRIX_COEFFS_BT709;
+                }
+            }
         }
-        av1.colorRange = u32::from(params.color.full_range);
     }
 }
 
