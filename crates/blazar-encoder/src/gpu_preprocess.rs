@@ -256,14 +256,11 @@ impl crate::VideoEncoder for GpuPreprocessEncoder {
         &mut self,
         frame: blazar_core::FrameRef,
     ) -> Result<Vec<blazar_core::EncodedUnit>, EncodeError> {
-        // Host frames also convert on the GPU: measured 3.04 ms/frame against
-        // 4.99 for the scalar CPU pass at 1080p, upload and download included.
-        let bytes = frame
-            .buffer
-            .host_bytes()
-            .ok_or_else(|| EncodeError::Backend("device frame in the host path".into()))?;
-        let preprocessed = self.preprocess.convert(bytes, &frame.desc)?;
-        self.inner.encode(&preprocessed)
+        // Host frames stay on the CPU. End to end this is faster than the GPU
+        // round trip (6.78 vs 7.98 ms/frame at 1080p with identical x264
+        // settings). A microbenchmark that clones the frame first will claim
+        // otherwise; the pipeline does not clone.
+        self.inner.encode_frame(frame)
     }
 
     fn encode_device_batch(
