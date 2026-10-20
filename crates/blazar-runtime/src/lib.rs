@@ -120,6 +120,9 @@ impl<S: Sink> Encoder<S> {
             VideoEncoderBackend::NvencH264 => "nvenc_h264",
             VideoEncoderBackend::NvencHevc => "nvenc_hevc",
             VideoEncoderBackend::Rav1e => "rav1e",
+            VideoEncoderBackend::X264 => "x264",
+            VideoEncoderBackend::X265 => "x265",
+            VideoEncoderBackend::Vp9 => "vp9",
         }
     }
 
@@ -441,6 +444,11 @@ fn build_encoder(
         VideoEncoderBackend::SvtAv1 | VideoEncoderBackend::Rav1e => {
             Ok(Box::new(MockVideoEncoder::new(cfg, desc.fps, timebase)))
         }
+        // Compiled out until the backend lands; this is the error a deployment
+        // sees when it asks for one it did not build.
+        VideoEncoderBackend::X264 => Err(RuntimeError::BackendUnavailable("x264")),
+        VideoEncoderBackend::X265 => Err(RuntimeError::BackendUnavailable("x265")),
+        VideoEncoderBackend::Vp9 => Err(RuntimeError::BackendUnavailable("vp9")),
         VideoEncoderBackend::NvencAv1
         | VideoEncoderBackend::NvencH264
         | VideoEncoderBackend::NvencHevc => {

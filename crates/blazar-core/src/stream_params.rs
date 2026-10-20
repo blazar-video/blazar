@@ -29,6 +29,12 @@ pub enum VideoEncoderBackend {
     /// Hardware HEVC encoder (same NVENC implementation as AV1).
     NvencHevc,
     Rav1e,
+    /// Software H.264 (x264). GPL; compiled in only with `enc-x264`.
+    X264,
+    /// Software HEVC (x265). GPL; compiled in only with `enc-x265`.
+    X265,
+    /// Software VP9 (libvpx); compiled in only with `enc-vpx`.
+    Vp9,
 }
 
 /// Audio codec carried on the wire/container.
