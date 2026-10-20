@@ -267,7 +267,14 @@ impl crate::VideoEncoder for GpuPreprocessEncoder {
         frames: u32,
         keep_alive: Option<Box<dyn std::any::Any + Send>>,
     ) -> Result<Vec<blazar_core::EncodedUnit>, EncodeError> {
-        let nv12 = self.preprocess.convert_device_frames(ptr, &desc, frames)?;
+        let mut nv12 = self.preprocess.convert_device_frames(ptr, &desc, frames)?;
+        // One descriptor covers the whole tensor, so the per-frame timestamps
+        // have to be derived here. Without this every frame carries the first
+        // frame's PTS and the encoder sees a non-increasing timeline.
+        let step = (90_000.0 / desc.fps.max(1.0)).round() as u64;
+        for (index, frame) in nv12.iter_mut().enumerate() {
+            frame.pts = blazar_core::Pts(desc.pts.0 + index as u64 * step);
+        }
         let mut units = Vec::new();
         for frame in &nv12 {
             units.extend(self.inner.encode(frame)?);
