@@ -41,7 +41,7 @@ extern "C" __global__ void rgb_to_nv12(
     // BCTHW is B,C,T,H,W: frame t of channel c is at c*T*H*W + t*H*W, so the
     // channel stride is frames*pixels, not pixels. With T == 1 the two agree,
     // which is why per-frame batches never exposed this.
-    const unsigned long long ch = (layout == 1) ? (unsigned long long)frames * pixels : 0;
+    const unsigned long long channel_stride = (layout == 1) ? (unsigned long long)frames * pixels : 0;
     if (layout == 0) {
         src += (unsigned long long)fi * pixels * 3 * elem;
     } else {
@@ -60,12 +60,12 @@ extern "C" __global__ void rgb_to_nv12(
             if (fmt == 0) {
                 const float* f = (const float*)src;
                 if (layout == 0) { r = f[p*3]; g = f[p*3+1]; b = f[p*3+2]; }
-                else { r = f[p]; g = f[ch + p]; b = f[2*ch + p]; }
+                else { r = f[p]; g = f[channel_stride + p]; b = f[2*channel_stride + p]; }
             } else {
                 const unsigned short* s = (const unsigned short*)src;
                 unsigned short vr, vg, vb;
                 if (layout == 0) { vr = s[p*3]; vg = s[p*3+1]; vb = s[p*3+2]; }
-                else { vr = s[p]; vg = s[ch + p]; vb = s[2*ch + p]; }
+                else { vr = s[p]; vg = s[channel_stride + p]; vb = s[2*channel_stride + p]; }
                 r = __uint_as_float(((unsigned)vr) << 16);
                 g = __uint_as_float(((unsigned)vg) << 16);
                 b = __uint_as_float(((unsigned)vb) << 16);
