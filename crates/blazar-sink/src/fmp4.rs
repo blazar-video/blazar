@@ -286,6 +286,14 @@ impl<W: Write + Seek + Send + 'static> Sink for Fmp4FileSink<W> {
             .ok_or(SinkError::NotOpen)?
             .write_trailer()
             .map_err(|e| SinkError::Muxer(e.to_string()))?;
+        // The muxer owns the writer, and callers hand us a buffered one. Drop
+        // it here so the buffer flushes before `close` returns: otherwise a
+        // stream whose frames only arrive at finish (an encoder holding a
+        // lookahead) leaves every byte in the buffer, and the file is empty
+        // when the caller looks at it. Dropping is the only way to flush a
+        // writer the muxer took ownership of; the trailer write above already
+        // surfaces I/O errors.
+        drop(self.muxer.take());
         self.closed = true;
         Ok(())
     }
@@ -336,6 +344,75 @@ mod tests {
         assert_eq!(sink.units_written(), 2);
         let buf = sink.into_inner();
         assert_eq!(&buf[0..8], b"BLZRDBG1");
+    }
+
+    /// Writer that records into a shared buffer, so a test can look at what
+    /// the underlying device has *while the sink is still alive*.
+    struct SharedWriter {
+        buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+        pos: u64,
+    }
+
+    impl std::io::Write for SharedWriter {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            let mut buf = self.buf.lock().expect("shared buffer");
+            let start = self.pos as usize;
+            if buf.len() < start + data.len() {
+                buf.resize(start + data.len(), 0);
+            }
+            buf[start..start + data.len()].copy_from_slice(data);
+            self.pos += data.len() as u64;
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl std::io::Seek for SharedWriter {
+        fn seek(&mut self, from: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.pos = match from {
+                std::io::SeekFrom::Start(n) => n,
+                std::io::SeekFrom::Current(d) => (self.pos as i64 + d) as u64,
+                std::io::SeekFrom::End(d) => {
+                    let len = self.buf.lock().expect("shared buffer").len() as i64;
+                    (len + d) as u64
+                }
+            };
+            Ok(self.pos)
+        }
+    }
+
+    /// The sink is handed a buffered writer in production. Closing must flush
+    /// it before returning, otherwise a stream whose frames only arrive at
+    /// finish leaves every byte in the buffer and the caller sees an empty
+    /// file. (Found with x264 holding 24 frames in its lookahead.)
+    #[test]
+    fn close_flushes_a_buffered_writer_before_returning() {
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = std::io::BufWriter::new(SharedWriter {
+            buf: std::sync::Arc::clone(&shared),
+            pos: 0,
+        });
+        let mut sink = Fmp4FileSink::new(writer);
+        sink.open(params()).unwrap();
+        for index in 0..4u64 {
+            sink.write(&EncodedUnit::video(
+                vec![0xff; 64],
+                Pts(index * 3750),
+                Pts(index * 3750),
+                index == 0,
+                3750,
+            ))
+            .unwrap();
+        }
+        sink.close().unwrap();
+
+        // The sink object is deliberately still in scope: nothing may depend on
+        // its destructor to make the file complete.
+        let len = shared.lock().expect("shared buffer").len();
+        assert!(len > 0, "writer still empty after close() returned");
     }
 
     #[test]
