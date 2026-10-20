@@ -177,10 +177,13 @@ impl<S: Sink> Stream<S> {
     /// opened here: a real encoder only reveals its codec configuration when it
     /// emits its first keyframe, so `ensure_sink` runs after the first encode.
     fn ensure_encoder(&mut self, frame: &FrameRef) -> Result<(), RuntimeError> {
+        self.ensure_encoder_for(&frame.desc)
+    }
+
+    fn ensure_encoder_for(&mut self, desc: &FrameDesc) -> Result<(), RuntimeError> {
         if self.encoder_open {
             return Ok(());
         }
-        let desc = &frame.desc;
 
         // Resolve the calibration. Scene defaults to agnostic ("*") in Phase 1;
         // a real classifier feeds this later (architecture §5).
@@ -295,6 +298,47 @@ impl<S: Sink> Stream<S> {
             self.enc.sink.write(u)?;
         }
 
+        let seq = self.seq;
+        self.seq += 1;
+        Ok(seq)
+    }
+
+    /// Submit a batch whose frames already live on the GPU.
+    ///
+    /// `ptr` points at `frames` contiguous BCTHW frames described by `desc`.
+    /// The backend reads it directly, and `keep_alive` is dropped once the
+    /// encode has consumed it (the caller's tensor must outlive the encode).
+    pub fn submit_video_batch_device(
+        &mut self,
+        ptr: u64,
+        desc: FrameDesc,
+        frames: u32,
+        boundary: Option<Boundary>,
+        keep_alive: Option<Box<dyn std::any::Any + Send>>,
+    ) -> Result<u64, RuntimeError> {
+        if self.closed {
+            return Err(RuntimeError::Closed);
+        }
+        if frames == 0 {
+            return Err(RuntimeError::EmptyBatch);
+        }
+        self.ensure_encoder_for(&desc)?;
+        if boundary == Some(Boundary::SceneCut) {
+            if let Some(enc) = self.encoder.as_mut() {
+                enc.request_keyframe();
+            }
+        }
+        let units = {
+            let encoder = self
+                .encoder
+                .as_mut()
+                .ok_or(RuntimeError::EncoderNotInitialized)?;
+            encoder.encode_device_batch(ptr, desc, frames, keep_alive)?
+        };
+        self.ensure_sink(&desc)?;
+        for u in &units {
+            self.enc.sink.write(u)?;
+        }
         let seq = self.seq;
         self.seq += 1;
         Ok(seq)

@@ -170,6 +170,23 @@ impl Nv12Converter {
         frames: u32,
         pitch: u32,
     ) -> Result<(), EncodeError> {
+        let (ptr, guard) = src.device_ptr(stream);
+        drop(guard);
+        self.convert_batch_ptr(stream, ptr, dst_ptrs, desc, frames, pitch)
+    }
+
+    /// Convert `frames` frames starting at a raw device pointer. Used for
+    /// caller-owned tensors (the model's VAE output), which are never staged.
+    #[allow(clippy::too_many_arguments)]
+    pub fn convert_batch_ptr(
+        &self,
+        stream: &Arc<CudaStream>,
+        src: u64,
+        dst_ptrs: &CudaSlice<u64>,
+        desc: &FrameDesc,
+        frames: u32,
+        pitch: u32,
+    ) -> Result<(), EncodeError> {
         if !matches!(desc.dtype, Dtype::F32 | Dtype::Bf16) {
             return Err(EncodeError::Backend(format!(
                 "GPU preprocess does not handle {:?}",
@@ -207,7 +224,7 @@ impl Nv12Converter {
             shared_mem_bytes: 0,
         };
         let mut args = stream.launch_builder(&self.func);
-        args.arg(src);
+        args.arg(&src);
         args.arg(dst_ptrs);
         args.arg(&w);
         args.arg(&h);

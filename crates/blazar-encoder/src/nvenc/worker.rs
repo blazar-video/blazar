@@ -87,6 +87,16 @@ enum Command {
         force_keyframe: bool,
         reply: mpsc::Sender<Result<EncodeOutput, EncodeError>>,
     },
+    /// Batch whose frames already live on the GPU. `keep_alive` holds whatever
+    /// owns that memory for the lifetime of the job.
+    EncodeDevice {
+        ptr: u64,
+        desc: FrameDesc,
+        frames: u32,
+        force_keyframe: bool,
+        keep_alive: Option<Box<dyn std::any::Any + Send>>,
+        reply: mpsc::Sender<Result<EncodeOutput, EncodeError>>,
+    },
     /// Raw host frames converted by one kernel launch.
     EncodeBatch {
         frames: Vec<(Vec<u8>, FrameDesc)>,
@@ -242,6 +252,34 @@ impl VideoEncoder for NvencEncoder {
         let out: EncodeOutput = self.request(move |reply| Command::EncodeBatch {
             frames: owned,
             force_keyframe,
+            reply,
+        })?;
+        if out.codec_config.is_some() {
+            self.codec_config = out.codec_config;
+        }
+        Ok(out.units)
+    }
+
+    fn encode_device_batch(
+        &mut self,
+        ptr: u64,
+        desc: FrameDesc,
+        frames: u32,
+        keep_alive: Option<Box<dyn std::any::Any + Send>>,
+    ) -> Result<Vec<EncodedUnit>, EncodeError> {
+        if self.finished {
+            return Err(EncodeError::AfterFinish);
+        }
+        if frames == 0 {
+            return Ok(Vec::new());
+        }
+        let force_keyframe = std::mem::take(&mut self.force_keyframe);
+        let out: EncodeOutput = self.request(move |reply| Command::EncodeDevice {
+            ptr,
+            desc,
+            frames,
+            force_keyframe,
+            keep_alive,
             reply,
         })?;
         if out.codec_config.is_some() {
@@ -574,6 +612,51 @@ fn run_loop(
                 force_keyframe,
                 reply,
             ),
+            Command::EncodeDevice {
+                ptr,
+                desc,
+                frames,
+                force_keyframe,
+                keep_alive,
+                reply,
+            } => {
+                if finished {
+                    let _ = reply.send(Err(EncodeError::AfterFinish));
+                    continue;
+                }
+                let mut units = Vec::new();
+                let idr: Vec<bool> = (0..frames as usize)
+                    .map(|i| keyframes.next_is_keyframe(i == 0 && force_keyframe))
+                    .collect();
+                let result = encode_device_batch(
+                    session,
+                    &stream,
+                    &device,
+                    &mut inputs,
+                    &mut bitstreams,
+                    &mut dst_ptrs,
+                    &converter,
+                    &mut pool,
+                    &mut codec_config,
+                    &mut decode_index,
+                    frame_duration,
+                    codec,
+                    pitch,
+                    ptr,
+                    desc,
+                    frames,
+                    &idr,
+                    &mut units,
+                );
+                // Drop the caller's allocation only after the last encode that
+                // reads it has been submitted.
+                drop(keep_alive);
+                let _ = reply.send(result.map(|()| EncodeOutput {
+                    units,
+                    codec_config: codec_config.clone(),
+                }));
+                continue;
+            }
             Command::EncodeBatch {
                 frames,
                 force_keyframe,
@@ -1202,6 +1285,168 @@ fn encode_chunk(
         )? {
             EncodeCall::Emitted => {}
             // The frame is buffered; its output appears on a later call.
+            EncodeCall::NeedMoreInput => continue,
+        }
+        drain_ready(
+            bitstreams,
+            pool,
+            codec_config,
+            decode_index,
+            frame_duration,
+            codec,
+            units,
+        )?;
+    }
+    Ok(batched)
+}
+
+/// Bytes of one BCTHW frame in the caller's dtype.
+fn device_frame_bytes(desc: &FrameDesc) -> usize {
+    let elem = match desc.dtype {
+        blazar_core::Dtype::F32 => 4,
+        _ => 2,
+    };
+    desc.width as usize * desc.height as usize * 3 * elem
+}
+
+/// Convert and encode a batch that already lives on the GPU. The caller's
+/// memory is read directly by the kernel; nothing is staged.
+#[allow(clippy::too_many_arguments)]
+fn encode_device_batch(
+    session: &Session,
+    stream: &Arc<CudaStream>,
+    device: &[PitchedInput],
+    inputs: &mut [RegisteredResource<'_, ()>],
+    bitstreams: &mut [Bitstream<'_>],
+    dst_ptrs: &mut CudaSlice<u64>,
+    converter: &Nv12Converter,
+    pool: &mut SlotPool,
+    codec_config: &mut Option<Vec<u8>>,
+    decode_index: &mut u64,
+    frame_duration: u64,
+    codec: VideoCodec,
+    pitch: u32,
+    ptr: u64,
+    desc: FrameDesc,
+    frames: u32,
+    idr: &[bool],
+    units: &mut Vec<EncodedUnit>,
+) -> Result<(), EncodeError> {
+    let frame_bytes = device_frame_bytes(&desc);
+    let budget = (BATCH_STAGING_BUDGET / frame_bytes.max(1)).max(1);
+    let max_per_chunk = POOL_CAPACITY.min(budget).max(1);
+
+    let mut start = 0usize;
+    let total = frames as usize;
+    let mut stalls = 0;
+    while start < total {
+        let end = (start + max_per_chunk).min(total);
+        let consumed = encode_device_chunk(
+            session,
+            stream,
+            device,
+            inputs,
+            bitstreams,
+            dst_ptrs,
+            converter,
+            pool,
+            codec_config,
+            decode_index,
+            frame_duration,
+            codec,
+            pitch,
+            ptr + (start as u64) * frame_bytes as u64,
+            desc,
+            (end - start) as u32,
+            &idr[start..end],
+            units,
+        )?;
+        if consumed == 0 {
+            // The helper drained; retry the same frame. A pool this starved
+            // for several rounds is a bug, not backpressure.
+            stalls += 1;
+            if stalls > POOL_CAPACITY {
+                return Err(EncodeError::Backend(
+                    "NVENC output slot pool is not draining".into(),
+                ));
+            }
+            continue;
+        }
+        stalls = 0;
+        start += consumed;
+    }
+    Ok(())
+}
+
+/// One device-batch chunk: reserve slots, convert straight from `ptr`, encode.
+#[allow(clippy::too_many_arguments)]
+fn encode_device_chunk(
+    session: &Session,
+    stream: &Arc<CudaStream>,
+    device: &[PitchedInput],
+    inputs: &mut [RegisteredResource<'_, ()>],
+    bitstreams: &mut [Bitstream<'_>],
+    dst_ptrs: &mut CudaSlice<u64>,
+    converter: &Nv12Converter,
+    pool: &mut SlotPool,
+    codec_config: &mut Option<Vec<u8>>,
+    decode_index: &mut u64,
+    frame_duration: u64,
+    codec: VideoCodec,
+    pitch: u32,
+    ptr: u64,
+    desc: FrameDesc,
+    frames: u32,
+    idr: &[bool],
+    units: &mut Vec<EncodedUnit>,
+) -> Result<usize, EncodeError> {
+    let mut slots = Vec::with_capacity(frames as usize);
+    for _ in 0..frames {
+        match pool.reserve() {
+            Some(slot) => slots.push(slot),
+            None => break,
+        }
+    }
+    if slots.is_empty() {
+        drain_ready(
+            bitstreams,
+            pool,
+            codec_config,
+            decode_index,
+            frame_duration,
+            codec,
+            units,
+        )?;
+        return Ok(0);
+    }
+    let batched = slots.len();
+    let ptrs: Vec<u64> = slots.iter().map(|slot| device[*slot].ptr).collect();
+    stream
+        .memcpy_htod(&ptrs, &mut dst_ptrs.slice_mut(0..batched))
+        .map_err(|e| EncodeError::Backend(format!("upload dst pointers: {e}")))?;
+    converter.convert_batch_ptr(stream, ptr, dst_ptrs, &desc, batched as u32, pitch)?;
+    stream
+        .synchronize()
+        .map_err(|e| EncodeError::Backend(format!("sync before encode: {e}")))?;
+
+    for (i, slot) in slots.iter().enumerate() {
+        // Every frame in a device batch shares one PTS list, so the caller sets
+        // per-frame timestamps through `desc.pts` plus the frame index.
+        let pts = desc.pts.ticks() + i as u64 * frame_duration;
+        let flags = if idr[i] {
+            NV_ENC_PIC_FLAGS::NV_ENC_PIC_FLAG_FORCEIDR as u32
+        } else {
+            0
+        };
+        pool.submit(*slot, pts);
+        match encode_with_retry(
+            session,
+            &mut inputs[*slot],
+            &mut bitstreams[*slot],
+            pts,
+            flags,
+        )? {
+            EncodeCall::Emitted => {}
             EncodeCall::NeedMoreInput => continue,
         }
         drain_ready(

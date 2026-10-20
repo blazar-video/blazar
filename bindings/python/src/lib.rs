@@ -60,6 +60,14 @@ enum Job {
     Frame(Box<FrameJob>),
     /// Several frames in one encoder submission: one GPU kernel launch.
     Batch(Vec<FrameJob>),
+    /// Frames that are already on the GPU. `keep_alive` holds the tensor.
+    Device {
+        ptr: u64,
+        desc: FrameDesc,
+        frames: u32,
+        boundary: Option<Boundary>,
+        keep_alive: Option<Box<dyn std::any::Any + Send>>,
+    },
     Flush(SyncSender<Result<(), String>>),
     Close(SyncSender<Result<(), String>>),
 }
@@ -318,6 +326,80 @@ fn worker_main(
                         }
                         let _ = shared.events.send(WorkerEvent::Failed {
                             seq: Some(first_seq),
+                            message,
+                        });
+                        break;
+                    }
+                }
+            }
+            Job::Device {
+                ptr,
+                desc,
+                frames,
+                boundary,
+                keep_alive,
+            } => {
+                shared.queued.fetch_sub(1, Ordering::Relaxed);
+                let started = Instant::now();
+                let pts = desc.pts.0;
+                let count = frames as u64;
+                let result = stream.submit_video_batch_device(ptr, desc, frames, boundary, keep_alive);
+                let elapsed = started.elapsed();
+                match result {
+                    Ok(seq) => {
+                        let units: Vec<WrittenUnit> = written
+                            .lock()
+                            .map(|mut units| units.drain(..).collect())
+                            .unwrap_or_default();
+                        let bytes: usize = units.iter().map(|u| u.bytes).sum();
+                        let keyframe = units.iter().any(|u| u.keyframe);
+                        let encode_us = elapsed.as_micros() as u64;
+                        if let Ok(mut stats) = shared.stats.lock() {
+                            stats.encoded += count;
+                            stats.bytes += bytes as u64;
+                            stats.last_encode_us = encode_us;
+                            stats.max_encode_us = stats.max_encode_us.max(encode_us);
+                        }
+                        tracing::debug!(
+                            target: "blazar",
+                            seq,
+                            frames = count,
+                            keyframe,
+                            units = units.len(),
+                            bytes,
+                            encode_us,
+                            "device batch encoded"
+                        );
+                        if let Ok(stats) = shared.stats.lock() {
+                            if stats.encoded > 0 && stats.encoded % 24 == 0 {
+                                tracing::info!(
+                                    target: "blazar",
+                                    frames = stats.encoded,
+                                    bytes = stats.bytes,
+                                    "encode progress"
+                                );
+                            }
+                        }
+                        let _ = shared.events.send(WorkerEvent::Encoded {
+                            seq,
+                            pts,
+                            keyframe,
+                            units: units.len(),
+                            bytes,
+                            encode_us,
+                            queue_depth: shared.queued.load(Ordering::Relaxed),
+                        });
+                    }
+                    Err(err) => {
+                        let message = err.to_string();
+                        if let Ok(mut slot) = shared.error.lock() {
+                            *slot = Some(message.clone());
+                        }
+                        if let Ok(mut stats) = shared.stats.lock() {
+                            stats.failed = true;
+                        }
+                        let _ = shared.events.send(WorkerEvent::Failed {
+                            seq: None,
                             message,
                         });
                         break;
@@ -735,6 +817,126 @@ impl PyEncoder {
         self.seq += 1;
         self.submitted += count;
         self.frame_index += count;
+        self.frame_size.get_or_insert((width, height));
+        self.fps.get_or_insert(fps);
+        Ok(seq)
+    }
+
+    /// Queue a batch whose frames are already on the GPU, shaped like the
+    /// model's VAE output: `(1, 3, T, H, W)` bf16 (or f32), contiguous, CUDA.
+    ///
+    /// Nothing is copied to the host: the NV12 kernel reads the tensor's memory
+    /// directly. The binding keeps a reference to `tensor` until the worker has
+    /// encoded the batch, so the caller may drop it after this returns.
+    #[pyo3(signature = (tensor, fps, range = "unit01", pts_ticks = None, scene_cut = false))]
+    fn submit_device_batch(
+        &mut self,
+        py: Python<'_>,
+        tensor: &Bound<'_, PyAny>,
+        fps: f64,
+        range: &str,
+        pts_ticks: Option<u64>,
+        scene_cut: bool,
+    ) -> PyResult<u64> {
+        if !fps.is_finite() || fps <= 0.0 {
+            return Err(PyValueError::new_err("fps must be > 0"));
+        }
+        if let Some(err) = self.error_message() {
+            return Err(PyRuntimeError::new_err(err));
+        }
+        let is_cuda: bool = tensor.getattr("is_cuda")?.extract()?;
+        if !is_cuda {
+            return Err(PyValueError::new_err("tensor must be on CUDA"));
+        }
+        let contiguous: bool = tensor.call_method0("is_contiguous")?.extract()?;
+        if !contiguous {
+            return Err(PyValueError::new_err("tensor must be contiguous"));
+        }
+        let dtype_name = tensor.getattr("dtype")?.to_string();
+        let dtype = match dtype_name.as_str() {
+            "torch.bfloat16" => Dtype::Bf16,
+            "torch.float32" => Dtype::F32,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "unsupported tensor dtype {other:?} (expected torch.bfloat16 or torch.float32)"
+                )))
+            }
+        };
+        let shape: Vec<i64> = tensor.getattr("shape")?.extract()?;
+        if shape.len() != 5 || shape[0] != 1 || shape[1] != 3 || shape[2] < 1 {
+            return Err(PyValueError::new_err(format!(
+                "expected a (1, 3, T, H, W) tensor, got {shape:?}"
+            )));
+        }
+        let (frames, height, width) = (shape[2] as u32, shape[3] as u32, shape[4] as u32);
+        if width == 0 || height == 0 {
+            return Err(PyValueError::new_err("width and height must be non-zero"));
+        }
+        let ptr: u64 = tensor.call_method0("data_ptr")?.extract()?;
+
+        let jobs_out = self
+            .jobs
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("encoder state lock poisoned"))?
+            .clone()
+            .ok_or_else(|| closed_error(&self.request_id))?;
+        let range = parse_range(range)?;
+
+        if let Some((prev_w, prev_h)) = self.frame_size {
+            if (prev_w, prev_h) != (width, height) {
+                return Err(PyValueError::new_err(format!(
+                    "frame size changed from {prev_w}x{prev_h} to {width}x{height}; \
+                     open a new Encoder for a new stream"
+                )));
+            }
+        }
+        if let Some(prev_fps) = self.fps {
+            if (prev_fps - fps).abs() > 1e-9 {
+                return Err(PyValueError::new_err(format!(
+                    "fps changed from {prev_fps} to {fps}; open a new Encoder for a new stream"
+                )));
+            }
+        }
+
+        let pts = pts_ticks
+            .unwrap_or_else(|| Pts::from_frame_index(self.frame_index, fps, self.timebase).0);
+        let desc = FrameDesc {
+            width,
+            height,
+            dtype,
+            range,
+            layout: Layout::Bcthw,
+            colorspace: ColorSpace::AssumedBt709,
+            fps,
+            pts: Pts(pts),
+        };
+        let keep_alive: Box<dyn std::any::Any + Send> = Box::new(tensor.clone().unbind());
+        let job = Job::Device {
+            ptr,
+            desc,
+            frames,
+            boundary: if scene_cut {
+                Some(Boundary::SceneCut)
+            } else {
+                None
+            },
+            keep_alive: Some(keep_alive),
+        };
+
+        self.shared.queued.fetch_add(1, Ordering::Relaxed);
+        let sent = py.detach(move || jobs_out.send(job));
+        if sent.is_err() {
+            self.shared.queued.fetch_sub(1, Ordering::Relaxed);
+            return Err(PyRuntimeError::new_err(
+                self.error_message()
+                    .unwrap_or_else(|| "encoder worker stopped".to_string()),
+            ));
+        }
+
+        let seq = self.seq;
+        self.seq += 1;
+        self.submitted += frames as u64;
+        self.frame_index += frames as u64;
         self.frame_size.get_or_insert((width, height));
         self.fps.get_or_insert(fps);
         Ok(seq)

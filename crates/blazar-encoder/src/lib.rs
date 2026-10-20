@@ -63,6 +63,25 @@ pub trait VideoEncoder: Send {
         Ok(units)
     }
 
+    /// Encode a batch that is already on the GPU.
+    ///
+    /// `ptr` points at `frames` contiguous frames described by `desc` (BCTHW,
+    /// bf16 or f32). The caller owns that memory; `keep_alive` exists so the
+    /// owner can be released by the backend once the encode has consumed it
+    /// (an async worker must not outlive the allocation). Backends without
+    /// device ingest return an error.
+    fn encode_device_batch(
+        &mut self,
+        _ptr: u64,
+        _desc: FrameDesc,
+        _frames: u32,
+        _keep_alive: Option<Box<dyn std::any::Any + Send>>,
+    ) -> Result<Vec<EncodedUnit>, EncodeError> {
+        Err(EncodeError::Backend(
+            "device ingest is not supported by this backend".into(),
+        ))
+    }
+
     /// Drain buffered frames without ending the stream (segment boundary).
     fn flush(&mut self) -> Result<Vec<EncodedUnit>, EncodeError>;
 
