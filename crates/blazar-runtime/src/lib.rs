@@ -472,6 +472,7 @@ impl<S: Sink> Stream<S> {
 /// explicit error rather than a silent mock.
 /// Wrap a CPU encoder so device tensors are converted on the GPU.
 #[cfg(feature = "gpu-preprocess")]
+#[allow(dead_code)] // only called from the codec arms below
 fn wrap_gpu(enc: Box<dyn VideoEncoder>) -> Result<Box<dyn VideoEncoder>, RuntimeError> {
     Ok(Box::new(
         blazar_encoder::gpu_preprocess::GpuPreprocessEncoder::new(enc)?,
@@ -479,6 +480,7 @@ fn wrap_gpu(enc: Box<dyn VideoEncoder>) -> Result<Box<dyn VideoEncoder>, Runtime
 }
 
 #[cfg(not(feature = "gpu-preprocess"))]
+#[allow(dead_code)] // only called from the codec arms below
 fn wrap_gpu(enc: Box<dyn VideoEncoder>) -> Result<Box<dyn VideoEncoder>, RuntimeError> {
     Ok(enc)
 }

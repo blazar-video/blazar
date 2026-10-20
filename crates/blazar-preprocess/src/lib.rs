@@ -14,7 +14,11 @@
 use blazar_core::{ColorRange, ColorSpace, Dtype, FrameRef, Layout, Pts};
 use rayon::prelude::*;
 
+/// Unused for now: kept as the starting point for a fused luma+chroma AVX2
+/// pass, which is the only shape that can beat the scalar path (see the
+/// dispatch comment in `process`).
 #[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
 mod simd;
 use thiserror::Error;
 
@@ -68,27 +72,6 @@ pub trait PreprocessStage {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CpuPreprocess;
 
-/// Vectorised planar f32 conversion, or `None` when it does not apply.
-fn try_simd_bcthw_f32(
-    bytes: &[u8],
-    desc: &blazar_core::FrameDesc,
-    w: usize,
-    h: usize,
-) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    // Disabled: this vectorises luma in a separate pass, which re-reads every
-    // f32 plane and is SLOWER end to end than the fused scalar single pass
-    // (16.1 vs 11.2 ms/frame at 1080p). The vectorised version has to compute
-    // luma and the 2x2 chroma in one pass over the frame. Kept for that work.
-    #[cfg(target_arch = "x86_64")]
-    {
-        if false && desc.range == ColorRange::Unit01 && simd::available() {
-            // SAFETY: availability was checked above.
-            return Some(unsafe { simd::convert_bcthw_f32(bytes, desc, w, h) });
-        }
-    }
-    None
-}
-
 impl CpuPreprocess {
     pub fn new() -> Self {
         CpuPreprocess
@@ -116,10 +99,17 @@ impl CpuPreprocess {
 trait Sample {
     fn component_bytes() -> usize;
     fn read(bytes: &[u8], component: usize) -> f32;
+    /// Normalize one read component to `[0,1]`.
+    ///
+    /// On the trait rather than at the call site so the per-pixel loop stays
+    /// monomorphised per dtype, with no branch on the dtype inside it.
+    fn to_unit(value: f32, range: ColorRange) -> f32;
 }
 
 struct F32Sample;
 struct Bf16Sample;
+/// Full-range 8-bit code values: 0..=255, no range scaling to apply.
+struct U8Sample;
 
 impl Sample for F32Sample {
     #[inline(always)]
@@ -130,6 +120,11 @@ impl Sample for F32Sample {
     fn read(bytes: &[u8], component: usize) -> f32 {
         let off = component * 4;
         f32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+    }
+
+    #[inline(always)]
+    fn to_unit(value: f32, range: ColorRange) -> f32 {
+        CpuPreprocess::to_unit(value, range)
     }
 }
 
@@ -143,6 +138,29 @@ impl Sample for Bf16Sample {
         let off = component * 2;
         // Truncation, not rounding: bf16 is the top half of f32.
         f32::from_bits((u16::from_le_bytes([bytes[off], bytes[off + 1]]) as u32) << 16)
+    }
+
+    #[inline(always)]
+    fn to_unit(value: f32, range: ColorRange) -> f32 {
+        CpuPreprocess::to_unit(value, range)
+    }
+}
+
+impl Sample for U8Sample {
+    #[inline(always)]
+    fn component_bytes() -> usize {
+        1
+    }
+    #[inline(always)]
+    fn read(bytes: &[u8], component: usize) -> f32 {
+        bytes[component] as f32
+    }
+
+    /// A u8 array is already full-range code values, so the caller's `range`
+    /// does not apply: dividing by 255 twice would crush the frame.
+    #[inline(always)]
+    fn to_unit(value: f32, _range: ColorRange) -> f32 {
+        (value / 255.0).clamp(0.0, 1.0)
     }
 }
 
@@ -181,6 +199,7 @@ impl PreprocessStage for CpuPreprocess {
         let component_bytes = match desc.dtype {
             Dtype::F32 => F32Sample::component_bytes(),
             Dtype::Bf16 => Bf16Sample::component_bytes(),
+            Dtype::U8 => U8Sample::component_bytes(),
             other => return Err(PreprocessError::UnsupportedDtype(other)),
         };
 
@@ -207,13 +226,15 @@ impl PreprocessStage for CpuPreprocess {
         let (y, u, v) = match (desc.layout, desc.dtype) {
             (Layout::Thwc, Dtype::F32) => convert_thwc::<F32Sample>(bytes, desc, w, h),
             (Layout::Thwc, Dtype::Bf16) => convert_thwc::<Bf16Sample>(bytes, desc, w, h),
-            // Model-shaped frames (planar f32, unit range) get the vectorised
-            // path when the CPU has AVX2; everything else stays scalar.
-            (Layout::Bcthw, Dtype::F32) => match try_simd_bcthw_f32(bytes, desc, w, h) {
-                Some(planes) => planes,
-                None => convert_bcthw::<F32Sample>(bytes, desc, w, h),
-            },
+            // Scalar for now. An AVX2 path that vectorised luma in a separate
+            // pass was measured and removed: the extra pass over 25 MB of f32
+            // planes cost more than the vector maths saved (16.1 vs 11.2
+            // ms/frame at 1080p). A vectorised version must fuse luma and the
+            // 2x2 chroma into one pass to have a chance.
+            (Layout::Bcthw, Dtype::F32) => convert_bcthw::<F32Sample>(bytes, desc, w, h),
             (Layout::Bcthw, Dtype::Bf16) => convert_bcthw::<Bf16Sample>(bytes, desc, w, h),
+            (Layout::Thwc, Dtype::U8) => convert_thwc::<U8Sample>(bytes, desc, w, h),
+            (Layout::Bcthw, Dtype::U8) => convert_bcthw::<U8Sample>(bytes, desc, w, h),
             (_, other) => return Err(PreprocessError::UnsupportedDtype(other)),
         };
 
@@ -266,7 +287,7 @@ fn row_pair_thwc<S: Sample>(
                     break;
                 }
                 let component = ((cy * 2 + dy) * w + sx) * 3;
-                let (yy, ccb, ccr) = pixel_into(
+                let (yy, ccb, ccr) = pixel_into::<S>(
                     S::read(bytes, component),
                     S::read(bytes, component + 1),
                     S::read(bytes, component + 2),
@@ -353,7 +374,7 @@ fn row_pair_bcthw<S: Sample>(
                     break;
                 }
                 let px = (cy * 2 + dy) * w + sx;
-                let (yy, ccb, ccr) = pixel_into(
+                let (yy, ccb, ccr) = pixel_into::<S>(
                     S::read(bytes, px),
                     S::read(bytes, pixels + px),
                     S::read(bytes, 2 * pixels + px),
@@ -418,16 +439,16 @@ fn convert_bcthw<S: Sample>(
 /// Normalize, convert and quantize one pixel. Returns `(Y, Cb, Cr)` with chroma
 /// as the shifted `[0,1]` value, so blocks can be averaged before quantizing.
 #[inline(always)]
-fn pixel_into(
+fn pixel_into<S: Sample>(
     r: f32,
     g: f32,
     b: f32,
     desc: &blazar_core::FrameDesc,
     matrix: &Matrix,
 ) -> (u8, f32, f32) {
-    let r = CpuPreprocess::to_unit(r, desc.range);
-    let g = CpuPreprocess::to_unit(g, desc.range);
-    let b = CpuPreprocess::to_unit(b, desc.range);
+    let r = S::to_unit(r, desc.range);
+    let g = S::to_unit(g, desc.range);
+    let b = S::to_unit(b, desc.range);
     let y = matrix.kr * r + matrix.kg * g + matrix.kb * b;
     let cb = (b - y) * matrix.cb_scale + 0.5;
     let cr = (r - y) * matrix.cr_scale + 0.5;
@@ -713,6 +734,74 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn u8_matches_the_same_values_as_f32() {
+        // A u8 frame is the same picture as an f32 frame holding v/255, so the
+        // two paths must agree. Luma is exact; chroma may round one level.
+        let (w, h) = (9, 7);
+        let px = (w * h) as usize;
+        for layout in [Layout::Thwc, Layout::Bcthw] {
+            let rgb: Vec<[u8; 3]> = (0..px)
+                .map(|i| {
+                    [
+                        ((i * 37) % 256) as u8,
+                        ((i * 91 + 7) % 256) as u8,
+                        ((i * 53 + 199) % 256) as u8,
+                    ]
+                })
+                .collect();
+
+            let mut u8_bytes = Vec::new();
+            let mut f32_bytes = Vec::new();
+            match layout {
+                Layout::Thwc => {
+                    for c in &rgb {
+                        u8_bytes.extend_from_slice(c);
+                        for v in c {
+                            f32_bytes.extend_from_slice(&(*v as f32 / 255.0).to_le_bytes());
+                        }
+                    }
+                }
+                Layout::Bcthw => {
+                    for channel in 0..3 {
+                        for c in &rgb {
+                            u8_bytes.push(c[channel]);
+                        }
+                    }
+                    for channel in 0..3 {
+                        for c in &rgb {
+                            f32_bytes.extend_from_slice(&(c[channel] as f32 / 255.0).to_le_bytes());
+                        }
+                    }
+                }
+                other => panic!("unexpected layout {other:?}"),
+            }
+
+            let u8_frame = FrameRef::new(
+                FrameBuffer::host_owned(u8_bytes),
+                FrameDesc {
+                    dtype: Dtype::U8,
+                    ..desc(w, h, ColorRange::Unit01, layout)
+                },
+            );
+            let f32_frame = FrameRef::new(
+                FrameBuffer::host_owned(f32_bytes),
+                desc(w, h, ColorRange::Unit01, layout),
+            );
+
+            let from_u8 = CpuPreprocess::new().process(&u8_frame).unwrap();
+            let from_f32 = CpuPreprocess::new().process(&f32_frame).unwrap();
+            assert_eq!(from_u8.y, from_f32.y, "luma {layout:?}");
+            let close = |a: &[u8], b: &[u8]| {
+                a.iter()
+                    .zip(b)
+                    .all(|(x, y)| (*x as i32 - *y as i32).abs() <= 1)
+            };
+            assert!(close(&from_u8.u, &from_f32.u), "Cb {layout:?}");
+            assert!(close(&from_u8.v, &from_f32.v), "Cr {layout:?}");
         }
     }
 

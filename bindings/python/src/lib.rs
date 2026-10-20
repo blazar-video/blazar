@@ -657,14 +657,14 @@ impl PyEncoder {
 
         // One copy under the GIL: the job owns its bytes, so the worker needs no
         // Python memory and can run without the GIL.
-        let bytes = copy_float32(py, frame)?;
+        let (bytes, dtype) = copy_frame(py, frame)?;
 
         let pts = pts_ticks
             .unwrap_or_else(|| Pts::from_frame_index(self.frame_index, fps, self.timebase).0);
         let desc = FrameDesc {
             width,
             height,
-            dtype: Dtype::F32,
+            dtype,
             range,
             layout,
             colorspace: ColorSpace::AssumedBt709,
@@ -770,7 +770,7 @@ impl PyEncoder {
 
         let mut jobs = Vec::with_capacity(frames.len());
         for (index, frame) in frames.iter().enumerate() {
-            let bytes = copy_float32(py, frame)?;
+            let (bytes, dtype) = copy_frame(py, frame)?;
             let frame_index = self.frame_index + index as u64;
             let pts = pts_ticks
                 .map(|first| {
@@ -783,7 +783,7 @@ impl PyEncoder {
             let desc = FrameDesc {
                 width,
                 height,
-                dtype: Dtype::F32,
+                dtype,
                 range,
                 layout,
                 colorspace: ColorSpace::AssumedBt709,
@@ -1155,13 +1155,27 @@ fn event_to_dict(py: Python<'_>, event: WorkerEvent) -> PyResult<Py<PyDict>> {
     Ok(dict.unbind())
 }
 
-/// Copy a float32 buffer-protocol object into owned little-endian bytes.
-fn copy_float32(py: Python<'_>, frame: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+/// Copy a numeric buffer-protocol object into owned bytes, reporting the dtype
+/// the bytes are in.
+///
+/// `uint8` is taken as-is: the preprocess stage reads it at 1 byte per channel
+/// instead of 4, which is the difference between 6.2 MB and 24.9 MB of traffic
+/// per 1080p frame. Anything else must be float32. The order matters: `u8` is
+/// tried first, and a float32 buffer fails that format check, so a frame can
+/// never be misread as the other dtype.
+fn copy_frame(py: Python<'_>, frame: &Bound<'_, PyAny>) -> PyResult<(Vec<u8>, Dtype)> {
+    if let Ok(buffer) = PyBuffer::<u8>::get(frame) {
+        let bytes = buffer
+            .to_vec(py)
+            .map_err(|err| PyValueError::new_err(format!("cannot copy frame buffer: {err}")))?;
+        return Ok((bytes, Dtype::U8));
+    }
+
     let buffer = PyBuffer::<f32>::get(frame).map_err(|_| {
         PyValueError::new_err(
-            "frame must be a float32 array supporting the buffer protocol \
-             (numpy float32, C order); convert with \
-             numpy.ascontiguousarray(frame, dtype=numpy.float32) or \
+            "frame must be a uint8 or float32 array supporting the buffer protocol \
+             (numpy, C order); convert with \
+             numpy.ascontiguousarray(frame, dtype=numpy.uint8) or \
              tensor.cpu().float().numpy()",
         )
     })?;
@@ -1172,7 +1186,7 @@ fn copy_float32(py: Python<'_>, frame: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
     for value in values {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
-    Ok(bytes)
+    Ok((bytes, Dtype::F32))
 }
 
 fn closed_error(request_id: &str) -> PyErr {
