@@ -469,6 +469,73 @@ impl PyCalibrations {
     }
 }
 
+/// Process-wide cap on open NVENC sessions.
+///
+/// Every stream holds its own session (they are stateful and cannot be shared),
+/// and consumer drivers refuse new ones past a cap — measured at 9 on an RTX 4080
+/// SUPER. Refusing at the driver turns into a half-working server: some streams
+/// encode, others die at startup. Queueing instead makes the limit a throughput
+/// question rather than a correctness one.
+struct SessionLimiter {
+    open: std::sync::Mutex<usize>,
+    freed: std::sync::Condvar,
+    limit: usize,
+}
+
+impl SessionLimiter {
+    fn new(limit: usize) -> Self {
+        Self {
+            open: std::sync::Mutex::new(0),
+            freed: std::sync::Condvar::new(),
+            limit,
+        }
+    }
+
+    fn acquire(self: &'static Self, timeout: std::time::Duration) -> Option<SessionPermit> {
+        let mut open = self.open.lock().ok()?;
+        let deadline = std::time::Instant::now() + timeout;
+        while *open >= self.limit {
+            let remaining = deadline.checked_duration_since(std::time::Instant::now())?;
+            let (guard, timed_out) = self.freed.wait_timeout(open, remaining).ok()?;
+            open = guard;
+            if timed_out.timed_out() && *open >= self.limit {
+                return None;
+            }
+        }
+        *open += 1;
+        Some(SessionPermit { limiter: self })
+    }
+}
+
+/// Releases its slot when the encoder is dropped, closed or fails to build.
+struct SessionPermit {
+    limiter: &'static SessionLimiter,
+}
+
+impl Drop for SessionPermit {
+    fn drop(&mut self) {
+        if let Ok(mut open) = self.limiter.open.lock() {
+            *open = open.saturating_sub(1);
+            self.limiter.freed.notify_one();
+        }
+    }
+}
+
+/// Sessions per process: eight is safe on consumer cards, which is where a
+/// surprise cap hurts most. Datacenter deployments can raise it.
+fn session_limit() -> usize {
+    std::env::var("BLAZAR_MAX_NVENC_SESSIONS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|limit| *limit > 0)
+        .unwrap_or(8)
+}
+
+fn session_limiter() -> &'static SessionLimiter {
+    static LIMITER: std::sync::OnceLock<SessionLimiter> = std::sync::OnceLock::new();
+    LIMITER.get_or_init(|| SessionLimiter::new(session_limit()))
+}
+
 /// One encode stream writing a fragmented MP4 on a worker thread.
 #[pyclass(name = "Encoder", module = "blazar")]
 struct PyEncoder {
@@ -486,6 +553,8 @@ struct PyEncoder {
     frame_index: u64,
     frame_size: Option<(u32, u32)>,
     fps: Option<f64>,
+    /// Held while a hardware session is open; `None` for software backends.
+    _session: Option<SessionPermit>,
 }
 
 #[pymethods]
@@ -531,6 +600,25 @@ impl PyEncoder {
         let target = parse_target(target)?;
         let backend = parse_backend(backend)?;
         let codec = parse_codec(codec)?;
+
+        // Queue rather than let the driver refuse: a server that half-starts is
+        // worse than one that starts slowly.
+        let session = match backend {
+            VideoEncoderBackend::NvencAv1
+            | VideoEncoderBackend::NvencH264
+            | VideoEncoderBackend::NvencHevc => Some(
+                session_limiter()
+                    .acquire(Duration::from_secs(30))
+                    .ok_or_else(|| {
+                        PyRuntimeError::new_err(format!(
+                            "no NVENC session available after 30s: {} already open in this \
+                             process (BLAZAR_MAX_NVENC_SESSIONS). Close encoders you are done with.",
+                            session_limit()
+                        ))
+                    })?,
+            ),
+            _ => None,
+        };
 
         let file = File::create(output).map_err(|err| {
             PyValueError::new_err(format!("cannot create output {output}: {err}"))
@@ -585,6 +673,7 @@ impl PyEncoder {
             frame_index: 0,
             frame_size: None,
             fps: None,
+            _session: session,
         })
     }
 
