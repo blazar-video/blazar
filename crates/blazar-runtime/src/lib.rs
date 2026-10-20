@@ -178,7 +178,8 @@ impl<S: Sink> Stream<S> {
 
     /// Build the encoder from the first frame's descriptor. The sink is *not*
     /// opened here: a real encoder only reveals its codec configuration when it
-    /// emits its first keyframe, so `ensure_sink` runs after the first encode.
+    /// emits its first keyframe, so `ensure_sink` runs when the first unit is
+    /// actually produced (which may be several frames in for lookahead encoders).
     fn ensure_encoder(&mut self, frame: &FrameRef) -> Result<(), RuntimeError> {
         self.ensure_encoder_for(&frame.desc)
     }
@@ -294,11 +295,15 @@ impl<S: Sink> Stream<S> {
             // this call does not do per-pixel work on the caller's thread.
             encoder.encode_frame(frame)?
         };
-        // The first encode is what makes a codec configuration available, so
-        // the sink opens here rather than before the encode.
-        self.ensure_sink(&desc)?;
-        for u in &units {
-            self.enc.sink.write(u)?;
+        // Open the sink only once there is something to write. Encoders with
+        // lookahead or B-frames return nothing for the first frames; the
+        // configuration arrives with their first packet, not with the first
+        // submit.
+        if !units.is_empty() {
+            self.ensure_sink(&desc)?;
+            for u in &units {
+                self.enc.sink.write(u)?;
+            }
         }
 
         let seq = self.seq;
@@ -338,9 +343,11 @@ impl<S: Sink> Stream<S> {
                 .ok_or(RuntimeError::EncoderNotInitialized)?;
             encoder.encode_device_batch(ptr, desc, frames, keep_alive)?
         };
-        self.ensure_sink(&desc)?;
-        for u in &units {
-            self.enc.sink.write(u)?;
+        if !units.is_empty() {
+            self.ensure_sink(&desc)?;
+            for u in &units {
+                self.enc.sink.write(u)?;
+            }
         }
         let seq = self.seq;
         self.seq += 1;
@@ -379,11 +386,15 @@ impl<S: Sink> Stream<S> {
                 .ok_or(RuntimeError::EncoderNotInitialized)?;
             encoder.encode_batch(frames)?
         };
-        // The first encode is what makes a codec configuration available, so
-        // the sink opens here rather than before the encode.
-        self.ensure_sink(&desc)?;
-        for u in &units {
-            self.enc.sink.write(u)?;
+        // Open the sink only once there is something to write. Encoders with
+        // lookahead or B-frames return nothing for the first frames; the
+        // configuration arrives with their first packet, not with the first
+        // submit.
+        if !units.is_empty() {
+            self.ensure_sink(&desc)?;
+            for u in &units {
+                self.enc.sink.write(u)?;
+            }
         }
 
         let seq = self.seq;
