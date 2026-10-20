@@ -84,8 +84,10 @@ pub unsafe fn convert_bcthw_f32(
                 _mm256_fmadd_ps(kg, gv, _mm256_mul_ps(kr, rv)),
             );
             let scaled = _mm256_mul_ps(luma, scale);
+            // copysign(0.5, scaled), not or(0.5, -0.0): the latter is -0.5.
+            let signed_half = _mm256_or_ps(half, _mm256_and_ps(scaled, sign));
             let rounded = _mm256_round_ps(
-                _mm256_add_ps(scaled, _mm256_or_ps(half, sign)),
+                _mm256_add_ps(scaled, signed_half),
                 _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC,
             );
             let clamped = _mm256_min_ps(_mm256_max_ps(rounded, zero), max);
