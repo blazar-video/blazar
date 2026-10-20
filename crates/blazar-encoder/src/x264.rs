@@ -152,6 +152,17 @@ impl X264Encoder {
             }
         }
         let _ = fps;
+        // Log the settings a session actually runs with: the calibration file
+        // is not the whole story (preset and tune live here).
+        tracing::info!(
+            target: "blazar",
+            crf = ?cfg.rate_control,
+            bframes = cfg.bframes,
+            keyint = cfg.keyint,
+            preset = "medium",
+            tune = "none",
+            "x264 session opened"
+        );
 
         Ok(Self {
             enc,
