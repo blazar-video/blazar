@@ -61,7 +61,56 @@ unsafe fn attempt_untouched(name: &str, mutate: impl FnOnce(&mut sys::EbSvtAv1En
 fn probe_config_fields() {
     unsafe {
         println!("EB_ErrorNone={} EB_ErrorBadParameter={}", sys::EbErrorType::EB_ErrorNone, sys::EbErrorType::EB_ErrorBadParameter);
+        println!("rust sizeof(EbSvtAv1EncConfiguration)={} sizeof(EbBufferHeaderType)={}",
+                 std::mem::size_of::<sys::EbSvtAv1EncConfiguration>(),
+                 std::mem::size_of::<sys::EbBufferHeaderType>());
         attempt_untouched("untouched", |_| {});
+        attempt_untouched("full 2.x default-ish", |c| {
+            c.source_width = 64;
+            c.source_height = 48;
+            c.frame_rate_numerator = 24;
+            c.frame_rate_denominator = 1;
+            c.encoder_color_format = sys::EbColorFormat::EB_YUV420;
+            c.intra_period_length = 8;
+            c.enc_mode = 8;
+            sys::set_rate_control_cqp(c, 32);
+        });
+        attempt_untouched("full + random levels3", |c| {
+            c.source_width = 64;
+            c.source_height = 48;
+            c.frame_rate_numerator = 24;
+            c.frame_rate_denominator = 1;
+            c.encoder_color_format = sys::EbColorFormat::EB_YUV420;
+            c.intra_period_length = 8;
+            c.enc_mode = 8;
+            c.hierarchical_levels = 3;
+            sys::set_random_access(c);
+            sys::set_rate_control_cqp(c, 32);
+        });
+        attempt_untouched("full + random levels0", |c| {
+            c.source_width = 64;
+            c.source_height = 48;
+            c.frame_rate_numerator = 24;
+            c.frame_rate_denominator = 1;
+            c.encoder_color_format = sys::EbColorFormat::EB_YUV420;
+            c.intra_period_length = 8;
+            c.enc_mode = 8;
+            c.hierarchical_levels = 0;
+            sys::set_random_access(c);
+            sys::set_rate_control_cqp(c, 32);
+        });
+        attempt_untouched("full, intra=5", |c| {
+            c.source_width = 64;
+            c.source_height = 48;
+            c.frame_rate_numerator = 24;
+            c.frame_rate_denominator = 1;
+            c.encoder_color_format = sys::EbColorFormat::EB_YUV420;
+            c.intra_period_length = 5;
+            c.enc_mode = 8;
+            c.hierarchical_levels = 0;
+            sys::set_random_access(c);
+            sys::set_rate_control_cqp(c, 32);
+        });
         attempt_untouched("width/height only", |c| { c.source_width = 64; c.source_height = 48; });
         attempt_untouched("format only", |c| { c.encoder_color_format = sys::EbColorFormat::EB_YUV420; });
         attempt_untouched("rc only", |c| sys::set_rate_control_cqp(c, 32));
