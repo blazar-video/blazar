@@ -44,9 +44,16 @@ pub unsafe fn convert_bcthw_f32(
     let mut v = vec![0u8; cw * ch];
 
     let base = bytes.as_ptr();
-    let r = base.cast::<f32>();
-    let g = base.add(pixels * 4).cast::<f32>();
-    let b = base.add(2 * pixels * 4).cast::<f32>();
+    // Raw pointers are not Sync; carry the addresses and rebuild them inside
+    // the parallel closures.
+    let r_addr = base as usize;
+    let g_addr = base as usize + pixels * 4;
+    let b_addr = base as usize + 2 * pixels * 4;
+    let (r, g, b) = (
+        r_addr as *const f32,
+        g_addr as *const f32,
+        b_addr as *const f32,
+    );
 
     let kr = _mm256_set1_ps(matrix.kr);
     let kg = _mm256_set1_ps(matrix.kg);
@@ -59,6 +66,11 @@ pub unsafe fn convert_bcthw_f32(
 
     let rows: Vec<&mut [u8]> = y_plane.chunks_mut(w).collect();
     rows.into_par_iter_rows(w, h, |row, y_row| {
+        let (r, g, b) = (
+            r_addr as *const f32,
+            g_addr as *const f32,
+            b_addr as *const f32,
+        );
         let p = row * w;
         let mut col = 0usize;
         while col + 8 <= w {
@@ -99,6 +111,11 @@ pub unsafe fn convert_bcthw_f32(
         .zip(v.par_chunks_mut(cw))
         .enumerate()
         .for_each(|(cy, (u_row, v_row))| {
+            let (r, g, b) = (
+                r_addr as *const f32,
+                g_addr as *const f32,
+                b_addr as *const f32,
+            );
             for cx in 0..cw {
                 let mut cb = 0.0f32;
                 let mut cr = 0.0f32;
