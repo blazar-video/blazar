@@ -215,6 +215,48 @@ def test_non_float32_frame_is_rejected_with_the_fix(calibrations, tmp_path):
     encoder.close()
 
 
+def test_uint8_frames_are_accepted_and_match_f32(calibrations, tmp_path):
+    # The same solid colours must encode identically whether they arrive as
+    # uint8 or as the equivalent f32 values: solid frames make the conversion
+    # exact, so any difference would be a real bug rather than rounding.
+    colours = [(0, 0, 0), (255, 255, 255), (255, 0, 0), (17, 200, 90)]
+    width = height = 8
+
+    def encode(cast):
+        out = tmp_path / f"{cast.__name__}.mp4"
+        encoder = new_encoder(calibrations, out)
+        for colour in colours:
+            plane = np.empty((height, width, 3), dtype=cast)
+            plane[:, :] = colour
+            encoder.submit(
+                plane, width=width, height=height, fps=24.0,
+                layout="thwc", range="unit01",
+            )
+        encoder.close()
+        return out.read_bytes()
+
+    def as_uint8(colour):
+        return np.array(colour, dtype=np.uint8)
+
+    def as_float32(colour):
+        return np.array(colour, dtype=np.float32) / np.float32(255.0)
+
+    assert encode(as_uint8) == encode(as_float32)
+
+
+def test_uint8_frames_work_in_the_model_layout(calibrations, tmp_path):
+    out = tmp_path / "uint8-bcthw.mp4"
+    encoder = new_encoder(calibrations, out)
+    for value in (0, 64, 128, 255):
+        frame = np.full((1, 3, 1, 8, 8), value, dtype=np.uint8)
+        encoder.submit(
+            frame, width=8, height=8, fps=24.0, layout="bcthw", range="unit01"
+        )
+    encoder.close()
+    data = out.read_bytes()
+    assert data[4:8] == b"ftyp"
+
+
 def test_size_change_mid_stream_is_rejected(calibrations, tmp_path):
     encoder = new_encoder(calibrations, tmp_path / "resize.mp4")
     submit_default(encoder)
