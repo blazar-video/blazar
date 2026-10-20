@@ -70,6 +70,10 @@ impl SvtAv1Encoder {
         // encoder into a hang on the first frame.
         let _ = cfg.bframes;
         sys::set_random_access(&mut config);
+        // SVT-AV1 2.x rejects an intra period that is not aligned with the
+        // mini-GOP implied by hierarchical_levels. A flat hierarchy keeps the
+        // caller's keyint exact across versions.
+        config.hierarchical_levels = 0;
         config.enc_mode = preset_from(&cfg.codec_params).unwrap_or(8);
         match &cfg.rate_control {
             RateControl::Crf(crf) => sys::set_rate_control_cqp(&mut config, *crf),
