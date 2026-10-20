@@ -12,7 +12,7 @@ pub mod config;
 pub mod nal;
 pub mod nvenc;
 
-use blazar_core::{EncodedUnit, FrameRef, Timebase, TrackId};
+use blazar_core::{FrameDesc, EncodedUnit, FrameRef, Timebase, TrackId};
 use blazar_preprocess::{PreprocessStage, PreprocessedFrame};
 use thiserror::Error;
 

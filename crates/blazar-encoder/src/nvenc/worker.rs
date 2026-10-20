@@ -878,7 +878,8 @@ fn fail_pending(rx: &mpsc::Receiver<Command>, error: EncodeError) {
         match command {
             Command::Encode { reply, .. }
             | Command::EncodeFrame { reply, .. }
-            | Command::EncodeBatch { reply, .. } => {
+            | Command::EncodeBatch { reply, .. }
+            | Command::EncodeDevice { reply, .. } => {
                 let _ = reply.send(Err(EncodeError::Backend(error.to_string())));
             }
             Command::Flush { reply } | Command::Finish { reply } => {
