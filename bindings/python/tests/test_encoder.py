@@ -222,12 +222,12 @@ def test_uint8_frames_are_accepted_and_match_f32(calibrations, tmp_path):
     colours = [(0, 0, 0), (255, 255, 255), (255, 0, 0), (17, 200, 90)]
     width = height = 8
 
-    def encode(cast):
-        out = tmp_path / f"{cast.__name__}.mp4"
+    def encode(name, dtype, to_value):
+        out = tmp_path / f"{name}.mp4"
         encoder = new_encoder(calibrations, out)
         for colour in colours:
-            plane = np.empty((height, width, 3), dtype=cast)
-            plane[:, :] = colour
+            plane = np.empty((height, width, 3), dtype=dtype)
+            plane[:, :] = to_value(colour)
             encoder.submit(
                 plane, width=width, height=height, fps=24.0,
                 layout="thwc", range="unit01",
@@ -235,13 +235,11 @@ def test_uint8_frames_are_accepted_and_match_f32(calibrations, tmp_path):
         encoder.close()
         return out.read_bytes()
 
-    def as_uint8(colour):
-        return np.array(colour, dtype=np.uint8)
-
-    def as_float32(colour):
-        return np.array(colour, dtype=np.float32) / np.float32(255.0)
-
-    assert encode(as_uint8) == encode(as_float32)
+    uint8_bytes = encode("u8", np.uint8, lambda c: np.array(c, dtype=np.uint8))
+    f32_bytes = encode(
+        "f32", np.float32, lambda c: np.array(c, dtype=np.float32) / np.float32(255.0)
+    )
+    assert uint8_bytes == f32_bytes
 
 
 def test_uint8_frames_work_in_the_model_layout(calibrations, tmp_path):
