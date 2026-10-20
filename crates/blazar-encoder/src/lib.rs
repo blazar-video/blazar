@@ -11,6 +11,8 @@ pub mod av1;
 #[cfg(feature = "nvenc")]
 pub mod gpu_preprocess;
 pub mod config;
+#[cfg(feature = "enc-x264")]
+pub mod x264;
 pub mod nal;
 pub mod nvenc;
 

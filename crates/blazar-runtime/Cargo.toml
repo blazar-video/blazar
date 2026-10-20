@@ -19,3 +19,5 @@ default = []
 # Forward the hardware encoder. Enables `blazar-encoder/nvenc` and the backend
 # selection path that uses it.
 nvenc = ["blazar-encoder/nvenc"]
+# Software H.264. GPL: enabling this opts the binary into x264's licence.
+enc-x264 = ["blazar-encoder/enc-x264"]

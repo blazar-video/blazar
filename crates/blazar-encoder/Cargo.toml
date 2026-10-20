@@ -14,12 +14,22 @@ tracing.workspace = true
 nvidia-video-codec-sdk = { workspace = true, optional = true }
 cudarc = { workspace = true, optional = true }
 
+[dependencies.x264]
+version = "0.5"
+optional = true
+
+[dependencies.x264-sys]
+version = "0.2"
+optional = true
+
 [features]
 default = []
 # Real SVT-AV1 backend via FFI. Off by default so the workspace builds and
 # tests run without libsvtav1 installed; the mock backend covers the pipeline
 # contract until the bindings land.
 svtav1 = []
+# Software H.264 (x264). GPL: enabling this makes the resulting binary GPL.
+enc-x264 = ["dep:x264", "dep:x264-sys"]
 # Hardware AV1 via NVENC. Needs an NVIDIA GPU + CUDA toolkit at build time; the
 # default build stays platform-neutral. Pinned to CUDA 13.1 through cudarc's
 # cuda-13010 feature.
