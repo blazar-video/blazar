@@ -449,7 +449,6 @@ impl<S: Sink> Stream<S> {
         }
         if let Some(enc) = self.encoder.as_mut() {
             let units = enc.finish()?;
-            eprintln!("DEBUG close: {} units, sink_open={}", units.len(), self.sink_open);
             if !units.is_empty() {
                 self.open_sink_if_needed()?;
             }
