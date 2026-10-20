@@ -125,6 +125,30 @@ impl X264Encoder {
                 "x264_picture_alloc failed ({rc})"
             )));
         }
+        // With B-frames the first encode call returns no packets, so the codec
+        // configuration is fetched eagerly instead of waiting for frame 1.
+        let mut codec_config = None;
+        let mut nals: *mut x264_nal_t = ptr::null_mut();
+        let mut nal_count: c_int = 0;
+        // SAFETY: the context is open and the out-parameters are valid.
+        let rc = unsafe { x264_encoder_headers(enc, &mut nals, &mut nal_count) };
+        if rc >= 0 && !nals.is_null() && nal_count > 0 {
+            let mut au = Vec::new();
+            for index in 0..nal_count as usize {
+                // SAFETY: `nals` points at nal_count entries.
+                let nal = unsafe { &*nals.add(index) };
+                if nal.p_payload.is_null() || nal.i_payload <= 0 {
+                    continue;
+                }
+                // SAFETY: the payload has i_payload bytes.
+                au.extend_from_slice(unsafe {
+                    std::slice::from_raw_parts(nal.p_payload, nal.i_payload as usize)
+                });
+            }
+            if let Ok(parsed) = parse_access_unit(&au, AnnexB::H264) {
+                codec_config = parsed.config;
+            }
+        }
         let _ = fps;
 
         Ok(Self {
@@ -133,7 +157,7 @@ impl X264Encoder {
             width,
             height,
             frame_duration,
-            codec_config: None,
+            codec_config,
             force_keyframe: false,
             finished: false,
             emitted: 0,
