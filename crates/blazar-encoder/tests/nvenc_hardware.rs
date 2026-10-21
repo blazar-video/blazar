@@ -187,7 +187,10 @@ fn h264_and_hevc_emit_config_and_true_reordering() {
         match codec {
             VideoCodec::H264 => assert_eq!(config[0], 1, "avcC configurationVersion"),
             VideoCodec::Hevc => assert_eq!(config[0], 1, "hvcC configurationVersion"),
-            VideoCodec::Av1 => unreachable!(),
+            // Av1 and Vp9 are covered by their own backends; this test drives
+            // the H.264/HEVC paths and must stay compilable without the CPU
+            // codec features enabled.
+            _ => unreachable!(),
         }
 
         let dts: Vec<u64> = units.iter().map(|u| u.dts.ticks()).collect();
