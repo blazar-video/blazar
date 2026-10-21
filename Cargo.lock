@@ -475,7 +475,7 @@ dependencies = [
 [[package]]
 name = "nvidia-video-codec-sdk"
 version = "0.4.0"
-source = "git+https://github.com/jgh-/nvidia-video-codec-sdk?rev=3d5f720a205840de5990d27fca28a5bbc74053ed#3d5f720a205840de5990d27fca28a5bbc74053ed"
+source = "git+https://github.com/jgh-/nvidia-video-codec-sdk?rev=4898fde4bf798274319355612227c9d50a7808b4#4898fde4bf798274319355612227c9d50a7808b4"
 dependencies = [
  "cudarc",
  "lazy_static",

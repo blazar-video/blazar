@@ -60,10 +60,10 @@ with blazar.Encoder(calibrations=cals, identity={...}, target="balanced",
                   layout="thwc", range="unit01")
 ```
 
-Frames are C-contiguous float32 RGB; `layout` (`thwc` for xDiT, `bcthw` for
-vLLM-Omni), `range` (`unit01`, `signed_unit`) and the geometry are explicit per
-submit. Pull requests to "just figure it out" will be declined; the seams do not
-tag any of it.
+Frames are C-contiguous float32 RGB; `layout` (`thwc` for a whole-clip seam,
+`bcthw` for vLLM-Omni), `range` (`unit01`, `signed_unit`) and the geometry are
+explicit per submit. Pull requests to "just figure it out" will be declined; the
+seams do not tag any of it.
 
 The Rust worker logs session start (backend, codec, target, calibration count),
 periodic progress and a final summary (frames, payload bytes, max encode time) to
@@ -76,11 +76,19 @@ this" is evidence rather than a claim.
 Build and test instructions: `bindings/python/README.md`. Examples:
 
 ```sh
-python examples/python/xdit_encode.py --fake        # batch clip, xDiT seam shapes
+python examples/python/sglang_encode.py --fake      # swizzle seam, stand-in stage
 python examples/python/vllm_omni_stream.py --fake   # chunked decode, timing output
 ```
 
 Both run without the models (`--fake`) and take `--from-npy` for real frames.
+`sglang_encode.py` exercises the device-output swizzle: it installs
+`blazar.sglang_interop`'s hook on a stand-in stage with the same method shape as
+SGLang's `DiffusersExecutionStage._postprocess_output`, so the install +
+on-device postprocess + submit path runs without SGLang or a GPU (it falls back
+to the host submit off CUDA, labelled, so the result is a real decodable file).
+`--real` patches the actual SGLang class; the native Wan pipeline runs its
+scheduler in a spawned child, so use the `BLAZAR_SWIZZLE=1` sidecar in
+`bindings/python/sglang_patch` for that path instead.
 `vllm_omni_stream.py --real` drives vLLM-Omni's own `WanStreamingDecoder` with
 real Wan VAE weights on the GPU (needs `torch`, `diffusers`, and a vLLM-Omni
 checkout; latents are noise, since the AR transformer is not part of that path).
