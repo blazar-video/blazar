@@ -33,7 +33,7 @@ oxideav-core = "=0.1.40"
 oxideav-mp4 = { git = "https://github.com/jgh-/oxideav-mp4", rev = "9b6f7bb6a0dee7de72b8e593cb1feba5f14034e6" }
 # NVENC (Phase 2). Fork pinned by rev: adds EncodePictureParams::encode_pic_flags
 # (forced IDR) and Buffer::pitch() to the upstream 0.4.0 wrapper.
-nvidia-video-codec-sdk = { git = "https://github.com/jgh-/nvidia-video-codec-sdk", rev = "3d5f720a205840de5990d27fca28a5bbc74053ed" }
+nvidia-video-codec-sdk = { git = "https://github.com/jgh-/nvidia-video-codec-sdk", rev = "da704d4c2af2afe0aaa5e9e0bcf23a617b8cfa95" }
 # The SDK's published 0.4.0 pins cudarc 0.16.6, which rejects CUDA 13. The git
 # revision depends on cudarc 0.19; pin it with the explicit toolkit feature.
 cudarc = { version = "=0.19.10", default-features = false, features = ["cuda-13010", "driver", "dynamic-loading", "nvrtc"] }
