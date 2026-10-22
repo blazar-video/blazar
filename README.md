@@ -64,8 +64,13 @@ with blazar.Encoder(calibrations=cals, identity={"family": "wan", "version": "2.
 ## Measured performance
 
 1080p, 240 real frames, RTX 4080 SUPER. The encoder is constructed and the frames
-are resident before the clock starts, so these are the cost of moving and encoding
-the frames alone.
+are resident before the clock starts, so these are the cost of the colour
+conversion and the encode alone.
+
+Frames are produced on the GPU and that is where they should be encoded. The host
+row exists because some runtimes copy frames to the CPU before handing them over
+(SGLang's output postprocess does `.cpu().float()` today); it is not a starting
+point, it is a copy that has already happened.
 
 | Frames | Convert | Encode | dtype | ms/frame | kbps |
 |---|---|---|---|---|---|
@@ -81,8 +86,10 @@ Three things fall out of that table:
 - **bf16 is faster than f32** on both device paths (2.98 vs 3.09 with NVENC, 4.53 vs
   5.22 with x264). Half the bytes cross the preprocess kernel, and the model already
   emits bf16, so there is no reason to widen.
-- **GPU-side conversion beats a host round trip.** x264 with GPU preprocess is 4.53
-  ms/frame against 5.49 for the same codec reading u8 host frames.
+- **A host round trip costs 1.1 ms/frame for the CPU codec and 2.7 for NVENC.** The
+  same x264 encode is 4.53 ms/frame with frames still on the GPU and 5.66 once
+  someone has copied them to the CPU. That copy, not the codec, is the difference
+  worth removing: hook the runtime before its postprocess step.
 - **NVENC is 1.5x the CPU codec on the device path** (2.98 vs 4.53), at a lower
   bitrate for the same calibration target.
 
