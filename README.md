@@ -78,8 +78,8 @@ point, it is a copy that has already happened.
 | on GPU | on GPU | NVENC H.264 | **bf16** | **2.98** | 197 |
 | on GPU | on GPU | x264 | f32 | 5.22 | 304 |
 | on GPU | on GPU | x264 | **bf16** | **4.53** | 304 |
-| on host | on CPU | x264 | u8 | 5.49 | 302 |
-| on host | on CPU | x264 | f32 | 6.82 | 302 |
+| copied to host by the caller | on CPU | x264 | u8 | 5.66 | 302 |
+| copied to host by the caller | on CPU | x264 | f32 | 8.45 | 302 |
 
 Three things fall out of that table:
 
