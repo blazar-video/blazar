@@ -3,7 +3,7 @@
 //! Kept free of SDK types on purpose: this is where the policy lives (what a
 //! calibration's `rate_control`, `keyint`, `bframes`, `pix_fmt` mean to NVENC),
 //! and it is unit-tested on machines without a GPU. The driver-facing code in
-//! [`worker`](super::worker) only applies these values.
+//! `worker` only applies these values.
 //!
 //! Cross-backend equivalence is *not* assumed. A calibration is keyed by
 //! backend (`svtav1`, `nvenc_av1`, ...), so `crf = 32` means "whatever 32 means
