@@ -113,10 +113,10 @@ fn combine(cb0: &[f32], cr0: &[f32], cb1: &[f32], cr1: &[f32], cw: usize, u: &mu
             _mm_mul_ps(_mm_add_ps(top, bottom), quarter)
         };
         while cx + 4 <= cw && 2 * cx + 8 <= cb0.len() {
-            let uq = round_u8(quad(cb0, cb1, cx));
-            let vq = round_u8(quad(cr0, cr1, cx));
-            _mm_storeu_si32(u.as_mut_ptr().add(cx).cast(), uq);
-            _mm_storeu_si32(v.as_mut_ptr().add(cx).cast(), vq);
+            // round_u8 yields four i32 lanes: narrow before storing or the
+            // 32-bit store would write one value as four bytes.
+            store4(u.as_mut_ptr().add(cx), round_u8(quad(cb0, cb1, cx)));
+            store4(v.as_mut_ptr().add(cx), round_u8(quad(cr0, cr1, cx)));
             cx += 4;
         }
     }
@@ -128,6 +128,17 @@ fn combine(cb0: &[f32], cr0: &[f32], cb1: &[f32], cr1: &[f32], cw: usize, u: &mu
         v[cx] = q8((s(cr0) + s(cr1)) * inv);
         cx += 1;
     }
+}
+
+/// Narrow four i32 lanes to four bytes and store them.
+///
+/// # Safety
+/// `out` must have four writable bytes.
+#[inline]
+unsafe fn store4(out: *mut u8, v: __m128i) {
+    let packed = _mm_packus_epi32(v, v);
+    let packed = _mm_packus_epi16(packed, packed);
+    _mm_storeu_si32(out.cast(), packed);
 }
 
 #[inline]
