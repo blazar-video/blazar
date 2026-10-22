@@ -14,6 +14,8 @@
 pub mod fmp4;
 
 use blazar_core::{EncodedUnit, StreamParams, TrackId};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -155,5 +157,152 @@ mod tests {
         g.check(&vunit(7500)).unwrap();
         let a = EncodedUnit::audio(vec![0], Pts(1000), 480);
         assert!(g.check(&a).is_ok());
+    }
+}
+
+/// Encoded unit kept in memory instead of being muxed to a file.
+#[derive(Debug, Clone)]
+pub struct StoredUnit {
+    pub track: TrackId,
+    pub pts: u64,
+    pub dts: u64,
+    pub keyframe: bool,
+    pub bytes: Vec<u8>,
+}
+
+/// Shared handle to the units a [`MemorySink`] has written.
+#[derive(Debug, Clone, Default)]
+pub struct MemoryHandle(Arc<Mutex<VecDeque<StoredUnit>>>);
+
+impl MemoryHandle {
+    /// Take every unit written so far, oldest first.
+    pub fn drain(&self) -> Vec<StoredUnit> {
+        match self.0.lock() {
+            Ok(mut q) => q.drain(..).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Number of units waiting to be drained.
+    pub fn len(&self) -> usize {
+        self.0.lock().map(|q| q.len()).unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// A [`Sink`] that keeps encoded units in memory for the caller to collect.
+///
+/// The buffer is bounded: when it is full `write` fails rather than dropping a
+/// frame, so a caller that stops draining gets an error instead of silence.
+pub struct MemorySink {
+    handle: MemoryHandle,
+    capacity: usize,
+    params: Option<StreamParams>,
+}
+
+impl MemorySink {
+    /// Returns the sink and a handle for draining it.
+    pub fn new(capacity: usize) -> (Self, MemoryHandle) {
+        let handle = MemoryHandle::default();
+        (
+            Self {
+                handle: handle.clone(),
+                capacity: capacity.max(1),
+                params: None,
+            },
+            handle,
+        )
+    }
+}
+
+impl Sink for MemorySink {
+    fn open(&mut self, params: StreamParams) -> Result<(), SinkError> {
+        self.params = Some(params);
+        Ok(())
+    }
+
+    fn write(&mut self, unit: &EncodedUnit) -> Result<(), SinkError> {
+        let mut queue = self
+            .handle
+            .0
+            .lock()
+            .map_err(|_| SinkError::InvalidConfiguration("memory sink poisoned".into()))?;
+        if queue.len() >= self.capacity {
+            return Err(SinkError::InvalidConfiguration(format!(
+                "memory sink buffer full ({capacity} units): drain it or raise the capacity",
+                capacity = self.capacity
+            )));
+        }
+        queue.push_back(StoredUnit {
+            track: unit.track_id,
+            pts: unit.pts.0,
+            dts: unit.dts.0,
+            keyframe: unit.keyframe,
+            bytes: unit.bytes.clone(),
+        });
+        Ok(())
+    }
+
+    fn close(&mut self) -> Result<(), SinkError> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod memory_sink_tests {
+    use super::*;
+    use blazar_core::{Pts, Timebase};
+
+    fn unit(bytes: &[u8], pts: u64) -> EncodedUnit {
+        EncodedUnit {
+            track_id: TrackId::Video,
+            bytes: bytes.to_vec(),
+            pts: Pts(pts),
+            dts: Pts(pts),
+            keyframe: true,
+            duration: 3_000,
+        }
+    }
+
+    fn params() -> StreamParams {
+        StreamParams {
+            timebase: Timebase::MPEG_90K,
+            video: blazar_core::VideoTrackParams {
+                codec: blazar_core::VideoCodec::H264,
+                width: 64,
+                height: 64,
+                fps: 24.0,
+                extradata: Vec::new(),
+            },
+            audio: None,
+            container: blazar_core::Container::FragmentedMp4,
+        }
+    }
+
+    #[test]
+    fn keeps_units_in_order_and_drains_them() {
+        let (mut sink, handle) = MemorySink::new(4);
+        sink.open(params()).unwrap();
+        sink.write(&unit(b"one", 1)).unwrap();
+        sink.write(&unit(b"two", 2)).unwrap();
+        assert_eq!(handle.len(), 2);
+
+        let drained = handle.drain();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].bytes, b"one");
+        assert_eq!(drained[1].pts, 2);
+        assert!(handle.is_empty());
+    }
+
+    #[test]
+    fn a_full_buffer_is_an_error_not_a_dropped_frame() {
+        let (mut sink, _handle) = MemorySink::new(1);
+        sink.open(params()).unwrap();
+        sink.write(&unit(b"one", 1)).unwrap();
+        let err = sink.write(&unit(b"two", 2)).unwrap_err();
+        assert!(format!("{err}").contains("buffer full"));
     }
 }

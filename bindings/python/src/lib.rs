@@ -45,6 +45,49 @@ use pyo3::types::PyDict;
 
 type FileSink = Fmp4FileSink<BufWriter<File>>;
 
+/// Where encoded units go: a fragmented MP4 file, or back to the caller.
+enum SinkTarget {
+    File(Box<ReportingSink>),
+    Memory(Box<blazar_sink::MemorySink>),
+}
+
+impl Sink for SinkTarget {
+    fn open(&mut self, params: StreamParams) -> Result<(), SinkError> {
+        match self {
+            SinkTarget::File(sink) => sink.open(params),
+            SinkTarget::Memory(sink) => sink.open(params),
+        }
+    }
+
+    fn write(&mut self, unit: &EncodedUnit) -> Result<(), SinkError> {
+        match self {
+            SinkTarget::File(sink) => sink.write(unit),
+            SinkTarget::Memory(sink) => sink.write(unit),
+        }
+    }
+
+    fn flush(&mut self) -> Result<(), SinkError> {
+        match self {
+            SinkTarget::File(sink) => sink.flush(),
+            SinkTarget::Memory(sink) => sink.flush(),
+        }
+    }
+
+    fn close(&mut self) -> Result<(), SinkError> {
+        match self {
+            SinkTarget::File(sink) => sink.close(),
+            SinkTarget::Memory(sink) => sink.close(),
+        }
+    }
+
+    fn poll_feedback(&mut self) -> Option<blazar_sink::Feedback> {
+        match self {
+            SinkTarget::File(sink) => sink.poll_feedback(),
+            SinkTarget::Memory(_) => None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Worker plumbing: plain Rust types only, no Python objects.
 // ---------------------------------------------------------------------------
@@ -128,6 +171,9 @@ enum WorkerEvent {
         bytes: usize,
         encode_us: u64,
         queue_depth: usize,
+        /// Encoded elementary-stream bytes, set when the stream writes to memory
+        /// rather than to a file.
+        data: Option<Vec<u8>>,
     },
     Failed {
         seq: Option<u64>,
@@ -163,11 +209,40 @@ struct Shared {
     queued: AtomicUsize,
 }
 
+/// Hand each unit the memory sink has buffered to the caller.
+///
+/// Encoders with B-frames or a lookahead window emit nothing at submit time, so
+/// this runs after every submit and again after flush/close, where the last units
+/// appear. Draining is what removes them from the buffer, so nothing is delivered
+/// twice.
+fn drain_memory_units(shared: &Arc<Shared>, memory: &Option<blazar_sink::MemoryHandle>) {
+    let Some(handle) = memory else {
+        return;
+    };
+    for unit in handle.drain() {
+        let bytes = unit.bytes.len();
+        if let Ok(mut stats) = shared.stats.lock() {
+            stats.bytes += bytes as u64;
+        }
+        let _ = shared.events.send(WorkerEvent::Encoded {
+            seq: unit.pts,
+            pts: unit.pts,
+            keyframe: unit.keyframe,
+            units: 1,
+            bytes,
+            encode_us: 0,
+            queue_depth: shared.queued.load(Ordering::Relaxed),
+            data: Some(unit.bytes),
+        });
+    }
+}
+
 fn worker_main(
-    mut stream: Stream<ReportingSink>,
+    mut stream: Stream<SinkTarget>,
     jobs: Receiver<Job>,
     shared: Arc<Shared>,
     written: Arc<Mutex<Vec<WrittenUnit>>>,
+    memory: Option<blazar_sink::MemoryHandle>,
     info: SessionInfo,
 ) {
     tracing::info!(
@@ -237,7 +312,9 @@ fn worker_main(
                             bytes,
                             encode_us,
                             queue_depth: shared.queued.load(Ordering::Relaxed),
+                            data: None,
                         });
+                        drain_memory_units(&shared, &memory);
                     }
                     Err(err) => {
                         let message = err.to_string();
@@ -314,7 +391,9 @@ fn worker_main(
                             bytes,
                             encode_us,
                             queue_depth: shared.queued.load(Ordering::Relaxed),
+                            data: None,
                         });
+                        drain_memory_units(&shared, &memory);
                     }
                     Err(err) => {
                         let message = err.to_string();
@@ -388,7 +467,9 @@ fn worker_main(
                             bytes,
                             encode_us,
                             queue_depth: shared.queued.load(Ordering::Relaxed),
+                            data: None,
                         });
+                        drain_memory_units(&shared, &memory);
                     }
                     Err(err) => {
                         let message = err.to_string();
@@ -407,13 +488,16 @@ fn worker_main(
                 }
             }
             Job::Flush(ack) => {
-                let _ = ack.send(stream.flush().map_err(|err| err.to_string()));
+                let result = stream.flush().map_err(|err| err.to_string());
+                drain_memory_units(&shared, &memory);
+                let _ = ack.send(result);
             }
             Job::Close(ack) => {
                 let result = stream.close().map_err(|err| err.to_string());
                 // Closing drains the reorder window, so the last units may be
                 // written here rather than during a submit. They still count.
                 record_extra_bytes(&shared, &written);
+                drain_memory_units(&shared, &memory);
                 let _ = ack.send(result);
                 finished = true;
                 break;
@@ -573,6 +657,7 @@ impl PyEncoder {
         request_id = "stream",
         video_extradata = None,
         queue_depth = 4,
+        max_buffered_units = 240,
     ))]
     fn new(
         py: Python<'_>,
@@ -580,11 +665,12 @@ impl PyEncoder {
         identity: &Bound<'_, PyDict>,
         target: &str,
         backend: &str,
-        output: &str,
+        output: Option<&str>,
         codec: &str,
         request_id: &str,
         video_extradata: Option<Vec<u8>>,
         queue_depth: usize,
+        max_buffered_units: usize,
     ) -> PyResult<Self> {
         if queue_depth == 0 {
             return Err(PyValueError::new_err("queue_depth must be >= 1"));
@@ -622,13 +708,25 @@ impl PyEncoder {
             _ => None,
         };
 
-        let file = File::create(output).map_err(|err| {
-            PyValueError::new_err(format!("cannot create output {output}: {err}"))
-        })?;
         let written = Arc::new(Mutex::new(Vec::new()));
-        let sink = ReportingSink {
-            inner: Fmp4FileSink::new(BufWriter::new(file)),
-            written: Arc::clone(&written),
+        let (sink, memory) = match output {
+            Some(path) => {
+                let file = File::create(path).map_err(|err| {
+                    PyValueError::new_err(format!("cannot create output {path}: {err}"))
+                })?;
+                (
+                    SinkTarget::File(Box::new(ReportingSink {
+                        inner: Fmp4FileSink::new(BufWriter::new(file)),
+                        written: Arc::clone(&written),
+                    })),
+                    None,
+                )
+            }
+            // No file: the encoded units are handed back through poll().
+            None => {
+                let (sink, handle) = blazar_sink::MemorySink::new(max_buffered_units);
+                (SinkTarget::Memory(Box::new(sink)), Some(handle))
+            }
         };
 
         let runtime = RuntimeEncoder::new(
@@ -658,7 +756,7 @@ impl PyEncoder {
         let worker_shared = Arc::clone(&shared);
         let worker = thread::Builder::new()
             .name("blazar-encode".into())
-            .spawn(move || worker_main(stream, job_rx, worker_shared, written, info))
+            .spawn(move || worker_main(stream, job_rx, worker_shared, written, memory, info))
             .map_err(|err| {
                 PyRuntimeError::new_err(format!("cannot start encoder thread: {err}"))
             })?;
@@ -1259,6 +1357,7 @@ fn event_to_dict(py: Python<'_>, event: WorkerEvent) -> PyResult<Py<PyDict>> {
             bytes,
             encode_us,
             queue_depth,
+            data,
         } => {
             dict.set_item("kind", "encoded")?;
             dict.set_item("seq", seq)?;
@@ -1268,6 +1367,7 @@ fn event_to_dict(py: Python<'_>, event: WorkerEvent) -> PyResult<Py<PyDict>> {
             dict.set_item("bytes", bytes)?;
             dict.set_item("encode_us", encode_us)?;
             dict.set_item("queue_depth", queue_depth)?;
+            dict.set_item("data", data)?;
         }
         WorkerEvent::Failed { seq, message } => {
             dict.set_item("kind", "failed")?;

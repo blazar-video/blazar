@@ -12,7 +12,7 @@ Backend = Literal[
 ]
 Codec = Literal["h264", "hevc", "av1", "vp9"]
 Layout = Literal["thwc", "bcthw"]
-Range = Literal["unit01", "255"]
+Range = Literal["unit01", "signed_unit", "full_u8"]
 
 class Calibrations:
     """A directory of calibration files, loaded once and shared by streams."""

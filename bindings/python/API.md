@@ -45,7 +45,7 @@ with blazar.Encoder(calibrations=cals, identity={...}, target="balanced",
 
 | Method | Returns | Meaning |
 |---|---|---|
-| `submit(frame, width, height, fps, layout, range, pts_ticks=None, scene_cut=False)` | `int` | Queue one host frame. `layout` is `"thwc"` (`H, W, 3`) or `"bcthw"` (`3, H, W`), optionally with a leading batch axis. `range` is `"unit01"` or `"255"`. Returns the assigned PTS. |
+| `submit(frame, width, height, fps, layout, range, pts_ticks=None, scene_cut=False)` | `int` | Queue one host frame. `layout` is `"thwc"` (`H, W, 3`) or `"bcthw"` (`3, H, W`), optionally with a leading batch axis. `range` is `"unit01"`, `"signed_unit"` or `"full_u8"`. Returns the assigned PTS. |
 | `submit_batch(frames, width, height, fps, layout, range, pts_ticks=None, scene_cut=False)` | `int` | Queue many host frames in one call. |
 | `submit_device_batch(tensor, fps, range, pts_ticks=None, scene_cut=False)` | `int` | Queue a CUDA tensor shaped `(1, 3, T, H, W)`, `torch.float32` or `torch.bfloat16`, contiguous. This is the fast path: no host copy and, for CPU codecs, colour conversion on the GPU. |
 | `poll(timeout=None)` | `list[dict]` | Encoded units produced so far, each with `track`, `pts`, `dts`, `keyframe`, `data`, `path`. |
@@ -79,7 +79,8 @@ session the message says so and names `BLAZAR_MAX_NVENC_SESSIONS`.
 | `bcthw` | `(3, H, W)` planar | What a VAE emits for a single frame. |
 | device tensor | `(1, 3, T, H, W)` | `bfloat16` is fastest; `float32` also accepted. |
 
-`range="unit01"` means values in `[0, 1]`; `range="255"` means `0..255`. Passing
+`range="unit01"` means values in `[0, 1]`, `"signed_unit"` means `[-1, 1]`, and
+`"full_u8"` means `0..255`. Passing
 the wrong range is a silent colour error, not an exception.
 
 ## Interop
