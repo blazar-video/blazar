@@ -9,4 +9,11 @@
 #![allow(dead_code)]
 #![allow(clippy::all)]
 
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+// bindgen reproduces the upstream header's doc comments, which contain
+// bracket notation that rustdoc reads as intra-doc links.
+#[allow(rustdoc::broken_intra_doc_links, rustdoc::invalid_html_tags)]
+mod generated {
+    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+}
+pub use generated::*;
+

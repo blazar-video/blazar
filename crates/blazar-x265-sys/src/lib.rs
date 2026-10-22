@@ -9,7 +9,14 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+// bindgen reproduces the upstream header's doc comments, which contain
+// bracket notation that rustdoc reads as intra-doc links.
+#[allow(rustdoc::broken_intra_doc_links, rustdoc::invalid_html_tags)]
+mod generated {
+    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+}
+pub use generated::*;
+
 // `x265_encoder_open` is a macro to a build-specific symbol in the header; the
 // build script resolves the generated name so callers can use the plain one.
 include!(concat!(env!("OUT_DIR"), "/encoder_open.rs"));
