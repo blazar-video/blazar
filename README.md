@@ -63,37 +63,44 @@ with blazar.Encoder(calibrations=cals, identity={"family": "wan", "version": "2.
 
 ## Measured performance
 
-1080p, 240 frames, RTX 4080 SUPER, unless noted. Wall time per frame includes
-preprocess and encode; bitrate and PSNR are for the same source.
+1080p, 240 real frames, RTX 4080 SUPER. The encoder is constructed and the frames
+are resident before the clock starts, so these are the cost of moving and encoding
+the frames alone.
 
-| Configuration | ms/frame | kbps | PSNR (dB) |
-|---|---|---|---|
-| ffmpeg libx264, CRF 30, medium (fair comparison: inputs materialised first) | 4.84 | 295 | 43.29 |
-| blazar x264, `u8` host frames | 4.89 | 302 | 42.51 |
-| blazar x264, `f32` host frames | 6.78 | 302 | 42.51 |
-| blazar x264, bf16 device tensor | 4.51 | 304 | 42.61 |
-| blazar NVENC H.264, device tensor | **2.18** | 197 | 39.76 |
+| Frames | Convert | Encode | dtype | ms/frame | kbps |
+|---|---|---|---|---|---|
+| on GPU | on GPU | NVENC H.264 | f32 | 3.09 | 197 |
+| on GPU | on GPU | NVENC H.264 | **bf16** | **2.98** | 197 |
+| on GPU | on GPU | x264 | f32 | 5.22 | 304 |
+| on GPU | on GPU | x264 | **bf16** | **4.53** | 304 |
+| on host | on CPU | x264 | u8 | 5.49 | 302 |
+| on host | on CPU | x264 | f32 | 6.82 | 302 |
 
-CPU encode against `ffmpeg` at equal settings is a wash; the win is the device
-path, and NVENC keeps it.
+Three things fall out of that table:
 
-**Device tensors beat host frames** (1080p, 120 frames):
+- **bf16 is faster than f32** on both device paths (2.98 vs 3.09 with NVENC, 4.53 vs
+  5.22 with x264). Half the bytes cross the preprocess kernel, and the model already
+  emits bf16, so there is no reason to widen.
+- **GPU-side conversion beats a host round trip.** x264 with GPU preprocess is 4.53
+  ms/frame against 5.49 for the same codec reading u8 host frames.
+- **NVENC is 1.5x the CPU codec on the device path** (2.98 vs 4.53), at a lower
+  bitrate for the same calibration target.
 
-| Backend | device | host | speedup |
-|---|---|---|---|
-| NVENC H.264 | 4.09 ms/frame | 20.27 ms/frame | 4.96× |
-| x264 | 5.51 ms/frame | 15.26 ms/frame | 2.77× |
+Against `ffmpeg` at identical x264 settings (CRF 30, medium, inputs materialised
+before the clock in both cases): ffmpeg 4.84 ms/frame at 295 kbps, 43.29 dB;
+blazar 4.89 ms/frame at 302 kbps, 42.51 dB. Parity. The gain is in the device
+paths, not in beating ffmpeg at its own job.
 
-**Batch kernel** (NVIDIA Nsight Compute A/B): 2.28–2.72× over per-frame launches.
+**Batch kernel** (Nsight Compute A/B): 2.28-2.72x over per-frame launches.
 
-**Concurrent NVENC streams** (16 frames per stream, 832×480): 1 stream 13.9
-ms/frame, 4 streams 4.59, 8 streams **3.51**. An RTX 4080 SUPER accepts 9
-sessions; the 10th fails, which is why the session limiter exists.
+**Concurrent NVENC streams** (16 frames per stream, 832x480): 1 stream 13.9
+ms/frame, 4 streams 4.59, 8 streams **3.51**. An RTX 4080 SUPER accepts 9 sessions
+and rejects the 10th, which is why the session limiter exists.
 
-**Ingest width matters more than arithmetic.** Converting `f32` host frames costs
-6.78 ms/frame; `u8` frames cost 4.90 for the same output. An AVX2 implementation
-of the conversion was written, measured slower (16.1 vs 11.2 ms/frame, because the routine reads
-every 25 MB plane twice), and removed.
+**Ingest width matters more than arithmetic.** An AVX2 version of the f32
+conversion was written, measured slower (16.1 vs 11.2 ms/frame, because the
+routine reads every 25 MB plane twice), and removed. Converting u8 host frames
+instead of f32 saved 1.3 ms/frame for identical output.
 
 ## Limits worth knowing
 
