@@ -103,7 +103,7 @@ fn combine(cb0: &[f32], cr0: &[f32], cb1: &[f32], cr1: &[f32], cw: usize, u: &mu
             _mm_add_ps(even, odd)
         };
         // Eight f32 from each of the two rows -> four 2x2 averages.
-        let quad = |r0: &[f32], r1: &[f32]| -> __m128 {
+        let quad = |r0: &[f32], r1: &[f32], cx: usize| -> __m128 {
             let lo0 = pair(_mm_loadu_ps(r0.as_ptr().add(2 * cx)));
             let hi0 = pair(_mm_loadu_ps(r0.as_ptr().add(2 * cx + 4)));
             let lo1 = pair(_mm_loadu_ps(r1.as_ptr().add(2 * cx)));
@@ -113,8 +113,8 @@ fn combine(cb0: &[f32], cr0: &[f32], cb1: &[f32], cr1: &[f32], cw: usize, u: &mu
             _mm_mul_ps(_mm_add_ps(top, bottom), quarter)
         };
         while cx + 4 <= cw && 2 * cx + 8 <= cb0.len() {
-            let uq = round_u8(quad(cb0, cb1));
-            let vq = round_u8(quad(cr0, cr1));
+            let uq = round_u8(quad(cb0, cb1, cx));
+            let vq = round_u8(quad(cr0, cr1, cx));
             _mm_storeu_si32(u.as_mut_ptr().add(cx).cast(), uq);
             _mm_storeu_si32(v.as_mut_ptr().add(cx).cast(), vq);
             cx += 4;
@@ -170,11 +170,8 @@ unsafe fn row(c: &Coeffs, src: *const u8, w: usize, y_out: *mut u8, cb_out: *mut
     while x + LANES <= w {
         // 16-byte load: four pixels (12 bytes) plus slack that the masks drop.
         let v = _mm_loadu_si128(src.add(x * 3).cast());
-        let (r, g, b) = (
-            _mm256_cvtepu8_epi32(_mm_shuffle_epi8(v, mask_r)),
-            _mm256_cvtepu8_epi32(_mm_shuffle_epi8(v, mask_g)),
-            _mm256_cvtepu8_epi32(_mm_shuffle_epi8(v, mask_b)),
-        );
+        let widen = |m: __m128i| _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_shuffle_epi8(v, m)));
+        let (r, g, b) = (widen(mask_r), widen(mask_g), widen(mask_b));
         let r = _mm256_min_ps(_mm256_max_ps(_mm256_fmadd_ps(r, scale, offset), lo), hi);
         let g = _mm256_min_ps(_mm256_max_ps(_mm256_fmadd_ps(g, scale, offset), lo), hi);
         let b = _mm256_min_ps(_mm256_max_ps(_mm256_fmadd_ps(b, scale, offset), lo), hi);
