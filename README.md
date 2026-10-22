@@ -167,3 +167,11 @@ protocol.
 
 **More backends.** AV1 B-frames on NVENC once the driver path is verified, plus a
 second hardware vendor when there is a machine to test on.
+
+## License
+
+Apache-2.0. See `LICENSE`.
+
+Note that the GPL codec backends are opt-in build features and are off by
+default: enabling `enc-x264` or `enc-x265` links GPL libraries into the binary
+and makes the resulting artifact GPL, not Apache-2.0.
