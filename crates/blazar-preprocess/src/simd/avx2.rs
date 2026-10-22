@@ -150,46 +150,41 @@ unsafe fn round_u8(v: __m128) -> __m128i {
 /// # Safety
 /// `src` must hold `w * 3` bytes; outputs must hold `w` elements each.
 unsafe fn row(c: &Coeffs, src: *const u8, w: usize, y_out: *mut u8, cb_out: *mut f32, cr_out: *mut f32) {
-    // Byte offsets of the first four pixels' R, G and B inside a 16-byte load.
+    // Byte offsets of the first four pixels' R, G and B inside one 16-byte load.
+    // A load spans five and a third pixels; the masks drop the surplus bytes.
     let mask_r = _mm_setr_epi8(0, 3, 6, 9, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128);
     let mask_g = _mm_setr_epi8(1, 4, 7, 10, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128);
     let mask_b = _mm_setr_epi8(2, 5, 8, 11, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128);
 
-    let scale = _mm256_set1_ps(c.scale);
-    let offset = _mm256_set1_ps(c.offset);
-    let lo = _mm256_setzero_ps();
-    let hi = _mm256_set1_ps(255.0);
-    let kr = _mm256_set1_ps(c.kr);
-    let kg = _mm256_set1_ps(c.kg);
-    let kb = _mm256_set1_ps(c.kb);
-    let cb_scale = _mm256_set1_ps(c.cb_scale);
-    let cr_scale = _mm256_set1_ps(c.cr_scale);
-    let half = _mm256_set1_ps(127.5);
+    let scale = _mm_set1_ps(c.scale);
+    let offset = _mm_set1_ps(c.offset);
+    let lo = _mm_setzero_ps();
+    let hi = _mm_set1_ps(255.0);
+    let kr = _mm_set1_ps(c.kr);
+    let kg = _mm_set1_ps(c.kg);
+    let kb = _mm_set1_ps(c.kb);
+    let cb_scale = _mm_set1_ps(c.cb_scale);
+    let cr_scale = _mm_set1_ps(c.cr_scale);
+    let half = _mm_set1_ps(127.5);
 
     let mut x = 0;
     while x + LANES <= w {
-        // 16-byte load: four pixels (12 bytes) plus slack that the masks drop.
         let v = _mm_loadu_si128(src.add(x * 3).cast());
-        let widen = |m: __m128i| _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_shuffle_epi8(v, m)));
+        let widen = |m: __m128i| {
+            let ints = _mm_cvtepu8_epi32(_mm_shuffle_epi8(v, m));
+            _mm_min_ps(_mm_max_ps(_mm_fmadd_ps(_mm_cvtepi32_ps(ints), scale, offset), lo), hi)
+        };
         let (r, g, b) = (widen(mask_r), widen(mask_g), widen(mask_b));
-        let r = _mm256_min_ps(_mm256_max_ps(_mm256_fmadd_ps(r, scale, offset), lo), hi);
-        let g = _mm256_min_ps(_mm256_max_ps(_mm256_fmadd_ps(g, scale, offset), lo), hi);
-        let b = _mm256_min_ps(_mm256_max_ps(_mm256_fmadd_ps(b, scale, offset), lo), hi);
-        let y = _mm256_fmadd_ps(kr, r, _mm256_fmadd_ps(kg, g, _mm256_mul_ps(kb, b)));
-        let cbv = _mm256_fmadd_ps(_mm256_sub_ps(b, y), cb_scale, half);
-        let crv = _mm256_fmadd_ps(_mm256_sub_ps(r, y), cr_scale, half);
-        let yq = round_u8_256(y);
-        // Four luma bytes, then the chroma scratch.
-        let packed = _mm_packus_epi32(
-            _mm256_castsi256_si128(yq),
-            _mm256_extracti128_si256::<1>(yq),
-        );
+        let y = _mm_fmadd_ps(kr, r, _mm_fmadd_ps(kg, g, _mm_mul_ps(kb, b)));
+        let cbv = _mm_fmadd_ps(_mm_sub_ps(b, y), cb_scale, half);
+        let crv = _mm_fmadd_ps(_mm_sub_ps(r, y), cr_scale, half);
+        let packed = _mm_packus_epi32(round_u8(y), round_u8(y));
         let packed = _mm_packus_epi16(packed, packed);
         let mut bytes4 = [0u8; 8];
         _mm_storel_epi64(bytes4.as_mut_ptr().cast(), packed);
         std::ptr::copy_nonoverlapping(bytes4.as_ptr(), y_out.add(x), LANES);
-        _mm256_storeu_ps(cb_out.add(x), cbv);
-        _mm256_storeu_ps(cr_out.add(x), crv);
+        _mm_storeu_ps(cb_out.add(x), cbv);
+        _mm_storeu_ps(cr_out.add(x), crv);
         x += LANES;
     }
     while x < w {
@@ -200,19 +195,4 @@ unsafe fn row(c: &Coeffs, src: *const u8, w: usize, y_out: *mut u8, cb_out: *mut
         *cr_out.add(x) = cr;
         x += 1;
     }
-}
-
-/// # Safety
-/// Requires AVX2.
-#[inline]
-unsafe fn round_u8_256(v: __m256) -> __m256i {
-    let zero = _mm256_setzero_ps();
-    let bias = _mm256_blendv_ps(
-        _mm256_set1_ps(0.5),
-        _mm256_set1_ps(-0.5),
-        _mm256_cmp_ps::<{ _CMP_LT_OQ }>(v, zero),
-    );
-    let biased = _mm256_add_ps(v, bias);
-    let clamped = _mm256_min_ps(_mm256_max_ps(biased, zero), _mm256_set1_ps(255.0));
-    _mm256_cvttps_epi32(clamped)
 }
