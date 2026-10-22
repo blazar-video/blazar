@@ -1,162 +1,121 @@
-//! AVX2 RGB -> YUV420 for the planar f32 path (a model's BCTHW frame).
+//! Fused single-pass RGB -> YUV420 kernels for 8-bit interleaved frames.
 //!
-//! Only the luma rows are vectorised here. The chroma 2x2 average stays scalar
-//! for now; it is the next step and the prototype showed luma alone is already
-//! 3x faster than the scalar single pass.
+//! One pass over the source row pair produces both the luma rows and the
+//! per-pixel chroma values; the 2x2 chroma average is then folded from a small
+//! cache-resident scratch row. Splitting luma and chroma into separate passes
+//! over the frame was measured slower (the second pass costs more than the
+//! vector maths saves), which is why everything happens here.
 //!
-//! Output must match the scalar implementation within 1 level. Rounding follows
-//! `f32::round` (half away from zero), not the ties-to-even default of
-//! `_mm256_round_ps`.
+//! The maths mirrors `CpuPreprocess` exactly — same coefficients, same order —
+//! so the vector result differs from the scalar one by at most one level, and
+//! only where a value lands within rounding distance of a boundary.
 
-#![cfg(target_arch = "x86_64")]
+#[cfg(target_arch = "aarch64")]
+mod neon;
+#[cfg(target_arch = "x86_64")]
+mod avx2;
 
-use std::arch::x86_64::*;
-
-use rayon::prelude::*;
-
-use blazar_core::FrameDesc;
-
-use crate::CpuPreprocess;
-
-/// Is AVX2 usable on this CPU?
-#[must_use]
-pub fn available() -> bool {
-    std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma")
-}
-
-/// Convert one planar f32 frame, producing packed y/u/v planes.
+/// Convert an interleaved `RGBRGB…` 8-bit frame, producing packed planes.
 ///
-/// # Safety
-/// The caller must check [`available`]. `bytes` must be a BCTHW f32 frame of
-/// `w*h*3` samples, unit range.
-pub unsafe fn convert_bcthw_f32(
+/// Returns `None` when this CPU cannot run the vector path, so the caller falls
+/// back to the scalar implementation.
+#[must_use]
+pub fn convert_thwc_u8(
     bytes: &[u8],
-    desc: &FrameDesc,
+    desc: &blazar_core::FrameDesc,
     w: usize,
     h: usize,
-) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-    let pixels = w * h;
-    let matrix = crate::Matrix::new(desc.colorspace);
-    let cw = w.div_ceil(2);
-    let ch = h.div_ceil(2);
-    let mut y_plane = vec![0u8; pixels];
-    let mut u = vec![0u8; cw * ch];
-    let mut v = vec![0u8; cw * ch];
-
-    let base = bytes.as_ptr();
-    // Raw pointers are not Sync; carry the addresses and rebuild them inside
-    // the parallel closures.
-    let r_addr = base as usize;
-    let g_addr = base as usize + pixels * 4;
-    let b_addr = base as usize + 2 * pixels * 4;
-    let (r, g, b) = (
-        r_addr as *const f32,
-        g_addr as *const f32,
-        b_addr as *const f32,
-    );
-
-    let kr = _mm256_set1_ps(matrix.kr);
-    let kg = _mm256_set1_ps(matrix.kg);
-    let kb = _mm256_set1_ps(matrix.kb);
-    let half = _mm256_set1_ps(0.5);
-    let sign = _mm256_set1_ps(-0.0);
-    let scale = _mm256_set1_ps(255.0);
-    let zero = _mm256_setzero_ps();
-    let max = _mm256_set1_ps(255.0);
-
-    let rows: Vec<&mut [u8]> = y_plane.chunks_mut(w).collect();
-    rows.into_par_iter_rows(w, h, |row, y_row| {
-        let (r, g, b) = (
-            r_addr as *const f32,
-            g_addr as *const f32,
-            b_addr as *const f32,
-        );
-        let p = row * w;
-        let mut col = 0usize;
-        while col + 8 <= w {
-            // SAFETY: the frame has `pixels` samples per plane and col+8 <= w.
-            let rv = _mm256_loadu_ps(r.add(p + col));
-            let gv = _mm256_loadu_ps(g.add(p + col));
-            let bv = _mm256_loadu_ps(b.add(p + col));
-            let luma = _mm256_fmadd_ps(
-                kb,
-                bv,
-                _mm256_fmadd_ps(kg, gv, _mm256_mul_ps(kr, rv)),
-            );
-            let scaled = _mm256_mul_ps(luma, scale);
-            // copysign(0.5, scaled), not or(0.5, -0.0): the latter is -0.5.
-            let signed_half = _mm256_or_ps(half, _mm256_and_ps(scaled, sign));
-            let rounded = _mm256_round_ps(
-                _mm256_add_ps(scaled, signed_half),
-                _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC,
-            );
-            let clamped = _mm256_min_ps(_mm256_max_ps(rounded, zero), max);
-            let ints = _mm256_cvtps_epi32(clamped);
-            let lo = _mm256_castsi256_si128(ints);
-            let hi = _mm256_extracti128_si256(ints, 1);
-            let packed = _mm_packus_epi16(_mm_packus_epi32(lo, hi), _mm_setzero_si128());
-            let mut out = [0u8; 8];
-            _mm_storel_epi64(out.as_mut_ptr().cast(), packed);
-            y_row[col..col + 8].copy_from_slice(&out);
-            col += 8;
-        }
-        while col < w {
-            let i = p + col;
-            let luma = *r.add(i) * matrix.kr + *g.add(i) * matrix.kg + *b.add(i) * matrix.kb;
-            y_row[col] = CpuPreprocess::q8(luma);
-            col += 1;
-        }
-    });
-
-    // Chroma is still the scalar 2x2 average.
-    u.par_chunks_mut(cw)
-        .zip(v.par_chunks_mut(cw))
-        .enumerate()
-        .for_each(|(cy, (u_row, v_row))| {
-            let (r, g, b) = (
-                r_addr as *const f32,
-                g_addr as *const f32,
-                b_addr as *const f32,
-            );
-            for cx in 0..cw {
-                let mut cb = 0.0f32;
-                let mut cr = 0.0f32;
-                let mut count = 0.0f32;
-                for dy in 0..2 {
-                    let sy = cy * 2 + dy;
-                    if sy >= h {
-                        break;
-                    }
-                    for dx in 0..2 {
-                        let sx = cx * 2 + dx;
-                        if sx >= w {
-                            break;
-                        }
-                        let i = sy * w + sx;
-                        // SAFETY: indexes stay inside the frame.
-                        let (rr, gg, bb) = unsafe { (*r.add(i), *g.add(i), *b.add(i)) };
-                        let luma = matrix.kr * rr + matrix.kg * gg + matrix.kb * bb;
-                        cb += (bb - luma) * matrix.cb_scale + 0.5;
-                        cr += (rr - luma) * matrix.cr_scale + 0.5;
-                        count += 1.0;
-                    }
-                }
-                u_row[cx] = CpuPreprocess::q8(cb / count);
-                v_row[cx] = CpuPreprocess::q8(cr / count);
-            }
-        });
-
-    (y_plane, u, v)
-}
-
-/// Parallel-over-rows helper: keeps the unsafe intrinsic block in one place.
-trait RowIter {
-    fn into_par_iter_rows<F: Fn(usize, &mut [u8]) + Sync + Send>(self, w: usize, h: usize, f: F);
-}
-
-impl<'a> RowIter for Vec<&'a mut [u8]> {
-    fn into_par_iter_rows<F: Fn(usize, &mut [u8]) + Sync + Send>(self, _w: usize, _h: usize, f: F) {
-        use rayon::prelude::*;
-        self.into_par_iter().enumerate().for_each(|(row, slice)| f(row, slice));
+    y_plane: &mut [u8],
+    u_plane: &mut [u8],
+    v_plane: &mut [u8],
+) -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        // NEON is mandatory on aarch64: no runtime check, no fallback.
+        neon::convert(bytes, desc, w, h, y_plane, u_plane, v_plane);
+        true
     }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if !avx2::available() {
+            return false;
+        }
+        // SAFETY: the CPU supports the instructions the kernel uses.
+        unsafe { avx2::convert(bytes, desc, w, h, y_plane, u_plane, v_plane) };
+        true
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        let _ = (bytes, desc, w, h, y_plane, u_plane, v_plane);
+        false
+    }
+}
+
+/// Maths shared by both architectures, so the two kernels cannot drift apart.
+pub(crate) struct Coeffs {
+    pub(crate) kr: f32,
+    pub(crate) kg: f32,
+    pub(crate) kb: f32,
+    pub(crate) cb_scale: f32,
+    pub(crate) cr_scale: f32,
+    /// Multiplier and offset applied to a source byte before the matrix.
+    /// Both are the identity here; kept so the kernels stay range-agnostic.
+    pub(crate) scale: f32,
+    pub(crate) offset: f32,
+}
+
+impl Coeffs {
+    pub(crate) fn new(desc: &blazar_core::FrameDesc) -> Self {
+        // Mirrors `Matrix::new` and `U8Sample::to_unit`. Chroma is produced on
+        // the 0..255 scale (`0.5` shifted chroma becomes `127.5`) so the average
+        // over a 2x2 block is a plain sum.
+        let m = Coeffs::matrix(desc.colorspace);
+        // A u8 frame is already full-range code values: `U8Sample::to_unit`
+        // ignores the caller's `range` (dividing by 255 twice would crush the
+        // frame), so this kernel does the same and keeps the scale at one.
+        let (scale, offset) = (1.0f32, 0.0f32);
+        // Luma weights apply to the 0..255 component, so the unit-range
+        // coefficients are used unchanged: 255 * (kr*r + kg*g + kb*b) with
+        // r, g, b already on the 0..255 scale.
+        Coeffs {
+            kr: m.0,
+            kg: m.1,
+            kb: m.2,
+            cb_scale: m.3,
+            cr_scale: m.4,
+            scale,
+            offset,
+        }
+    }
+
+    fn matrix(cs: blazar_core::ColorSpace) -> (f32, f32, f32, f32, f32) {
+        let (kr, kb) = match cs {
+            blazar_core::ColorSpace::AssumedBt709 => (0.2126_f32, 0.0722_f32),
+            blazar_core::ColorSpace::AssumedBt601 => (0.299_f32, 0.114_f32),
+        };
+        (
+            kr,
+            1.0 - kr - kb,
+            kb,
+            1.0 / (2.0 * (1.0 - kb)),
+            1.0 / (2.0 * (1.0 - kr)),
+        )
+    }
+}
+
+/// Scalar tail and the odd-height row case, kept identical to the vector body.
+#[inline]
+pub(crate) fn pixel(
+    c: &Coeffs,
+    c0: u8,
+    c1: u8,
+    c2: u8,
+) -> (u8, f32, f32) {
+    let r = (c0 as f32 * c.scale + c.offset).clamp(0.0, 255.0);
+    let g = (c1 as f32 * c.scale + c.offset).clamp(0.0, 255.0);
+    let b = (c2 as f32 * c.scale + c.offset).clamp(0.0, 255.0);
+    let y = c.kr * r + c.kg * g + c.kb * b;
+    let cb = (b - y) * c.cb_scale + 127.5;
+    let cr = (r - y) * c.cr_scale + 127.5;
+    (y.round().clamp(0.0, 255.0) as u8, cb, cr)
 }
