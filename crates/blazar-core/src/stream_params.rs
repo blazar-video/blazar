@@ -29,7 +29,8 @@ pub enum VideoEncoderBackend {
     NvencH264,
     /// Hardware HEVC encoder (same NVENC implementation as AV1).
     NvencHevc,
-    Rav1e,
+    /// Contract-only encoder used by tests; writes no compressed data.
+    Mock,
     /// Software H.264 (x264). GPL; compiled in only with `enc-x264`.
     X264,
     /// Software HEVC (x265). GPL; compiled in only with `enc-x265`.
@@ -90,7 +91,7 @@ mod tests {
     #[test]
     fn video_codec_is_wire_identity_not_backend_identity() {
         assert_ne!(VideoCodec::Av1, VideoCodec::H264);
-        assert_ne!(VideoEncoderBackend::SvtAv1, VideoEncoderBackend::Rav1e);
+        assert_ne!(VideoEncoderBackend::SvtAv1, VideoEncoderBackend::Mock);
     }
 
     #[test]

@@ -38,7 +38,7 @@ source = "default"
 [key]
 model = { family = "*", version = "*", quant = "*", size = "*" }
 scene = "*"
-codec = "rav1e"
+codec = "mock"
 target = "balanced"
 [video.common]
 rate_control = "crf"
@@ -67,7 +67,7 @@ pix_fmt = "yuv420p"
 fn index() -> CalibrationIndex {
     let mut idx = CalibrationIndex::new();
     idx.insert(load_str(DEFAULT_CAL, "default/svtav1_balanced.toml").unwrap());
-    idx.insert(load_str(MOCK_CAL, "default/rav1e_balanced.toml").unwrap());
+    idx.insert(load_str(MOCK_CAL, "mock/mock_balanced.toml").unwrap());
     idx.insert(load_str(NVENC_CAL, "default/nvenc_av1_balanced.toml").unwrap());
     idx
 }
@@ -118,7 +118,7 @@ fn run(n: u32) -> Vec<u8> {
             codec: VideoCodec::Av1,
             // The pipeline contract is tested on the mock; real backends have their own
             // tests, and a real encoder's keyframe cadence is its own business.
-            backend: VideoEncoderBackend::Rav1e,
+            backend: VideoEncoderBackend::Mock,
             container: Container::FragmentedMp4,
             video_extradata: Some(vec![0x81, 0x04, 0x0c, 0x00]),
             audio_extradata: None,
@@ -180,7 +180,7 @@ fn scene_cut_boundary_forces_keyframe() {
             codec: VideoCodec::Av1,
             // The pipeline contract is tested on the mock; real backends have their own
             // tests, and a real encoder's keyframe cadence is its own business.
-            backend: VideoEncoderBackend::Rav1e,
+            backend: VideoEncoderBackend::Mock,
             container: Container::FragmentedMp4,
             video_extradata: Some(vec![0x81, 0x04, 0x0c, 0x00]),
             audio_extradata: None,
@@ -255,7 +255,7 @@ fn output(extradata: Option<Vec<u8>>) -> Output {
         codec: VideoCodec::Av1,
         // The pipeline contract is tested on the mock; real backends have their own
             // tests, and a real encoder's keyframe cadence is its own business.
-            backend: VideoEncoderBackend::Rav1e,
+            backend: VideoEncoderBackend::Mock,
         container: Container::FragmentedMp4,
         video_extradata: extradata,
         audio_extradata: None,

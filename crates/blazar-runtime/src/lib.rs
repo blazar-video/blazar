@@ -119,7 +119,7 @@ impl<S: Sink> Encoder<S> {
             VideoEncoderBackend::NvencAv1 => "nvenc_av1",
             VideoEncoderBackend::NvencH264 => "nvenc_h264",
             VideoEncoderBackend::NvencHevc => "nvenc_hevc",
-            VideoEncoderBackend::Rav1e => "rav1e",
+            VideoEncoderBackend::Mock => "mock",
             VideoEncoderBackend::X264 => "x264",
             VideoEncoderBackend::X265 => "x265",
             VideoEncoderBackend::Vp9 => "vp9",
@@ -466,7 +466,7 @@ impl<S: Sink> Stream<S> {
 
 /// Build the encoder for a backend.
 ///
-/// `SvtAv1`/`Rav1e` still use the mock: neither real backend has landed, and the
+/// `Mock` exists for tests only and produces no compressed data, and a backend whose
 /// mock implements the full `VideoEncoder` contract. `NvencAv1` is real, but
 /// only when the `nvenc` feature is enabled; otherwise the deployment gets an
 /// explicit error rather than a silent mock.
@@ -509,10 +509,10 @@ fn build_encoder(
             }
             #[cfg(not(feature = "enc-svtav1"))]
             {
-                Ok(Box::new(MockVideoEncoder::new(cfg, desc.fps, timebase)))
+                Err(RuntimeError::BackendUnavailable("svtav1"))
             }
         }
-        VideoEncoderBackend::Rav1e => Ok(Box::new(MockVideoEncoder::new(cfg, desc.fps, timebase))),
+        VideoEncoderBackend::Mock => Ok(Box::new(MockVideoEncoder::new(cfg, desc.fps, timebase))),
         VideoEncoderBackend::X264 => {
             #[cfg(feature = "enc-x264")]
             {

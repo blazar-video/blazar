@@ -1,4 +1,4 @@
-"""Contract tests for the Python binding, on the mock encoder (`rav1e`).
+"""Contract tests for the Python binding, on the mock encoder (`mock`).
 
 `svtav1` is a real encoder once `enc-svtav1` is compiled in, so the mock
 contract is tested through the backend that is always a mock.
@@ -54,7 +54,7 @@ def new_encoder(calibrations, output: Path, **kwargs):
         calibrations=calibrations,
         identity={"family": "wan", "version": "2.1", "quant": "bf16", "size": "1.3b"},
         target="balanced",
-        backend="rav1e",
+        backend="mock",
         output=str(output),
         video_extradata=FAKE_AV1C,
     )

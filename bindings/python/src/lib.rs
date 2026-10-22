@@ -1351,12 +1351,12 @@ fn parse_backend(value: &str) -> PyResult<VideoEncoderBackend> {
         "nvenc_av1" => Ok(VideoEncoderBackend::NvencAv1),
         "nvenc_h264" => Ok(VideoEncoderBackend::NvencH264),
         "nvenc_hevc" => Ok(VideoEncoderBackend::NvencHevc),
-        "rav1e" => Ok(VideoEncoderBackend::Rav1e),
+        "mock" => Ok(VideoEncoderBackend::Mock),
         "x264" => Ok(VideoEncoderBackend::X264),
         "x265" => Ok(VideoEncoderBackend::X265),
         "vp9" => Ok(VideoEncoderBackend::Vp9),
         other => Err(PyValueError::new_err(format!(
-            "unknown backend {other:?} (expected svtav1|nvenc_av1|nvenc_h264|nvenc_hevc|rav1e|x264|x265|vp9)"
+            "unknown backend {other:?} (expected svtav1|nvenc_av1|nvenc_h264|nvenc_hevc|x264|x265|vp9|mock)"
         ))),
     }
 }

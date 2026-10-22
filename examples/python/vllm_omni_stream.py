@@ -176,7 +176,7 @@ def main() -> int:
     parser.add_argument("--chunk-delay-ms", type=float, default=40.0,
                         help="fake decode latency between chunks (default 40 ms)")
     parser.add_argument("--output", type=Path, default=Path("/tmp/vllm_omni_blazar.mp4"))
-    parser.add_argument("--backend", default="svtav1", choices=["svtav1", "nvenc_av1", "rav1e"])
+    parser.add_argument("--backend", default="svtav1", choices=["svtav1", "nvenc_av1"])
     parser.add_argument("--target", default="low_latency", choices=["low_latency", "balanced", "quality"])
     parser.add_argument("--calibrations", type=Path, default=repo_calibrations())
     args = parser.parse_args()

@@ -85,7 +85,7 @@ def main() -> int:
     parser.add_argument("--latent-chunk", type=int, default=2)
     parser.add_argument("--vllm-omni", type=Path, default=Path.home() / "dev/code/vllm-omni")
     parser.add_argument("--output", type=Path, default=Path("/tmp/wan_stream.mp4"))
-    parser.add_argument("--backend", default="nvenc_av1", choices=["svtav1", "nvenc_av1", "rav1e"])
+    parser.add_argument("--backend", default="nvenc_av1", choices=["svtav1", "nvenc_av1"])
     parser.add_argument("--target", default="balanced", choices=["low_latency", "balanced", "quality"])
     parser.add_argument("--calibrations", type=Path, default=repo_calibrations())
     parser.add_argument("--interleave", action="store_true",

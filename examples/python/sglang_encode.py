@@ -223,7 +223,7 @@ def main() -> int:
     parser.add_argument("--height", type=int, default=320)
     parser.add_argument("--fps", type=float, default=16.0)
     parser.add_argument("--output", type=Path, default=Path("/tmp/sglang_blazar.mp4"))
-    parser.add_argument("--backend", default="svtav1", choices=["svtav1", "nvenc_av1", "nvenc_h264", "rav1e"])
+    parser.add_argument("--backend", default="svtav1", choices=["svtav1", "nvenc_av1", "nvenc_h264"])
     parser.add_argument("--codec", default=None, help="override codec (defaults by backend)")
     parser.add_argument("--target", default="balanced", choices=["low_latency", "balanced", "quality"])
     parser.add_argument("--calibrations", type=Path, default=repo_calibrations())
@@ -240,16 +240,16 @@ def main() -> int:
     except ImportError:
         raise SystemExit("this example needs torch (pip install torch)")
 
-    # Codec/extradata: only the mock (rav1e) needs a canned av1C. Real backends
+    # Codec/extradata: only the mock needs a canned av1C. Real backends
     # derive it from the first keyframe; overriding would write a lie into the
     # container.
     codec = args.codec or {
         "svtav1": "av1",
         "nvenc_av1": "av1",
         "nvenc_h264": "h264",
-        "rav1e": "av1",
+        "mock": "av1",
     }[args.backend]
-    extradata = FAKE_AV1C if args.backend == "rav1e" else None
+    extradata = FAKE_AV1C if args.backend == "mock" else None
     if extradata is not None:
         print("note: mock backend - output is NOT decodable, structure only")
 
