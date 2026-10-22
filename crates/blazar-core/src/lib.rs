@@ -2,7 +2,7 @@
 //!
 //! No I/O, no CUDA, no encoders. Just the value objects every other crate
 //! agrees on: frame handoff ([`frame`]), timing ([`timebase`]), encoded output
-//! ([`unit`]), model identity ([`identity`]), operator target ([`target`]), and
+//! ([`mod@unit`]), model identity ([`identity`]), operator target ([`target`]), and
 //! sink/stream parameters ([`stream_params`]).
 //!
 //! These types are deliberately audio-aware from day one (architecture §3.1):

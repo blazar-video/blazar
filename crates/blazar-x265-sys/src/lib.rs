@@ -11,7 +11,11 @@
 
 // bindgen reproduces the upstream header's doc comments, which contain
 // bracket notation that rustdoc reads as intra-doc links.
-#[allow(rustdoc::broken_intra_doc_links, rustdoc::invalid_html_tags)]
+#[allow(
+    rustdoc::broken_intra_doc_links,
+    rustdoc::invalid_html_tags,
+    rustdoc::bare_urls,
+)]
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
