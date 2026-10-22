@@ -63,53 +63,52 @@ with blazar.Encoder(calibrations=cals, identity={"family": "wan", "version": "2.
 
 ## Measured performance
 
-1080p, 240 real frames, RTX 4080 SUPER. The encoder is constructed and the frames
-are resident before the clock starts, so these are the cost of the colour
-conversion and the encode alone.
+Every row starts with the same thing: 240 real 1080p frames already resident on the
+GPU. The clock covers everything from there to an encoded file, including the
+device-to-host copy where a row needs one. The encoder is constructed before the
+clock starts.
 
-Frames are produced on the GPU and that is where they should be encoded. The host
-row exists because some runtimes copy frames to the CPU before handing them over
-(SGLang's output postprocess does `.cpu().float()` today); it is not a starting
-point, it is a copy that has already happened.
+| Pipeline | dtype | ms/frame | kbps |
+|---|---|---|---|
+| GPU rgb2yuv, NVENC H.264 | **bf16** | **2.98** | 197 |
+| GPU rgb2yuv, NVENC H.264 | f32 | 3.33 | 197 |
+| GPU rgb2yuv, x264 | **bf16** | **4.49** | 304 |
+| GPU rgb2yuv, x264 | f32 | 5.04 | 304 |
+| CPU rgb2yuv, x264 | f32 | 17.9 | 302 |
+| ffmpeg libx264, crf 30 medium | u8 | 25.5 | 244 |
 
-| Frames | Convert | Encode | dtype | ms/frame | kbps |
-|---|---|---|---|---|---|
-| on GPU | on GPU | NVENC H.264 | f32 | 3.09 | 197 |
-| on GPU | on GPU | NVENC H.264 | **bf16** | **2.98** | 197 |
-| on GPU | on GPU | x264 | f32 | 5.22 | 304 |
-| on GPU | on GPU | x264 | **bf16** | **4.53** | 304 |
-| copied to host by the caller | on CPU | x264 | u8 | 5.66 | 302 |
-| copied to host by the caller | on CPU | x264 | f32 | 8.45 | 302 |
+Reading it:
 
-Three things fall out of that table:
+- **bf16 is the right dtype for the device paths.** Half the bytes cross the
+  preprocess kernel (2.98 vs 3.33 with NVENC, 4.49 vs 5.04 with x264), and it is
+  what a VAE emits.
+- **Converting on the GPU instead of the CPU is worth 4x.** Same x264 encode: 4.49
+  ms/frame on device against 17.9 once the frames have to come back to the host.
+  That 13 ms is the device-to-host copy plus a scalar CPU conversion, not the codec.
+- **NVENC is 1.5x x264** on the device path (2.98 vs 4.49) at a lower bitrate.
 
-- **bf16 is faster than f32** on both device paths (2.98 vs 3.09 with NVENC, 4.53 vs
-  5.22 with x264). Half the bytes cross the preprocess kernel, and the model already
-  emits bf16, so there is no reason to widen.
-- **A host round trip costs 1.1 ms/frame for the CPU codec and 2.7 for NVENC.** The
-  same x264 encode is 4.53 ms/frame with frames still on the GPU and 5.66 once
-  someone has copied them to the CPU. That copy, not the codec, is the difference
-  worth removing: hook the runtime before its postprocess step.
-- **NVENC is 1.5x the CPU codec on the device path** (2.98 vs 4.53), at a lower
-  bitrate for the same calibration target.
+Caveat on the ffmpeg row: it is the best we could give it without a hardware
+ingest path, so it carries Python-side float to uint8 conversion and blocking pipe
+writes inside the clock. ffmpeg reading frames straight from the GPU is a separate
+integration and would land closer to the 5 ms it manages when the frames are
+already on the host. The bitrates differ too (197 / 244 / 304 kbps), so the rows are
+not equal quality.
 
-Against `ffmpeg` at identical x264 settings (CRF 30, medium, inputs materialised
-before the clock in both cases) the CPU path is roughly a wash: on the same box
-ffmpeg measured 5.09 ms/frame and blazar 5.73, with an earlier run showing 4.84
-and 4.89. The machine drifts by 10-15% between runs, so treat those two as equal
-and do not quote a win on the host path. The device paths are the win: 2.98 with
-NVENC and 4.53 with x264 against 5.09 for ffmpeg.
-
-**Batch kernel** (Nsight Compute A/B): 2.28-2.72x over per-frame launches.
+**Batch kernel** (Nsight Compute A/B): 2.28-2.72x over per-frame launches, device
+path only. `submit_batch` on host frames is slower than a per-frame loop, because
+the frames have to cross into the runtime either way.
 
 **Concurrent NVENC streams** (16 frames per stream, 832x480): 1 stream 13.9
 ms/frame, 4 streams 4.59, 8 streams **3.51**. An RTX 4080 SUPER accepts 9 sessions
 and rejects the 10th, which is why the session limiter exists.
 
 **Ingest width matters more than arithmetic.** An AVX2 version of the f32
-conversion was written, measured slower (16.1 vs 11.2 ms/frame, because the
-routine reads every 25 MB plane twice), and removed. Converting u8 host frames
-instead of f32 saved 1.3 ms/frame for identical output.
+conversion was written, measured slower (16.1 vs 11.2 ms/frame, because the routine
+reads every 25 MB plane twice), and removed. Handing 8-bit frames in instead of
+f32 saves 1.3 ms/frame for identical output.
+
+Numbers on this machine move by 10-15% between runs, so treat differences under
+that as noise.
 
 ## Limits worth knowing
 
