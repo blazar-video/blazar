@@ -1,4 +1,4 @@
-# blazar — the Rust video encoding runtime
+# blazar — video encoding for generative models
 
 Encodes frames from generative video runtimes (SGLang Diffusion, vLLM-Omni,
 diffusers) as fast as the model produces them. Frames stay on the GPU when the
