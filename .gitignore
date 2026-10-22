@@ -8,3 +8,5 @@ __pycache__/
 *.so
 .pytest_cache/
 .venv/
+# macOS
+.DS_Store
