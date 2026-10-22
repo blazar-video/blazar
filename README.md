@@ -87,9 +87,11 @@ Three things fall out of that table:
   bitrate for the same calibration target.
 
 Against `ffmpeg` at identical x264 settings (CRF 30, medium, inputs materialised
-before the clock in both cases): ffmpeg 4.84 ms/frame at 295 kbps, 43.29 dB;
-blazar 4.89 ms/frame at 302 kbps, 42.51 dB. Parity. The gain is in the device
-paths, not in beating ffmpeg at its own job.
+before the clock in both cases) the CPU path is roughly a wash: on the same box
+ffmpeg measured 5.09 ms/frame and blazar 5.73, with an earlier run showing 4.84
+and 4.89. The machine drifts by 10-15% between runs, so treat those two as equal
+and do not quote a win on the host path. The device paths are the win: 2.98 with
+NVENC and 4.53 with x264 against 5.09 for ffmpeg.
 
 **Batch kernel** (Nsight Compute A/B): 2.28-2.72x over per-frame launches.
 
