@@ -9,10 +9,13 @@ description = "Python bindings for the Blazar model-aware video encoder harness"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
 
-[tool.setuptools.package-data]
-blazar = ["py.typed", "*.pyi"]
-
 [tool.maturin]
+# maturin copies python/ into the wheel, but only .py files; the stubs and the
+# PEP 561 marker have to be listed explicitly.
+include = [
+    { path = "python/blazar/py.typed", format = "wheel" },
+    { path = "python/blazar/__init__.pyi", format = "wheel" },
+]
 features = ["pyo3/extension-module"]
 module-name = "blazar._blazar"
 python-source = "python"
