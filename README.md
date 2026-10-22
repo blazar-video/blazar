@@ -63,52 +63,50 @@ with blazar.Encoder(calibrations=cals, identity={"family": "wan", "version": "2.
 
 ## Measured performance
 
-Every row starts with the same thing: 240 real 1080p frames already resident on the
-GPU. The clock covers everything from there to an encoded file, including the
-device-to-host copy where a row needs one. The encoder is constructed before the
-clock starts.
+240 real 1080p frames, handed over as a `(1, 3, T, H, W)` tensor already resident on
+the GPU, encoded to a file. The clock covers everything from the frames being ready
+to the file being closed: colour conversion, encode, and the device-to-host copy
+where a pipeline needs one. Encoder construction happens before the clock.
 
-| Pipeline | dtype | ms/frame | kbps |
-|---|---|---|---|
-| GPU rgb2yuv, NVENC H.264 | **bf16** | **2.98** | 197 |
-| GPU rgb2yuv, NVENC H.264 | f32 | 3.33 | 197 |
-| GPU rgb2yuv, x264 | **bf16** | **4.49** | 304 |
-| GPU rgb2yuv, x264 | f32 | 5.04 | 304 |
-| CPU rgb2yuv, x264 | f32 | 17.9 | 302 |
-| ffmpeg libx264, crf 30 medium | u8 | 25.5 | 244 |
+| Pipeline | ms/frame |
+|---|---|
+| **blazar, GPU rgb2yuv, NVENC H.264** (bf16) | **3.81** |
+| **blazar, GPU rgb2yuv, x264** (bf16) | **5.05** |
+| SGLang mainline, `CudaVideoEncoder` (ffmpeg/libx264) | 9.13 |
+| blazar, CPU rgb2yuv, x264 | 17.9 |
+| vLLM-Omni mainline, PyAV | 48.07 |
 
-Reading it:
+What the ordering says:
 
-- **bf16 is the right dtype for the device paths.** Half the bytes cross the
-  preprocess kernel (2.98 vs 3.33 with NVENC, 4.49 vs 5.04 with x264), and it is
-  what a VAE emits.
-- **Converting on the GPU instead of the CPU is worth 4x.** Same x264 encode: 4.49
-  ms/frame on device against 17.9 once the frames have to come back to the host.
-  That 13 ms is the device-to-host copy plus a scalar CPU conversion, not the codec.
-- **NVENC is 1.5x x264** on the device path (2.98 vs 4.49) at a lower bitrate.
+- **Keeping the frames on the GPU is the whole point.** The same x264 encode costs
+  5.05 ms/frame with GPU conversion and 17.9 once the frames have to come back to
+  the host. That 13 ms is the copy plus a scalar CPU conversion, not the codec.
+- **bf16 is the right dtype.** It is what a VAE emits and it halves the bytes through
+  the conversion kernel.
+- **The mainline paths are slower because they were not built for this.** SGLang's
+  encoder shells out to ffmpeg after staging each chunk through host memory;
+  vLLM-Omni's `_encode_video_bytes` is an HTTP-response helper that copies to the
+  host and encodes with PyAV defaults.
 
-Caveat on the ffmpeg row: it is the best we could give it without a hardware
-ingest path, so it carries Python-side float to uint8 conversion and blocking pipe
-writes inside the clock. ffmpeg reading frames straight from the GPU is a separate
-integration and would land closer to the 5 ms it manages when the frames are
-already on the host. The bitrates differ too (197 / 244 / 304 kbps), so the rows are
-not equal quality.
+The rows are not equal settings: the mainline encoders use their library defaults,
+blazar uses a calibration target. Treat the comparison as "what each stack costs as
+it ships", not as a quality-matched benchmark.
 
 **Batch kernel** (Nsight Compute A/B): 2.28-2.72x over per-frame launches, device
-path only. `submit_batch` on host frames is slower than a per-frame loop, because
-the frames have to cross into the runtime either way.
+path only. `submit_batch` on host frames is slower than a per-frame loop, because the
+frames have to cross into the runtime either way.
 
-**Concurrent NVENC streams** (16 frames per stream, 832x480): 1 stream 13.9
-ms/frame, 4 streams 4.59, 8 streams **3.51**. An RTX 4080 SUPER accepts 9 sessions
-and rejects the 10th, which is why the session limiter exists.
+**Concurrent NVENC streams** (16 frames per stream, 832x480): 1 stream 13.9 ms/frame,
+4 streams 4.59, 8 streams **3.51**. An RTX 4080 SUPER accepts 9 sessions and rejects
+the 10th, which is why the session limiter exists.
 
-**Ingest width matters more than arithmetic.** An AVX2 version of the f32
-conversion was written, measured slower (16.1 vs 11.2 ms/frame, because the routine
-reads every 25 MB plane twice), and removed. Handing 8-bit frames in instead of
-f32 saves 1.3 ms/frame for identical output.
+**Ingest width matters more than arithmetic.** An AVX2 version of the f32 conversion
+was written, measured slower (16.1 vs 11.2 ms/frame, because the routine reads every
+25 MB plane twice), and removed. Handing 8-bit frames in instead of f32 saves 1.3
+ms/frame for identical output.
 
-Numbers on this machine move by 10-15% between runs, so treat differences under
-that as noise.
+Numbers on this machine move by 10-15% between runs, so treat differences under that
+as noise.
 
 ## Limits worth knowing
 
