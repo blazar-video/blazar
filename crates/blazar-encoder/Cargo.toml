@@ -40,6 +40,9 @@ svtav1 = ["enc-svtav1"]
 # Software AV1 via SVT-AV1 (BSD). The bindings crate generates from the system
 # header, so libsvtav1 must be installed to build this feature.
 enc-svtav1 = ["dep:blazar-svtav1-sys"]
+# Apple VideoToolbox H.264/HEVC (macOS only). Links the system frameworks, so
+# it adds no build-time dependency on other platforms.
+enc-videotoolbox = []
 # Software VP9 via libvpx (BSD). Needs libvpx at build time.
 enc-vp9 = ["dep:blazar-vpx-sys"]
 # Software H.264 (x264). GPL: enabling this makes the resulting binary GPL.

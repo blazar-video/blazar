@@ -123,6 +123,8 @@ impl<S: Sink> Encoder<S> {
             VideoEncoderBackend::X264 => "x264",
             VideoEncoderBackend::X265 => "x265",
             VideoEncoderBackend::Vp9 => "vp9",
+            VideoEncoderBackend::VideoToolboxH264 => "videotoolbox_h264",
+            VideoEncoderBackend::VideoToolboxHevc => "videotoolbox_hevc",
         }
     }
 
@@ -513,6 +515,25 @@ fn build_encoder(
             }
         }
         VideoEncoderBackend::Mock => Ok(Box::new(MockVideoEncoder::new(cfg, desc.fps, timebase))),
+        VideoEncoderBackend::VideoToolboxH264 | VideoEncoderBackend::VideoToolboxHevc => {
+            #[cfg(all(feature = "enc-videotoolbox", target_os = "macos"))]
+            {
+                use blazar_encoder::videotoolbox::{Codec, VideoToolboxEncoder};
+                let codec = if matches!(backend, VideoEncoderBackend::VideoToolboxHevc) {
+                    Codec::Hevc
+                } else {
+                    Codec::H264
+                };
+                Ok(Box::new(VideoToolboxEncoder::new(
+                    desc.width, desc.height, codec, cfg,
+                )?))
+            }
+            #[cfg(not(all(feature = "enc-videotoolbox", target_os = "macos")))]
+            {
+                let _ = (cfg, desc);
+                Err(RuntimeError::BackendUnavailable("videotoolbox"))
+            }
+        }
         VideoEncoderBackend::X264 => {
             #[cfg(feature = "enc-x264")]
             {

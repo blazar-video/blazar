@@ -19,6 +19,8 @@ pub mod x265;
 pub mod svtav1;
 #[cfg(feature = "enc-vp9")]
 pub mod vp9;
+#[cfg(all(feature = "enc-videotoolbox", target_os = "macos"))]
+pub mod videotoolbox;
 pub mod nal;
 pub mod nvenc;
 

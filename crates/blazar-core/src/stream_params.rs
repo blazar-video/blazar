@@ -37,6 +37,11 @@ pub enum VideoEncoderBackend {
     X265,
     /// Software VP9 (libvpx); compiled in only with `enc-vpx`.
     Vp9,
+    /// Apple VideoToolbox H.264 (macOS); compiled in only with
+    /// `enc-videotoolbox`.
+    VideoToolboxH264,
+    /// Apple VideoToolbox HEVC (macOS).
+    VideoToolboxHevc,
 }
 
 /// Audio codec carried on the wire/container.

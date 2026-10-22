@@ -15,6 +15,8 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [features]
+# Apple VideoToolbox H.264/HEVC (macOS only).
+enc-videotoolbox = ["blazar-encoder/enc-videotoolbox"]
 default = []
 # Forward the hardware encoder. Enables `blazar-encoder/nvenc` and the backend
 # selection path that uses it.

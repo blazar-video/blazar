@@ -144,6 +144,21 @@ pub fn parse_access_unit(au: &[u8], codec: AnnexB) -> Result<ParsedAccessUnit, N
     Ok(ParsedAccessUnit { config, sample })
 }
 
+/// Build an `avcC`/`hvcC` body from parameter sets that came from a codec's own
+/// configuration record rather than from the bitstream.
+///
+/// Backends that hand parameter sets out of band (VideoToolbox) use this so the
+/// container sees exactly the same record the in-band path would produce.
+pub fn config_from_parameter_sets(
+    codec: AnnexB,
+    sets: &[&[u8]],
+) -> Result<Option<Vec<u8>>, NalError> {
+    match codec {
+        AnnexB::H264 => h264_config(sets),
+        AnnexB::Hevc => hevc_config(sets),
+    }
+}
+
 fn h264_config(nals: &[&[u8]]) -> Result<Option<Vec<u8>>, NalError> {
     let sps = nals
         .iter()
