@@ -1149,6 +1149,7 @@ mod bench {
         let (w, h) = (1920usize, 1080usize);
         let pixels = w * h;
         let stage = CpuPreprocess::new();
+        println!("vector kernels available: {}", simd::available());
         let cases = [
             ("thwc_u8", Layout::Thwc, Dtype::U8, 1usize),
             ("bcthw_u8", Layout::Bcthw, Dtype::U8, 1),

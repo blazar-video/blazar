@@ -32,6 +32,22 @@ pub(crate) enum Kind {
     BcthwBf16,
 }
 
+/// Is a vector kernel available on this CPU?
+pub(crate) fn available() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        true
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        avx2::available()
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        false
+    }
+}
+
 /// Run the vector path for `kind`, or return `false` when this CPU has none.
 #[must_use]
 pub(crate) fn convert(
