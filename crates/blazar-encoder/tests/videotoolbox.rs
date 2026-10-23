@@ -201,3 +201,40 @@ fn length_prefixed(sample: &[u8]) -> Vec<&[u8]> {
     }
     out
 }
+
+/// Times the encoder on its own, at 1080p, with no muxer or runtime in the way.
+///
+/// `cargo test -p blazar-encoder --features enc-videotoolbox --test videotoolbox
+///  -- --ignored --nocapture encoder_timings`
+#[test]
+#[ignore]
+fn encoder_timings() {
+    use std::time::Instant;
+    for (w, h) in [(320u32, 240u32), (1280, 720), (1920, 1080)] {
+        let cfg = EncoderConfig {
+            rate_control: RateControl::Crf(23),
+            keyint: 48,
+            bframes: 0,
+            pix_fmt: "nv12".into(),
+            codec_params: String::new(),
+        };
+        let mut enc = VideoToolboxEncoder::new(w, h, Codec::H264, &cfg).expect("session opens");
+        let (fw, fh) = (w as usize, h as usize);
+        let make = |n: u32| PreprocessedFrame {
+            width: w,
+            height: h,
+            y: vec![(40 + (n % 3) * 60) as u8; fw * fh],
+            u: vec![128u8; (fw / 2) * (fh / 2)],
+            v: vec![128u8; (fw / 2) * (fh / 2)],
+            pts: Pts(Timebase::MPEG_90K.ticks_per_frame(24.0) * n as u64),
+        };
+        let frames: Vec<PreprocessedFrame> = (0..20u32).map(make).collect();
+        let started = Instant::now();
+        for f in &frames {
+            let _ = enc.encode(f).expect("encode");
+        }
+        let per = started.elapsed().as_secs_f64() * 1000.0 / frames.len() as f64;
+        let _ = enc.flush();
+        println!("{w}x{h}: {per:8.2} ms/frame (encoder only)");
+    }
+}

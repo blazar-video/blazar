@@ -92,6 +92,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         index,
     );
 
+    // The generator builds each frame with per-pixel float maths and a fresh
+    // 25 MB buffer at 1080p. Measure one frame on its own so the number below
+    // can be read as "encoding plus the benchmark's own frame building".
+    let gen_started = std::time::Instant::now();
+    let _ = frame(0, w, h);
+    let generation_ms = gen_started.elapsed().as_secs_f64() * 1000.0;
+
     let started = std::time::Instant::now();
     let mut stream = encoder.open_stream("videotoolbox-example");
     for i in 0..frames {
@@ -101,9 +108,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let elapsed = started.elapsed().as_secs_f64();
 
     let size = fs::metadata(&path)?.len();
+    let per_frame = elapsed * 1000.0 / frames as f64;
     println!(
-        "{path}: {frames} frames {w}x{h} in {elapsed:.2}s ({:.2} ms/frame), {size} bytes",
-        elapsed * 1000.0 / frames as f64
+        "{path}: {frames} frames {w}x{h} in {elapsed:.2}s ({per_frame:.2} ms/frame), {size} bytes"
+    );
+    println!(
+        "  of which {generation_ms:.2} ms/frame is this example building the frame \
+         ({:.2} ms/frame left for preprocess + encode + mux)",
+        per_frame - generation_ms
     );
     Ok(())
 }
