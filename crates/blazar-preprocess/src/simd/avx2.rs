@@ -152,10 +152,11 @@ pub(crate) unsafe fn convert(
             );
         }
         if rows == 1 {
-            cb1.copy_from_slice(&cb0);
-            cr1.copy_from_slice(&cr0);
+            cb1.copy_from_slice(cb0);
+            cr1.copy_from_slice(cr0);
         }
-        combine(&cb0, &cr0, &cb1, &cr1, cw, u_row, v_row);
+        combine(cb0, cr0, cb1, cr1, cw, u_row, v_row);
+        });
     };
 
     if pixels < crate::PARALLEL_MIN_PIXELS {
