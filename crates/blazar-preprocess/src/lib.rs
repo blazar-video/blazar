@@ -1133,3 +1133,78 @@ mod vector_kernels {
         assert_eq!(sa.0, sb.0);
     }
 }
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use blazar_core::{ColorRange, ColorSpace, FrameBuffer, FrameDesc, FrameRef};
+    use std::time::Instant;
+
+    /// Times every kernel at 1080p. Ignored by default: it is a measurement, not
+    /// a correctness check. Run with
+    /// `cargo test -p blazar-preprocess --release -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn kernel_timings() {
+        let (w, h) = (1920usize, 1080usize);
+        let pixels = w * h;
+        let stage = CpuPreprocess::new();
+        let cases = [
+            ("thwc_u8", Layout::Thwc, Dtype::U8, 1usize),
+            ("bcthw_u8", Layout::Bcthw, Dtype::U8, 1),
+            ("thwc_f32", Layout::Thwc, Dtype::F32, 4),
+            ("bcthw_f32", Layout::Bcthw, Dtype::F32, 4),
+            ("thwc_bf16", Layout::Thwc, Dtype::Bf16, 2),
+            ("bcthw_bf16", Layout::Bcthw, Dtype::Bf16, 2),
+        ];
+        for (name, layout, dtype, size) in cases {
+            let mut data = vec![0u8; pixels * 3 * size];
+            for (i, b) in data.iter_mut().enumerate() {
+                *b = ((i * 37 + i / 13) % 251) as u8;
+            }
+            if dtype != Dtype::U8 {
+                // Build in-range values: for bf16 the top half of an f32 is the
+                // encoding, and f32 needs the float itself.
+                let samples = data.len() / size;
+                for i in 0..samples {
+                    let v = ((i * 37 + i / 13) % 1001) as f32 / 1000.0;
+                    if dtype == Dtype::Bf16 {
+                        let bits = (v.to_bits() >> 16) as u16;
+                        data[2 * i..2 * i + 2].copy_from_slice(&bits.to_le_bytes());
+                    } else {
+                        data[4 * i..4 * i + 4].copy_from_slice(&v.to_le_bytes());
+                    }
+                }
+            }
+            let d = FrameDesc {
+                width: w as u32,
+                height: h as u32,
+                dtype,
+                range: if dtype == Dtype::U8 {
+                    ColorRange::FullU8
+                } else {
+                    ColorRange::Unit01
+                },
+                layout,
+                colorspace: ColorSpace::AssumedBt709,
+                fps: 24.0,
+                pts: Pts(0),
+            };
+            let frame = FrameRef {
+                desc: d,
+                buffer: FrameBuffer::host_owned(data),
+            };
+            for _ in 0..2 {
+                let _ = stage.process(&frame).unwrap();
+            }
+            let iters = 10;
+            let started = Instant::now();
+            for _ in 0..iters {
+                let out = stage.process(&frame).unwrap();
+                std::hint::black_box((out.y.len(), out.u.len(), out.v.len()));
+            }
+            let per = started.elapsed().as_secs_f64() * 1000.0 / iters as f64;
+            println!("{name:>10}: {per:8.3} ms/frame");
+        }
+    }
+}
