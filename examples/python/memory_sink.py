@@ -9,9 +9,9 @@ The stream is opened with ``output=None``, so nothing is written to disk. Each
 encoded access unit comes back from ``poll()`` as an event carrying ``data``.
 
 Units arrive in *decode* order, which is why the PTS below are not monotonic once
-the encoder reorders frames with B-frames. Callers that need presentation order
-have to sort on ``pts``, or ask for a low-latency calibration that disables
-B-frames.
+the encoder reorders frames with B-frames; ``dts`` is the monotonic one. Callers
+that need presentation order sort on ``pts``, or ask for a low-latency calibration
+that disables B-frames.
 """
 
 from __future__ import annotations
@@ -76,8 +76,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{args.backend}/{args.codec}: {len(payloads)} units, {total} bytes")
     print(f"first unit: pts={payloads[0]['pts']} keyframe={payloads[0]['keyframe']}")
     for event in payloads[:5]:
-        print(f"  pts={event['pts']:<8} keyframe={event['keyframe']!s:<5} "
-              f"{len(event['data']):>6} bytes")
+        print(f"  pts={event['pts']:<8} dts={event['dts']!s:<8} "
+              f"keyframe={event['keyframe']!s:<5} {len(event['data']):>6} bytes")
 
     stats = encoder.stats
     if total != stats["bytes"]:
