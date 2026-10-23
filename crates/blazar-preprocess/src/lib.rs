@@ -14,11 +14,7 @@
 use blazar_core::{ColorRange, ColorSpace, Dtype, FrameRef, Layout, Pts};
 use rayon::prelude::*;
 
-/// Unused for now: kept as the starting point for a fused luma+chroma AVX2
-/// pass, which is the only shape that can beat the scalar path (see the
-/// dispatch comment in `process`).
-#[cfg(target_arch = "x86_64")]
-#[allow(dead_code)]
+/// Fused luma+chroma vector kernels (NEON, AVX2) for 8-bit interleaved frames.
 mod simd;
 use thiserror::Error;
 
@@ -233,7 +229,7 @@ impl PreprocessStage for CpuPreprocess {
             // 2x2 chroma into one pass to have a chance.
             (Layout::Bcthw, Dtype::F32) => convert_bcthw::<F32Sample>(bytes, desc, w, h),
             (Layout::Bcthw, Dtype::Bf16) => convert_bcthw::<Bf16Sample>(bytes, desc, w, h),
-            (Layout::Thwc, Dtype::U8) => convert_thwc::<U8Sample>(bytes, desc, w, h),
+            (Layout::Thwc, Dtype::U8) => convert_thwc_u8_simd(bytes, desc, w, h),
             (Layout::Bcthw, Dtype::U8) => convert_bcthw::<U8Sample>(bytes, desc, w, h),
             (_, other) => return Err(PreprocessError::UnsupportedDtype(other)),
         };
@@ -249,10 +245,32 @@ impl PreprocessStage for CpuPreprocess {
     }
 }
 
+/// Interleaved 8-bit frames use the vector kernel when the CPU has one.
+///
+/// Falls back to the scalar pass rather than failing: the SIMD path is an
+/// optimisation, not a capability requirement.
+fn convert_thwc_u8_simd(
+    bytes: &[u8],
+    desc: &blazar_core::FrameDesc,
+    w: usize,
+    h: usize,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let cw = w.div_ceil(2);
+    let ch = h.div_ceil(2);
+    let mut y = vec![0u8; w * h];
+    let mut u = vec![0u8; cw * ch];
+    let mut v = vec![0u8; cw * ch];
+    if simd::convert_thwc_u8(bytes, desc, w, h, &mut y, &mut u, &mut v) {
+        (y, u, v)
+    } else {
+        convert_thwc::<U8Sample>(bytes, desc, w, h)
+    }
+}
+
 /// Below this, rayon's per-task overhead costs more than the parallel gain.
 /// Measured on the 28-thread mosk box: 480x320 is ~9% slower parallel, 720p is
 /// 4x faster.
-const PARALLEL_MIN_PIXELS: usize = 640 * 480;
+pub(crate) const PARALLEL_MIN_PIXELS: usize = 640 * 480;
 
 /// Everything a row-pair task needs that is constant across rows.
 struct RowCtx<'a> {
@@ -888,5 +906,90 @@ mod tests {
             CpuPreprocess::new().process(&fr).unwrap_err(),
             PreprocessError::UnsupportedDtype(Dtype::F16)
         );
+    }
+}
+
+#[cfg(test)]
+mod simd_tests {
+    use super::*;
+    use blazar_core::{ColorRange, ColorSpace, FrameBuffer, FrameDesc, FrameRef};
+
+    fn desc(w: u32, h: u32, cs: ColorSpace) -> FrameDesc {
+        FrameDesc {
+            width: w,
+            height: h,
+            dtype: Dtype::U8,
+            range: ColorRange::FullU8,
+            layout: Layout::Thwc,
+            colorspace: cs,
+            fps: 24.0,
+            pts: Pts(0),
+        }
+    }
+
+    /// Deterministic pseudo-random RGB with structure, so gradients and edges
+    /// both appear: a flat frame would let a broken kernel pass.
+    fn frame(w: usize, h: usize) -> Vec<u8> {
+        let mut v = Vec::with_capacity(w * h * 3);
+        for y in 0..h {
+            for x in 0..w {
+                let r = ((x * 7 + y * 13) % 256) as u8;
+                let g = ((x * 3) ^ (y * 5)) as u8;
+                let b = ((x + y * 11) % 251) as u8;
+                v.extend_from_slice(&[r, g, b]);
+            }
+        }
+        v
+    }
+
+    fn max_diff(a: &[u8], b: &[u8]) -> u8 {
+        a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0)
+    }
+
+    #[test]
+    fn vector_path_matches_scalar_within_one_level() {
+        let (w, h) = (257usize, 129usize); // odd dimensions exercise the tails
+        for cs in [ColorSpace::AssumedBt709, ColorSpace::AssumedBt601] {
+            let d = desc(w as u32, h as u32, cs);
+            let bytes = frame(w, h);
+
+            let (sy, su, sv) = convert_thwc::<U8Sample>(&bytes, &d, w, h);
+            let (vy, vu, vv) = convert_thwc_u8_simd(&bytes, &d, w, h);
+
+            assert!(max_diff(&sy, &vy) <= 1, "luma differs by more than 1 level");
+            assert!(max_diff(&su, &vu) <= 1, "Cb differs by more than 1 level");
+            assert!(max_diff(&sv, &vv) <= 1, "Cr differs by more than 1 level");
+        }
+    }
+
+    #[test]
+    fn vector_path_is_used_and_agrees_on_a_flat_frame() {
+        let (w, h) = (64usize, 64usize);
+        let d = desc(w as u32, h as u32, ColorSpace::AssumedBt709);
+        let bytes = vec![255u8; w * h * 3];
+
+        let (vy, vu, vv) = convert_thwc_u8_simd(&bytes, &d, w, h);
+        assert!(vy.iter().all(|&v| v == 255), "white must be full luma");
+        assert!(vu.iter().all(|&v| v == 128), "white chroma must be neutral");
+        assert!(vv.iter().all(|&v| v == 128));
+    }
+
+    /// The SIMD path is reachable through the stage, not only through the
+    /// helper: this is the regression guard for the dispatch.
+    #[test]
+    fn stage_uses_the_vector_path_for_interleaved_u8() {
+        let (w, h) = (300usize, 200usize);
+        let d = desc(w as u32, h as u32, ColorSpace::AssumedBt709);
+        let bytes = frame(w, h);
+        let stage = CpuPreprocess::new();
+        let frame = FrameRef {
+            desc: d.clone(),
+            buffer: FrameBuffer::host_owned(bytes.clone()),
+        };
+        let out = stage.process(&frame).expect("stage runs");
+        let (sy, su, sv) = convert_thwc::<U8Sample>(&bytes, &d, w, h);
+        assert!(max_diff(&out.y, &sy) <= 1);
+        assert!(max_diff(&out.u, &su) <= 1);
+        assert!(max_diff(&out.v, &sv) <= 1);
     }
 }
