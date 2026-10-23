@@ -309,7 +309,7 @@ unsafe fn widen_bf16(
 ///
 /// # Safety
 /// Requires AVX2.
-#[inline]
+#[inline(always)]
 unsafe fn core8(k: &K, r: __m256, g: __m256, b: __m256) -> (__m256i, __m256, __m256) {
     let r = _mm256_min_ps(_mm256_max_ps(_mm256_fmadd_ps(r, k.scale, k.offset), k.zero), k.max);
     let g = _mm256_min_ps(_mm256_max_ps(_mm256_fmadd_ps(g, k.scale, k.offset), k.zero), k.max);
@@ -324,7 +324,7 @@ unsafe fn core8(k: &K, r: __m256, g: __m256, b: __m256) -> (__m256i, __m256, __m
 ///
 /// # Safety
 /// Requires SSE4.1.
-#[inline]
+#[inline(always)]
 unsafe fn core4(k: &K, r: __m128, g: __m128, b: __m128) -> (__m128i, __m128, __m128) {
     let r = _mm_min_ps(_mm_max_ps(_mm_fmadd_ps(r, k.scale4, k.offset4), k.zero4), k.max4);
     let g = _mm_min_ps(_mm_max_ps(_mm_fmadd_ps(g, k.scale4, k.offset4), k.zero4), k.max4);
@@ -339,7 +339,7 @@ unsafe fn core4(k: &K, r: __m128, g: __m128, b: __m128) -> (__m128i, __m128, __m
 ///
 /// # Safety
 /// `out` must have four writable bytes.
-#[inline]
+#[inline(always)]
 unsafe fn store4(out: *mut u8, v: __m128i) {
     let packed = _mm_packus_epi32(v, v);
     let packed = _mm_packus_epi16(packed, packed);
@@ -350,7 +350,7 @@ unsafe fn store4(out: *mut u8, v: __m128i) {
 ///
 /// # Safety
 /// `out` must have eight writable bytes.
-#[inline]
+#[inline(always)]
 unsafe fn store8(out: *mut u8, v: __m256i) {
     // Packing inside each 128-bit half then joining keeps the lane order, which
     // a single `packus` across the whole register would not.
@@ -365,6 +365,7 @@ unsafe fn store8(out: *mut u8, v: __m256i) {
 ///
 /// # Safety
 /// `base` must cover the frame; the outputs hold `w` elements.
+#[inline(always)]
 unsafe fn row_thwc_u8(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8, cb: *mut f32, cr: *mut f32) {
     let w = ctx.w;
     // Byte offsets of four pixels' R, G and B inside one 16-byte load.
@@ -396,6 +397,7 @@ unsafe fn row_thwc_u8(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8,
 ///
 /// # Safety
 /// Each plane must cover the frame; the outputs hold `w` elements.
+#[inline(always)]
 unsafe fn row_bcthw_u8(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8, cb: *mut f32, cr: *mut f32) {
     let w = ctx.w;
     let offset = sy * w;
@@ -433,6 +435,7 @@ unsafe fn row_bcthw_u8(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8
 ///
 /// # Safety
 /// `base` must cover the frame; the outputs hold `w` elements.
+#[inline(always)]
 unsafe fn row_thwc_f32(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8, cb: *mut f32, cr: *mut f32) {
     let w = ctx.w;
     let p = (base as *const f32).add(sy * w * 3);
@@ -465,6 +468,7 @@ unsafe fn row_thwc_f32(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8
 ///
 /// # Safety
 /// Each plane must cover the frame; the outputs hold `w` elements.
+#[inline(always)]
 unsafe fn row_bcthw_f32(
     ctx: &Ctx<'_>,
     base: *const u8,
@@ -545,7 +549,7 @@ fn combine(cb0: &[f32], cr0: &[f32], cb1: &[f32], cr1: &[f32], cw: usize, u: &mu
 
 /// # Safety
 /// Requires AVX2.
-#[inline]
+#[inline(always)]
 unsafe fn round_u8_256(v: __m256) -> __m256i {
     // Round half away from zero like `f32::round`: bias then truncate.
     let zero = _mm256_setzero_ps();
@@ -561,7 +565,7 @@ unsafe fn round_u8_256(v: __m256) -> __m256i {
 
 /// # Safety
 /// Requires SSE4.1.
-#[inline]
+#[inline(always)]
 unsafe fn round_u8_128(v: __m128) -> __m128i {
     let zero = _mm_setzero_ps();
     let bias = _mm_blendv_ps(
