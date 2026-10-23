@@ -34,8 +34,9 @@ with blazar.Encoder(calibrations=cals, identity={...}, target="balanced",
 | `calibrations` | `Calibrations` | Loaded calibration set. |
 | `identity` | `dict` | Model identity: `{"family", "version", "quant", "size"}`. Used to pick the calibration. |
 | `target` | `str` | `"low_latency"`, `"balanced"` or `"quality"`. |
-| `backend` | `str` | `"nvenc_av1"`, `"nvenc_h264"`, `"nvenc_hevc"`, `"x264"`, `"x265"`, `"svtav1"`, `"vp9"`, or `"mock"` (tests only, compresses nothing). |
-| `output` | `str` | Output path. |
+| `backend` | `str` | `"nvenc_av1"`, `"nvenc_h264"`, `"nvenc_hevc"`, `"videotoolbox_h264"`, `"videotoolbox_hevc"` (macOS), `"x264"`, `"x265"`, `"svtav1"`, `"vp9"`, or `"mock"` (tests only, compresses nothing). |
+| `output` | `str \| None` | Output path, or `None` to keep encoded units in memory and hand them back from `poll()`. |
+| `max_buffered_units` | `int` | When `output` is `None`: how many encoded units may sit in the buffer before a write fails. Defaults to 240. |
 | `codec` | `str` | Wire codec: `"h264"`, `"hevc"`, `"av1"`, `"vp9"`. Required for CPU backends, because `backend` and `codec` are separate choices. |
 | `request_id` | `str` | Tag used in logs and events. Defaults to `"stream"`. |
 | `video_extradata` | `bytes \| None` | Codec configuration override. Leave `None` for real encoders. |
@@ -48,14 +49,33 @@ with blazar.Encoder(calibrations=cals, identity={...}, target="balanced",
 | `submit(frame, width, height, fps, layout, range, pts_ticks=None, scene_cut=False)` | `int` | Queue one host frame. `layout` is `"thwc"` (`H, W, 3`) or `"bcthw"` (`3, H, W`), optionally with a leading batch axis. `range` is `"unit01"`, `"signed_unit"` or `"full_u8"`. Returns the assigned PTS. |
 | `submit_batch(frames, width, height, fps, layout, range, pts_ticks=None, scene_cut=False)` | `int` | Queue many host frames in one call. |
 | `submit_device_batch(tensor, fps, range, pts_ticks=None, scene_cut=False)` | `int` | Queue a CUDA tensor shaped `(1, 3, T, H, W)`, `torch.float32` or `torch.bfloat16`, contiguous. This is the fast path: no host copy and, for CPU codecs, colour conversion on the GPU. |
-| `poll(timeout=None)` | `list[dict]` | Encoded units produced so far, each with `track`, `pts`, `dts`, `keyframe`, `data`, `path`. |
+| `poll(timeout=None)` | `list[dict]` | Encoded units produced so far. Two shapes: a per-frame `{"kind": "encoded", "seq", "pts", "keyframe", "units", "bytes", "encode_us", "queue_depth"}`, and one event per encoded unit carrying `{"kind": "encoded", "pts", "dts", "keyframe", "bytes", "data"}` where `data` is the encoded bytes when the stream has no output file. With `output` set, `data` is `None`. |
 | `flush(timeout=None)` | `None` | Encode everything queued. |
 | `close(timeout=None)` | `None` | Flush and finalise the output. Safe to call twice. |
-| `stats()` | `dict` | Counters for the stream. |
+| `stats` | `dict` | Counters for the stream: `encoded`, `bytes`, `failed`, `max_encode_us`. A property, not a method. |
 | `error_message()` | `str \| None` | Why the stream failed, if it did. |
 | `failed_event_message()` | `str \| None` | Error recorded by the worker, including backend-specific text. |
 
 The object is a context manager: leaving the `with` block calls `close()`.
+
+### Collecting encoded frames instead of writing a file
+
+```python
+enc = blazar.Encoder(calibrations=cals, identity=identity, target="balanced",
+                     backend="x264", codec="h264", output=None)
+for frame in frames:
+    enc.submit(frame, width=W, height=H, fps=24.0, layout="thwc", range="full_u8")
+enc.close()
+for event in enc.poll():
+    if event["kind"] == "encoded" and event["data"] is not None:
+        send(event["data"])     # one encoded access unit
+```
+
+Units arrive in decode order, so `pts` is not monotonic when the encoder reorders
+with B-frames. The buffer is bounded: if the caller stops draining it, a write fails
+with an error naming the limit rather than dropping a frame silently. Encoders with
+lookahead or B-frames emit nothing at submit time, so most units surface during
+`close()`, which is why the loop above polls after closing.
 
 ### Errors
 

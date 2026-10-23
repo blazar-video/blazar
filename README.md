@@ -14,22 +14,26 @@ Wan pipelines. Calibration data comes from the companion `calibrator` repo.
 |-------|------|
 | `blazar-core` | Shared contract types: `FrameRef`/`FrameDesc`, `EncodedUnit`, `StreamParams`, `ModelIdentity`, `Target`, `Pts`/`Timebase`. No I/O. |
 | `blazar-calibration` | TOML calibration schema, validating loader, specificity index for model/target lookup. |
-| `blazar-preprocess` | Preprocess trait plus CPU implementation (RGB→YUV, range normalise, 4:2:0 subsample, 8-bit quantise) and an NVRTC-compiled CUDA kernel for the same conversion. |
-| `blazar-encoder` | `VideoEncoder` trait, calibration→config translation, and the codec backends: NVENC (AV1/H.264/HEVC), x264, x265, SVT-AV1, VP9, plus a mock encoder for contract tests. |
-| `blazar-sink` | `Sink` trait, `OrderGuard`, `DebugFileSink`, and `Fmp4FileSink` on a pinned `oxideav-mp4` fork (AV1/H.264/HEVC + Opus/AAC). |
+| `blazar-preprocess` | Preprocess trait, the CPU implementation (RGB→YUV, range normalise, 4:2:0 subsample, 8-bit quantise) with NEON/AVX2 kernels for every layout and dtype, and an NVRTC-compiled CUDA kernel for the same conversion. |
+| `blazar-encoder` | `VideoEncoder` trait, calibration→config translation, and the codec backends: NVENC (AV1/H.264/HEVC), VideoToolbox (H.264/HEVC, macOS), x264, x265, SVT-AV1, VP9, plus a mock encoder for contract tests. |
+| `blazar-sink` | `Sink` trait, `OrderGuard`, `DebugFileSink`, `MemorySink` (units handed back instead of written), and `Fmp4FileSink` on a pinned `oxideav-mp4` fork (AV1/H.264/HEVC + Opus/AAC). |
 | `blazar-runtime` | `Encoder::new` → `open_stream` → `submit_video`/`flush`/`close`, the encoder worker, session limiting, and GPU preprocessing glue. |
 | `blazar-*-sys` | FFI bindings: `svtav1`, `vpx`, `x265` (x265 resolves the encoder symbol per library build, so Debian/macOS builds both work). |
 
 ## What works
 
 **Ingest.** Host frames as `thwc`/`bcthw`, `u8` or `f32`; device tensors as
-`bcthw`/`bchw` with a `torch` buffer, including non-contiguous views. `u8`
+`bcthw`/`bchw` in `float32` or `bfloat16`, including non-contiguous views. `u8`
 ingest skips the float conversion and is byte-identical to `f32` output.
 
 **Codecs.** NVENC AV1/H.264/HEVC (zero-copy from `cuMemAllocPitch` allocations),
-x264, x265, SVT-AV1, VP9. Every backend writes BT.709 full-range VUI; CPU codec
-packet timestamps come from the encoder's output picture, not the submitted
-frame, so B-frame reordering keeps DTS valid.
+VideoToolbox H.264/HEVC on macOS, x264, x265, SVT-AV1, VP9. Every backend writes
+BT.709 full-range VUI; CPU codec packet timestamps come from the encoder's output
+picture, not the submitted frame, so B-frame reordering keeps DTS valid.
+
+**Output.** `output="file.mp4"` muxes fragmented MP4; `output=None` keeps the
+encoded units in memory and hands them back from `poll()`, so a caller can forward
+them (WebRTC, a test harness) without touching the filesystem.
 
 **Sinks.** Fragmented MP4 via the `oxideav-mp4` fork; `DebugFileSink` for
 inspection. The muxer is opened after the first keyframe, when `avcC`/`hvcC`/`av1C`
@@ -63,34 +67,48 @@ with blazar.Encoder(calibrations=cals, identity={"family": "wan", "version": "2.
 
 ## Measured performance
 
-240 real 1080p frames, handed over as a `(1, 3, T, H, W)` tensor already resident on
-the GPU, encoded to a file. The clock covers everything from the frames being ready
-to the file being closed: colour conversion, encode, and the device-to-host copy
-where a pipeline needs one. Encoder construction happens before the clock.
+240 real 1080p frames from one clip, encoded to a file. The clock covers the submit
+loop through `close()`; encoder construction happens before it and the frames are
+already in the dtype and layout each row names. Best of two runs, RTX 4080 SUPER
+with an i7-14700KF host, WSL2.
 
-| Pipeline | ms/frame |
-|---|---|
-| **blazar, GPU rgb2yuv, NVENC H.264** (bf16) | **3.81** |
-| **blazar, GPU rgb2yuv, x264** (bf16) | **5.05** |
-| SGLang mainline, `CudaVideoEncoder` (ffmpeg/libx264) | 9.13 |
-| blazar, CPU rgb2yuv, x264 | 17.9 |
-| vLLM-Omni mainline, PyAV | 48.07 |
+| Backend | Frames arrive as | u8 | f32 | bf16 |
+|---|---|---|---|---|
+| NVENC H.264 | host arrays, CPU rgb2yuv | not supported | 8.46 | not supported |
+| NVENC H.264 | device tensor, GPU rgb2yuv | not supported | **3.20** | 4.48 |
+| x264 | host arrays, CPU rgb2yuv | **4.65** | 6.74 | not supported |
+| x264 | device tensor, GPU rgb2yuv | not supported | 6.68 | 7.06 |
 
-What the ordering says:
+What the table says:
 
-- **Keeping the frames on the GPU is the whole point.** The same x264 encode costs
-  5.05 ms/frame with GPU conversion and 17.9 once the frames have to come back to
-  the host. That 13 ms is the copy plus a scalar CPU conversion, not the codec.
-- **bf16 is the right dtype.** It is what a VAE emits and it halves the bytes through
-  the conversion kernel.
-- **The mainline paths are slower because they were not built for this.** SGLang's
-  encoder shells out to ffmpeg after staging each chunk through host memory;
-  vLLM-Omni's `_encode_video_bytes` is an HTTP-response helper that copies to the
-  host and encodes with PyAV defaults.
+- **The fastest path depends on the codec.** A hardware encoder that can read a
+device buffer is 2.6x faster than staging to the host (3.20 against 8.46). A
+software encoder is the opposite: x264 on host `u8` arrays (4.65) beats the same
+x264 on a device tensor (6.68), because the frames have to come back for the encoder
+to read them and nothing else needs the GPU.
+- **Ingest dtype is a transfer cost, not an arithmetic one.** An 1080p frame is 6 MB
+as `u8` and 25 MB as `f32`, and the conversion kernel costs the same either way
+(0.44-0.62 ms measured). The 2.1 ms gap between x264's `u8` and `f32` rows is the
+copy.
+- **`bf16` device ingest is not a win yet.** It moves half the bytes of `f32` and
+measured *slower* (4.48 against 3.20) for reasons not yet established. Do not size
+a deployment on it until that is explained.
 
-The rows are not equal settings: the mainline encoders use their library defaults,
-blazar uses a calibration target. Treat the comparison as "what each stack costs as
-it ships", not as a quality-matched benchmark.
+The four "not supported" cells are real gaps, not omissions:
+
+- NVENC host frames cannot be `u8`: the GPU preprocess stage runs even for host
+  input and has no `u8` branch, so `u8` frames must be widened to `f32` first.
+- Device tensors must be `float32` or `bfloat16`; `uint8` is rejected, because a
+  VAE does not emit it.
+- Host `bf16` is rejected because the binding infers dtype from the buffer format
+  and bfloat16 has no numpy dtype to infer from. An explicit dtype argument would
+  close this.
+
+For comparison, measured on the same box in an earlier pass and not re-run since:
+SGLang's `CudaVideoEncoder` (ffmpeg/libx264) 9.13 ms/frame, vLLM-Omni's PyAV path
+48.07. Both stage through host memory and use library default settings; blazar uses
+a calibration target, so treat this as "what each stack costs as it ships", not a
+quality-matched comparison.
 
 **Batch kernel** (Nsight Compute A/B): 2.28-2.72x over per-frame launches, device
 path only. `submit_batch` on host frames is slower than a per-frame loop, because the
@@ -100,10 +118,18 @@ frames have to cross into the runtime either way.
 4 streams 4.59, 8 streams **3.51**. An RTX 4080 SUPER accepts 9 sessions and rejects
 the 10th, which is why the session limiter exists.
 
-**Ingest width matters more than arithmetic.** An AVX2 version of the f32 conversion
-was written, measured slower (16.1 vs 11.2 ms/frame, because the routine reads every
-25 MB plane twice), and removed. Handing 8-bit frames in instead of f32 saves 1.3
-ms/frame for identical output.
+**The colour conversion is not the bottleneck.** RGB→YUV420 has vector kernels
+(NEON and AVX2) for all six combinations of layout and dtype, 2.1-3.7x faster than
+the scalar reference at 1080p:
+
+| Source | macOS (NEON) | Windows (AVX2) | WSL2 (AVX2) | Scalar |
+|---|---|---|---|---|
+| `thwc` u8 | 0.47 | 0.47 | 0.88 | 1.21-2.24 |
+| `bcthw` u8 | 0.43 | 0.44 | 0.57 | 1.27-2.21 |
+| `thwc` f32 | 0.46 | 0.52 | 0.76 | 1.59-2.62 |
+| `bcthw` f32 | 0.46 | 0.44 | 0.66 | 1.61-2.62 |
+| `thwc` bf16 | 0.47 | 0.62 | 1.16 | 1.28-2.33 |
+| `bcthw` bf16 | 0.45 | 0.55 | 0.87 | 1.37-2.33 |
 
 Numbers on this machine move by 10-15% between runs, so treat differences under that
 as noise.
@@ -121,6 +147,10 @@ as noise.
   keyframe instead.
 - The SDK bindings are built against the 12.1 headers. Newer drivers accept
   them; an older driver gets a named `EncodeError`, not a panic.
+- VideoToolbox has no CRF. `RateControl::Crf` maps onto its quality knob
+  (`1 - crf/51`), so the same setting is not the same bitrate as x264/x265.
+  `request_keyframe` is a no-op: forcing one needs a frame property that is not
+  wired up.
 
 ## Build and test
 
@@ -140,6 +170,7 @@ Codec features are per-library because they pull system dependencies:
 | `enc-svtav1` | `libSvtAv1Enc` |
 | `enc-vp9` | `libvpx` |
 | `gpu-preprocess` | `nvenc`; NVRTC-compiles the NV12 kernel at runtime |
+| `enc-videotoolbox` | macOS only; links the system frameworks, nothing to install |
 
 Hardware tests are ignored by default and run on a machine with a GPU:
 
