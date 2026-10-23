@@ -50,7 +50,9 @@ of letting the driver refuse a session. The GIL is released while waiting.
 hooks the decode stage SGLang already has.
 
 **Python.** `bindings/python` (PyO3 + maturin) exposes `blazar.Encoder` and
-`blazar.Calibrations`:
+`blazar.Calibrations`. Every argument, method, layout and error is documented in
+[`docs/python-api.md`](docs/python-api.md); runnable examples are in
+[`examples/python/`](examples/python/):
 
 ```python
 import blazar
