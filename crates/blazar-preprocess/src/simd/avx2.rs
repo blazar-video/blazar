@@ -123,6 +123,14 @@ impl Scratch {
     }
 }
 
+/// The attribute is what lets LLVM compile and schedule this function for AVX2.
+/// Without it the intrinsics still emit their instructions, but everything
+/// around them is generated for baseline x86-64, which measured slower than the
+/// scalar pass.
+///
+/// # Safety
+/// The caller must have checked [`available`].
+#[target_feature(enable = "avx2,fma,ssse3,sse4.1")]
 pub(crate) unsafe fn convert(
     kind: Kind,
     bytes: &[u8],
