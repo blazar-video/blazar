@@ -220,9 +220,7 @@ impl PreprocessStage for CpuPreprocess {
         // Dispatch dtype+layout once; the pixel loops then have no branches on
         // either. This is the difference between ~19 ms and a few ms at 1080p.
         let (y, u, v) = match (desc.layout, desc.dtype) {
-            (Layout::Thwc, Dtype::F32) => convert_thwc::<F32Sample>(bytes, desc, w, h),
-            (Layout::Thwc, Dtype::Bf16) => convert_thwc::<Bf16Sample>(bytes, desc, w, h),
-            // Every supported pair now goes through the vector kernel, which
+            // Every supported pair goes through the vector kernel, which
             // falls back to the scalar pass when the CPU has none. The scalar
             // implementations stay because they are the reference the kernels
             // are tested against.
@@ -1140,8 +1138,9 @@ mod bench {
     use blazar_core::{ColorRange, ColorSpace, FrameBuffer, FrameDesc, FrameRef};
     use std::time::Instant;
 
-    /// Times every kernel at 1080p. Ignored by default: it is a measurement, not
-    /// a correctness check. Run with
+    /// Times every kernel at 1080p through the stage, which allocates the output
+    /// planes on each call. Ignored by default: it is a measurement, not a
+    /// correctness check. Run with
     /// `cargo test -p blazar-preprocess --release -- --ignored --nocapture`.
     #[test]
     #[ignore]
@@ -1206,6 +1205,157 @@ mod bench {
             }
             let per = started.elapsed().as_secs_f64() * 1000.0 / iters as f64;
             println!("{name:>10}: {per:8.3} ms/frame");
+        }
+    }
+}
+
+#[cfg(test)]
+mod bench_direct {
+    use super::*;
+    use blazar_core::{ColorRange, ColorSpace, FrameBuffer, FrameDesc, FrameRef};
+    use std::time::Instant;
+
+    const W: usize = 1920;
+    const H: usize = 1080;
+
+    struct Case {
+        name: &'static str,
+        layout: Layout,
+        dtype: Dtype,
+        size: usize,
+        kind: simd::Kind,
+    }
+
+    fn cases() -> Vec<Case> {
+        vec![
+            Case { name: "thwc_u8", layout: Layout::Thwc, dtype: Dtype::U8, size: 1, kind: simd::Kind::ThwcU8 },
+            Case { name: "bcthw_u8", layout: Layout::Bcthw, dtype: Dtype::U8, size: 1, kind: simd::Kind::BcthwU8 },
+            Case { name: "thwc_f32", layout: Layout::Thwc, dtype: Dtype::F32, size: 4, kind: simd::Kind::ThwcF32 },
+            Case { name: "bcthw_f32", layout: Layout::Bcthw, dtype: Dtype::F32, size: 4, kind: simd::Kind::BcthwF32 },
+            Case { name: "thwc_bf16", layout: Layout::Thwc, dtype: Dtype::Bf16, size: 2, kind: simd::Kind::ThwcBf16 },
+            Case { name: "bcthw_bf16", layout: Layout::Bcthw, dtype: Dtype::Bf16, size: 2, kind: simd::Kind::BcthwBf16 },
+        ]
+    }
+
+    /// Deterministic content whose values sit inside the declared range.
+    fn build(size: usize, dtype: Dtype) -> Vec<u8> {
+        let samples = W * H * 3;
+        let mut data = vec![0u8; samples * size];
+        for i in 0..samples {
+            let v = ((i * 37 + i / 13) % 1001) as f32 / 1000.0;
+            match dtype {
+                Dtype::U8 => data[i] = (v * 255.0) as u8,
+                Dtype::Bf16 => {
+                    let bits = (v.to_bits() >> 16) as u16;
+                    data[2 * i..2 * i + 2].copy_from_slice(&bits.to_le_bytes());
+                }
+                _ => data[4 * i..4 * i + 4].copy_from_slice(&v.to_le_bytes()),
+            }
+        }
+        data
+    }
+
+    fn desc(case: &Case) -> FrameDesc {
+        FrameDesc {
+            width: W as u32,
+            height: H as u32,
+            dtype: case.dtype,
+            range: if case.dtype == Dtype::U8 {
+                ColorRange::FullU8
+            } else {
+                ColorRange::Unit01
+            },
+            layout: case.layout,
+            colorspace: ColorSpace::AssumedBt709,
+            fps: 24.0,
+            pts: Pts(0),
+        }
+    }
+
+    /// Scalar reference, timed with the same preallocated outputs.
+    fn scalar_into(case: &Case, d: &FrameDesc, bytes: &[u8], y: &mut [u8], u: &mut [u8], v: &mut [u8]) {
+        let (sy, su, sv) = match (case.layout, case.dtype) {
+            (Layout::Thwc, Dtype::U8) => convert_thwc::<U8Sample>(bytes, d, W, H),
+            (Layout::Bcthw, Dtype::U8) => convert_bcthw::<U8Sample>(bytes, d, W, H),
+            (Layout::Thwc, Dtype::F32) => convert_thwc::<F32Sample>(bytes, d, W, H),
+            (Layout::Bcthw, Dtype::F32) => convert_bcthw::<F32Sample>(bytes, d, W, H),
+            (Layout::Thwc, Dtype::Bf16) => convert_thwc::<Bf16Sample>(bytes, d, W, H),
+            (Layout::Bcthw, Dtype::Bf16) => convert_bcthw::<Bf16Sample>(bytes, d, W, H),
+            _ => unreachable!(),
+        };
+        y.copy_from_slice(&sy);
+        u.copy_from_slice(&su);
+        v.copy_from_slice(&sv);
+    }
+
+    #[test]
+    #[ignore]
+    fn direct_kernel_timings() {
+        let cw = W.div_ceil(2);
+        let ch = H.div_ceil(2);
+        // Allocated once, outside every clock.
+        let mut y = vec![0u8; W * H];
+        let mut u = vec![0u8; cw * ch];
+        let mut v = vec![0u8; cw * ch];
+        let stage = CpuPreprocess::new();
+        println!(
+            "vector kernels available: {}  ({}x{})",
+            simd::available(),
+            W,
+            H
+        );
+        println!("{:<11} {:>9} {:>9} {:>9}", "kind", "scalar", "vector", "stage");
+        for case in cases() {
+            let bytes = build(case.size, case.dtype);
+            let d = desc(&case);
+
+            // Warm up every path once so page tables and caches are settled.
+            scalar_into(&case, &d, &bytes, &mut y, &mut u, &mut v);
+            let used = simd::convert(case.kind, &bytes, &d, W, H, &mut y, &mut u, &mut v);
+            let frame = FrameRef {
+                desc: d.clone(),
+                buffer: FrameBuffer::host_owned(bytes.clone()),
+            };
+            let _ = stage.process(&frame).unwrap();
+
+            // Three rounds, best of each: a shared machine drifts, and the
+            // minimum is the closest thing to the kernel's own cost.
+            let iters = 20;
+            let rounds = 3;
+            let mut best = [f64::MAX; 3];
+            for _ in 0..rounds {
+                let t = Instant::now();
+                for _ in 0..iters {
+                    scalar_into(&case, &d, &bytes, &mut y, &mut u, &mut v);
+                    std::hint::black_box(&y);
+                }
+                best[0] = best[0].min(t.elapsed().as_secs_f64() * 1000.0 / iters as f64);
+
+                let t = Instant::now();
+                for _ in 0..iters {
+                    simd::convert(case.kind, &bytes, &d, W, H, &mut y, &mut u, &mut v);
+                    std::hint::black_box(&y);
+                }
+                best[1] = best[1].min(t.elapsed().as_secs_f64() * 1000.0 / iters as f64);
+
+                // The stage allocates its planes, which is what the pipeline pays.
+                let t = Instant::now();
+                for _ in 0..iters {
+                    let out = stage.process(&frame).unwrap();
+                    std::hint::black_box(&out.y);
+                }
+                best[2] = best[2].min(t.elapsed().as_secs_f64() * 1000.0 / iters as f64);
+            }
+            let (scalar, vector, stage_ms) = (best[0], best[1], best[2]);
+
+            println!(
+                "{:<11} {:>8.3} {:>9.3} {:>9.3}{}",
+                case.name,
+                scalar,
+                vector,
+                stage_ms,
+                if used { "" } else { "   (no vector path)" }
+            );
         }
     }
 }
