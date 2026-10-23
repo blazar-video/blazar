@@ -125,19 +125,18 @@ pub(crate) unsafe fn convert(
     };
 
     let row_pair = |cy: usize, y_rows: &mut [u8], u_row: &mut [u8], v_row: &mut [u8]| {
-        let mut cb0 = vec![0.0f32; w];
-        let mut cr0 = vec![0.0f32; w];
-        let mut cb1 = vec![0.0f32; w];
-        let mut cr1 = vec![0.0f32; w];
-        let mut scratch = vec![0.0f32; scratch_len];
+        SCRATCH.with(|cell| {
+        let mut scratch = cell.borrow_mut();
+        scratch.ensure(w, scratch_len);
+        let Scratch { cb0, cr0, cb1, cr1, wide } = &mut *scratch;
         let rows = y_rows.len() / w;
         for (dy, y_row) in y_rows.chunks_exact_mut(w).enumerate() {
             let sy = cy * 2 + dy;
             debug_assert!(sy < h);
             let (cb, cr) = if dy == 0 {
-                (&mut cb0, &mut cr0)
+                (&mut *cb0, &mut *cr0)
             } else {
-                (&mut cb1, &mut cr1)
+                (&mut *cb1, &mut *cr1)
             };
             // SAFETY: the driver stays inside the row it is given; the scratch
             // rows hold `w` floats each.
@@ -146,7 +145,7 @@ pub(crate) unsafe fn convert(
                 &ctx,
                 base,
                 sy,
-                &mut scratch,
+                wide,
                 y_row.as_mut_ptr(),
                 cb.as_mut_ptr(),
                 cr.as_mut_ptr(),

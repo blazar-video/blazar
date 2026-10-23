@@ -56,6 +56,40 @@ impl K {
     }
 }
 
+/// Row-pair scratch, kept per thread so a frame costs no allocations.
+///
+/// Rayon runs row pairs on every worker thread, and four fresh vectors per pair
+/// meant 2,160 allocations per 1080p frame; on Linux the allocator contention
+/// across 28 threads cost more than the kernels saved.
+#[derive(Default)]
+struct Scratch {
+    cb0: Vec<f32>,
+    cr0: Vec<f32>,
+    cb1: Vec<f32>,
+    cr1: Vec<f32>,
+    /// Widened bf16 rows; empty for the other layouts.
+    wide: Vec<f32>,
+}
+
+thread_local! {
+    static SCRATCH: std::cell::RefCell<Scratch> = std::cell::RefCell::new(Scratch::default());
+}
+
+impl Scratch {
+    fn ensure(&mut self, w: usize, wide: usize) {
+        for v in [&mut self.cb0, &mut self.cr0, &mut self.cb1, &mut self.cr1] {
+            if v.len() < w {
+                v.resize(w, 0.0);
+            }
+            v.truncate(w);
+        }
+        if self.wide.len() < wide {
+            self.wide.resize(wide, 0.0);
+        }
+        self.wide.truncate(wide);
+    }
+}
+
 pub(crate) fn convert(
     kind: Kind,
     bytes: &[u8],
@@ -94,19 +128,18 @@ pub(crate) fn convert(
     };
 
     let row_pair = |cy: usize, y_rows: &mut [u8], u_row: &mut [u8], v_row: &mut [u8]| {
-        let mut cb0 = vec![0.0f32; w];
-        let mut cr0 = vec![0.0f32; w];
-        let mut cb1 = vec![0.0f32; w];
-        let mut cr1 = vec![0.0f32; w];
-        let mut scratch = vec![0.0f32; scratch_len];
+        SCRATCH.with(|cell| {
+        let mut scratch = cell.borrow_mut();
+        scratch.ensure(w, scratch_len);
+        let Scratch { cb0, cr0, cb1, cr1, wide } = &mut *scratch;
         let rows = y_rows.len() / w;
         for (dy, y_row) in y_rows.chunks_exact_mut(w).enumerate() {
             let sy = cy * 2 + dy;
             debug_assert!(sy < h);
             let (cb, cr) = if dy == 0 {
-                (&mut cb0, &mut cr0)
+                (&mut *cb0, &mut *cr0)
             } else {
-                (&mut cb1, &mut cr1)
+                (&mut *cb1, &mut *cr1)
             };
             // SAFETY: the driver stays inside the row it is given, and the two
             // scratch rows hold `w` floats each.
@@ -116,7 +149,7 @@ pub(crate) fn convert(
                     &ctx,
                     base,
                     sy,
-                    &mut scratch,
+                    wide,
                     y_row.as_mut_ptr(),
                     cb.as_mut_ptr(),
                     cr.as_mut_ptr(),
@@ -125,10 +158,11 @@ pub(crate) fn convert(
         }
         // Odd heights: the last chroma row averages one luma row over itself.
         if rows == 1 {
-            cb1.copy_from_slice(&cb0);
-            cr1.copy_from_slice(&cr0);
+            cb1.copy_from_slice(cb0);
+            cr1.copy_from_slice(cr0);
         }
-        combine(&cb0, &cr0, &cb1, &cr1, cw, u_row, v_row);
+        combine(cb0, cr0, cb1, cr1, cw, u_row, v_row);
+        });
     };
 
     if pixels < crate::PARALLEL_MIN_PIXELS {
