@@ -121,6 +121,8 @@ struct WrittenUnit {
     keyframe: bool,
     bytes: usize,
     pts: u64,
+    /// Decode timestamp, kept so flush/close events can report it too.
+    dts: u64,
 }
 
 /// Sink decorator that records what was written on each `submit_video` call.
@@ -145,6 +147,7 @@ impl Sink for ReportingSink {
                 keyframe: unit.keyframe,
                 bytes: unit.bytes.len(),
                 pts: unit.pts.0,
+                dts: unit.dts.0,
             });
         self.inner.write(unit)
     }
@@ -312,7 +315,7 @@ fn worker_main(
                             seq,
                             pts,
                             keyframe,
-                            dts: units.first().map(|u| u.dts.0),
+                            dts: units.first().map(|u| u.dts),
                             units: units.len(),
                             bytes,
                             encode_us,
@@ -392,7 +395,7 @@ fn worker_main(
                             seq,
                             pts,
                             keyframe,
-                            dts: units.first().map(|u| u.dts.0),
+                            dts: units.first().map(|u| u.dts),
                             units: units.len(),
                             bytes,
                             encode_us,
@@ -469,7 +472,7 @@ fn worker_main(
                             seq,
                             pts,
                             keyframe,
-                            dts: units.first().map(|u| u.dts.0),
+                            dts: units.first().map(|u| u.dts),
                             units: units.len(),
                             bytes,
                             encode_us,
