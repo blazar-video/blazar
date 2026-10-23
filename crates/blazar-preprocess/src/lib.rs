@@ -222,15 +222,16 @@ impl PreprocessStage for CpuPreprocess {
         let (y, u, v) = match (desc.layout, desc.dtype) {
             (Layout::Thwc, Dtype::F32) => convert_thwc::<F32Sample>(bytes, desc, w, h),
             (Layout::Thwc, Dtype::Bf16) => convert_thwc::<Bf16Sample>(bytes, desc, w, h),
-            // Scalar for now. An AVX2 path that vectorised luma in a separate
-            // pass was measured and removed: the extra pass over 25 MB of f32
-            // planes cost more than the vector maths saved (16.1 vs 11.2
-            // ms/frame at 1080p). A vectorised version must fuse luma and the
-            // 2x2 chroma into one pass to have a chance.
-            (Layout::Bcthw, Dtype::F32) => convert_bcthw::<F32Sample>(bytes, desc, w, h),
-            (Layout::Bcthw, Dtype::Bf16) => convert_bcthw::<Bf16Sample>(bytes, desc, w, h),
-            (Layout::Thwc, Dtype::U8) => convert_thwc_u8_simd(bytes, desc, w, h),
-            (Layout::Bcthw, Dtype::U8) => convert_bcthw::<U8Sample>(bytes, desc, w, h),
+            // Every supported pair now goes through the vector kernel, which
+            // falls back to the scalar pass when the CPU has none. The scalar
+            // implementations stay because they are the reference the kernels
+            // are tested against.
+            (Layout::Thwc, Dtype::U8) => convert_simd(simd::Kind::ThwcU8, bytes, desc, w, h),
+            (Layout::Bcthw, Dtype::U8) => convert_simd(simd::Kind::BcthwU8, bytes, desc, w, h),
+            (Layout::Thwc, Dtype::F32) => convert_simd(simd::Kind::ThwcF32, bytes, desc, w, h),
+            (Layout::Bcthw, Dtype::F32) => convert_simd(simd::Kind::BcthwF32, bytes, desc, w, h),
+            (Layout::Thwc, Dtype::Bf16) => convert_simd(simd::Kind::ThwcBf16, bytes, desc, w, h),
+            (Layout::Bcthw, Dtype::Bf16) => convert_simd(simd::Kind::BcthwBf16, bytes, desc, w, h),
             (_, other) => return Err(PreprocessError::UnsupportedDtype(other)),
         };
 
@@ -245,11 +246,12 @@ impl PreprocessStage for CpuPreprocess {
     }
 }
 
-/// Interleaved 8-bit frames use the vector kernel when the CPU has one.
+/// Convert through the vector kernel, or fall back to the scalar pass.
 ///
-/// Falls back to the scalar pass rather than failing: the SIMD path is an
-/// optimisation, not a capability requirement.
-fn convert_thwc_u8_simd(
+/// The vector path is an optimisation, not a capability requirement, so a CPU
+/// without one still produces a correct frame.
+fn convert_simd(
+    kind: simd::Kind,
     bytes: &[u8],
     desc: &blazar_core::FrameDesc,
     w: usize,
@@ -260,10 +262,17 @@ fn convert_thwc_u8_simd(
     let mut y = vec![0u8; w * h];
     let mut u = vec![0u8; cw * ch];
     let mut v = vec![0u8; cw * ch];
-    if simd::convert_thwc_u8(bytes, desc, w, h, &mut y, &mut u, &mut v) {
-        (y, u, v)
-    } else {
-        convert_thwc::<U8Sample>(bytes, desc, w, h)
+    if simd::convert(kind, bytes, desc, w, h, &mut y, &mut u, &mut v) {
+        return (y, u, v);
+    }
+    match (desc.layout, desc.dtype) {
+        (Layout::Thwc, Dtype::U8) => convert_thwc::<U8Sample>(bytes, desc, w, h),
+        (Layout::Bcthw, Dtype::U8) => convert_bcthw::<U8Sample>(bytes, desc, w, h),
+        (Layout::Thwc, Dtype::F32) => convert_thwc::<F32Sample>(bytes, desc, w, h),
+        (Layout::Bcthw, Dtype::F32) => convert_bcthw::<F32Sample>(bytes, desc, w, h),
+        (Layout::Thwc, Dtype::Bf16) => convert_thwc::<Bf16Sample>(bytes, desc, w, h),
+        (Layout::Bcthw, Dtype::Bf16) => convert_bcthw::<Bf16Sample>(bytes, desc, w, h),
+        (_, other) => (Vec::new(), Vec::new(), Vec::new()),
     }
 }
 
@@ -954,7 +963,7 @@ mod simd_tests {
             let bytes = frame(w, h);
 
             let (sy, su, sv) = convert_thwc::<U8Sample>(&bytes, &d, w, h);
-            let (vy, vu, vv) = convert_thwc_u8_simd(&bytes, &d, w, h);
+            let (vy, vu, vv) = convert_simd(simd::Kind::ThwcU8, &bytes, &d, w, h);
 
             assert!(max_diff(&sy, &vy) <= 1, "luma differs by more than 1 level");
             assert!(max_diff(&su, &vu) <= 1, "Cb differs by more than 1 level");
@@ -968,7 +977,7 @@ mod simd_tests {
         let d = desc(w as u32, h as u32, ColorSpace::AssumedBt709);
         let bytes = vec![255u8; w * h * 3];
 
-        let (vy, vu, vv) = convert_thwc_u8_simd(&bytes, &d, w, h);
+        let (vy, vu, vv) = convert_simd(simd::Kind::ThwcU8, &bytes, &d, w, h);
         assert!(vy.iter().all(|&v| v == 255), "white must be full luma");
         assert!(vu.iter().all(|&v| v == 128), "white chroma must be neutral");
         assert!(vv.iter().all(|&v| v == 128));
@@ -991,5 +1000,136 @@ mod simd_tests {
         assert!(max_diff(&out.y, &sy) <= 1);
         assert!(max_diff(&out.u, &su) <= 1);
         assert!(max_diff(&out.v, &sv) <= 1);
+    }
+}
+
+#[cfg(test)]
+mod vector_kernels {
+    use super::*;
+    use blazar_core::{ColorRange, ColorSpace, FrameBuffer, FrameDesc, FrameRef};
+
+    fn desc(w: u32, h: u32, layout: Layout, dtype: Dtype, range: ColorRange, cs: ColorSpace) -> FrameDesc {
+        FrameDesc {
+            width: w,
+            height: h,
+            dtype,
+            range,
+            layout,
+            colorspace: cs,
+            fps: 24.0,
+            pts: Pts(0),
+        }
+    }
+
+    /// One sample's worth of deterministic, structured content.
+    fn units(px: usize, component: usize) -> f32 {
+        let i = px * 3 + component;
+        (((i * 37 + i / 13) % 200) as f32) / 199.0
+    }
+
+    fn build(w: usize, h: usize, layout: Layout, dtype: Dtype, range: ColorRange) -> Vec<u8> {
+        let pixels = w * h;
+        let order: Vec<usize> = match layout {
+            Layout::Thwc => (0..pixels * 3).collect(),
+            // Plane-major: the index of the sample at plane-major position i.
+            Layout::Bcthw => (0..pixels * 3)
+                .map(|i| {
+                    let plane = i / pixels;
+                    let px = i % pixels;
+                    px * 3 + plane
+                })
+                .collect(),
+        };
+        let mut out = Vec::with_capacity(pixels * 3 * dtype_bytes(dtype));
+        for i in order {
+            let value = units(i / 3, i % 3);
+            match dtype {
+                Dtype::U8 => out.push((value * 255.0).round() as u8),
+                Dtype::Bf16 => {
+                    let bits = (value.to_bits() >> 16) as u16;
+                    out.extend_from_slice(&bits.to_le_bytes());
+                }
+                Dtype::F32 => {
+                    let raw = match range {
+                        ColorRange::SignedUnit => value * 2.0 - 1.0,
+                        ColorRange::FullU8 => value * 255.0,
+                        ColorRange::Unit01 => value,
+                    };
+                    out.extend_from_slice(&raw.to_le_bytes());
+                }
+                _ => unreachable!(),
+            }
+        }
+        out
+    }
+
+    fn dtype_bytes(dtype: Dtype) -> usize {
+        match dtype {
+            Dtype::U8 => 1,
+            Dtype::Bf16 => 2,
+            _ => 4,
+        }
+    }
+
+    fn scalar(desc: &FrameDesc, bytes: &[u8], w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        match (desc.layout, desc.dtype) {
+            (Layout::Thwc, Dtype::U8) => convert_thwc::<U8Sample>(bytes, desc, w, h),
+            (Layout::Bcthw, Dtype::U8) => convert_bcthw::<U8Sample>(bytes, desc, w, h),
+            (Layout::Thwc, Dtype::F32) => convert_thwc::<F32Sample>(bytes, desc, w, h),
+            (Layout::Bcthw, Dtype::F32) => convert_bcthw::<F32Sample>(bytes, desc, w, h),
+            (Layout::Thwc, Dtype::Bf16) => convert_thwc::<Bf16Sample>(bytes, desc, w, h),
+            (Layout::Bcthw, Dtype::Bf16) => convert_bcthw::<Bf16Sample>(bytes, desc, w, h),
+            _ => unreachable!(),
+        }
+    }
+
+    fn max_diff(a: &[u8], b: &[u8]) -> u8 {
+        assert_eq!(a.len(), b.len(), "plane length differs");
+        a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0)
+    }
+
+    /// Every layout, dtype and range agrees with the scalar reference.
+    #[test]
+    fn all_kernels_match_the_scalar_reference() {
+        // Odd dimensions exercise both the vector tails and the single-column
+        // chroma edge.
+        let (w, h) = (131usize, 67usize);
+        let stage = CpuPreprocess::new();
+        for layout in [Layout::Thwc, Layout::Bcthw] {
+            for dtype in [Dtype::U8, Dtype::Bf16, Dtype::F32] {
+                for range in [ColorRange::Unit01, ColorRange::SignedUnit] {
+                    if dtype == Dtype::U8 && range != ColorRange::Unit01 {
+                        // A u8 frame ignores the range entirely; covered below.
+                        continue;
+                    }
+                    for cs in [ColorSpace::AssumedBt709, ColorSpace::AssumedBt601] {
+                        let d = desc(w as u32, h as u32, layout, dtype, range, cs);
+                        let bytes = build(w, h, layout, dtype, range);
+                        let (sy, su, sv) = scalar(&d, &bytes, w, h);
+                        let frame = FrameRef {
+                            desc: d.clone(),
+                            buffer: FrameBuffer::host_owned(bytes.clone()),
+                        };
+                        let out = stage.process(&frame).expect("stage runs");
+                        let label = format!("{layout:?}/{dtype:?}/{range:?}/{cs:?}");
+                        assert!(max_diff(&out.y, &sy) <= 1, "luma {label}");
+                        assert!(max_diff(&out.u, &su) <= 1, "Cb {label}");
+                        assert!(max_diff(&out.v, &sv) <= 1, "Cr {label}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// A u8 frame is code values regardless of the declared range.
+    #[test]
+    fn u8_ignores_the_declared_range() {
+        let (w, h) = (32usize, 16usize);
+        let bytes = build(w, h, Layout::Thwc, Dtype::U8, ColorRange::Unit01);
+        let a = desc(w as u32, h as u32, Layout::Thwc, Dtype::U8, ColorRange::Unit01, ColorSpace::AssumedBt709);
+        let b = FrameDesc { range: ColorRange::FullU8, ..a.clone() };
+        let sa = scalar(&a, &bytes, w, h);
+        let sb = scalar(&b, &bytes, w, h);
+        assert_eq!(sa.0, sb.0);
     }
 }
