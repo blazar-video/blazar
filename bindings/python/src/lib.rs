@@ -166,6 +166,9 @@ enum WorkerEvent {
     Encoded {
         seq: u64,
         pts: u64,
+        /// Decode timestamp. Together with `pts` this is what a muxer or a
+        /// reordering consumer needs; with B-frames it is the monotonic one.
+        dts: Option<u64>,
         keyframe: bool,
         units: usize,
         bytes: usize,
@@ -225,8 +228,9 @@ fn drain_memory_units(shared: &Arc<Shared>, memory: &Option<blazar_sink::MemoryH
             stats.bytes += bytes as u64;
         }
         let _ = shared.events.send(WorkerEvent::Encoded {
-            seq: unit.pts,
+            seq: unit.dts,
             pts: unit.pts,
+            dts: Some(unit.dts),
             keyframe: unit.keyframe,
             units: 1,
             bytes,
@@ -308,6 +312,7 @@ fn worker_main(
                             seq,
                             pts,
                             keyframe,
+                            dts: units.first().map(|u| u.dts.0),
                             units: units.len(),
                             bytes,
                             encode_us,
@@ -387,6 +392,7 @@ fn worker_main(
                             seq,
                             pts,
                             keyframe,
+                            dts: units.first().map(|u| u.dts.0),
                             units: units.len(),
                             bytes,
                             encode_us,
@@ -463,6 +469,7 @@ fn worker_main(
                             seq,
                             pts,
                             keyframe,
+                            dts: units.first().map(|u| u.dts.0),
                             units: units.len(),
                             bytes,
                             encode_us,
@@ -1352,6 +1359,7 @@ fn event_to_dict(py: Python<'_>, event: WorkerEvent) -> PyResult<Py<PyDict>> {
         WorkerEvent::Encoded {
             seq,
             pts,
+            dts,
             keyframe,
             units,
             bytes,
@@ -1362,6 +1370,7 @@ fn event_to_dict(py: Python<'_>, event: WorkerEvent) -> PyResult<Py<PyDict>> {
             dict.set_item("kind", "encoded")?;
             dict.set_item("seq", seq)?;
             dict.set_item("pts", pts)?;
+            dict.set_item("dts", dts)?;
             dict.set_item("keyframe", keyframe)?;
             dict.set_item("units", units)?;
             dict.set_item("bytes", bytes)?;
