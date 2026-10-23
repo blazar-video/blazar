@@ -53,6 +53,9 @@ impl CMTime {
 
 /// `'420v'`: 8-bit NV12, video range.
 pub const K_CV_PIXEL_FORMAT_420V: OSType = u32::from_be_bytes(*b"420v");
+/// `'420f'`: 8-bit NV12, full range. The preprocessor emits full-range planes,
+/// so this is the format whose interpretation matches the samples.
+pub const K_CV_PIXEL_FORMAT_420F: OSType = u32::from_be_bytes(*b"420f");
 /// `'avc1'` and `'hvc1'` codec types.
 pub const K_CM_VIDEO_CODEC_TYPE_H264: CMVideoCodecType = u32::from_be_bytes(*b"avc1");
 pub const K_CM_VIDEO_CODEC_TYPE_HEVC: CMVideoCodecType = u32::from_be_bytes(*b"hvc1");

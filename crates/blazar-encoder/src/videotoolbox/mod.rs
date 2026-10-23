@@ -83,6 +83,8 @@ pub struct VideoToolboxEncoder {
     /// repeat (a caller that does not set them).
     submitted: i64,
     timebase: i32,
+    /// Ticks per frame on `timebase`, so each unit reports how long it lasts.
+    frame_duration: u64,
     closed: bool,
 }
 
@@ -144,6 +146,9 @@ impl VideoToolboxEncoder {
             codec_config: None,
             submitted: 0,
             timebase: Timebase::MPEG_90K.ticks_per_second() as i32,
+            // 24 fps until a caller says otherwise: `PreprocessedFrame` carries
+            // no fps, and the calibration keyint is expressed in frames.
+            frame_duration: Timebase::MPEG_90K.ticks_per_frame(24.0),
             closed: false,
         };
 
@@ -207,12 +212,15 @@ impl VideoToolboxEncoder {
         }
         let mut buffer: CVPixelBufferRef = std::ptr::null_mut();
         // SAFETY: the dimensions are checked above and the output slot is local.
+        // Full range (`420f`), not video range (`420v`): the preprocessor emits
+        // full-range luma and centred 0..255 chroma, and a video-range buffer
+        // would be interpreted as 16..240, shifting every colour.
         let status = unsafe {
             CVPixelBufferCreate(
                 kCFAllocatorDefault,
                 self.width,
                 self.height,
-                K_CV_PIXEL_FORMAT_420V,
+                K_CV_PIXEL_FORMAT_420F,
                 std::ptr::null(),
                 &mut buffer,
             )
@@ -253,7 +261,7 @@ impl VideoToolboxEncoder {
             CVPixelBufferUnlockBaseAddress(buffer, 0);
 
             let pts = CMTime::new(frame.pts.0 as i64, self.timebase);
-            let duration = CMTime::new(1, self.timebase);
+            let duration = CMTime::new(self.frame_duration as i64, self.timebase);
             let mut flags: VTEncodeInfoFlags = 0;
             let status = VTCompressionSessionEncodeFrame(
                 self.session,
@@ -308,7 +316,7 @@ impl VideoToolboxEncoder {
                 pts: Pts(pts),
                 dts: Pts(pts),
                 keyframe,
-                duration: 0,
+                duration: self.frame_duration,
             });
         }
         Ok(result)
