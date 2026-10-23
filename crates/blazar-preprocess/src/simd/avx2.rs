@@ -89,6 +89,40 @@ impl K {
 
 /// # Safety
 /// The caller must have checked [`available`].
+/// Row-pair scratch, kept per thread so a frame costs no allocations.
+///
+/// Rayon runs row pairs on every worker thread, and four fresh vectors per pair
+/// meant 2,160 allocations per 1080p frame; on Linux the allocator contention
+/// across 28 threads cost more than the kernels saved.
+#[derive(Default)]
+struct Scratch {
+    cb0: Vec<f32>,
+    cr0: Vec<f32>,
+    cb1: Vec<f32>,
+    cr1: Vec<f32>,
+    /// Widened bf16 rows; empty for the other layouts.
+    wide: Vec<f32>,
+}
+
+thread_local! {
+    static SCRATCH: std::cell::RefCell<Scratch> = std::cell::RefCell::new(Scratch::default());
+}
+
+impl Scratch {
+    fn ensure(&mut self, w: usize, wide: usize) {
+        for v in [&mut self.cb0, &mut self.cr0, &mut self.cb1, &mut self.cr1] {
+            if v.len() < w {
+                v.resize(w, 0.0);
+            }
+            v.truncate(w);
+        }
+        if self.wide.len() < wide {
+            self.wide.resize(wide, 0.0);
+        }
+        self.wide.truncate(wide);
+    }
+}
+
 pub(crate) unsafe fn convert(
     kind: Kind,
     bytes: &[u8],
