@@ -8,6 +8,7 @@
 //! bindings land behind the `svtav1` feature.
 
 pub mod av1;
+pub mod cpu_preprocess;
 #[cfg(feature = "nvenc")]
 pub mod gpu_preprocess;
 pub mod config;

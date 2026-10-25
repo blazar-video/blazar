@@ -22,6 +22,7 @@
 //! is present and returns `Unsupported` so callers compile against the final
 //! shape.
 
+pub mod preprocess_placement;
 use blazar_calibration::{CalibrationIndex, Query};
 use blazar_core::{
     FrameDesc, FrameRef, ModelIdentity, StreamParams, Target, Timebase, VideoCodec,
@@ -149,6 +150,8 @@ impl<S: Sink> Encoder<S> {
             sink_open: false,
             last_desc: None,
             closed: false,
+            preprocess: preprocess_placement::PreprocessPlacement::Auto,
+            resolved_preprocess: None,
         }
     }
 }
@@ -169,6 +172,29 @@ pub struct Stream<S: Sink> {
     /// first emitted unit (lookahead encoders) can still be created at flush.
     last_desc: Option<FrameDesc>,
     closed: bool,
+    /// Where the caller asked for RGB→NV12 to happen.
+    preprocess: preprocess_placement::PreprocessPlacement,
+    /// What `auto` resolved to, once the backend and frame location are known.
+    resolved_preprocess: Option<preprocess_placement::PreprocessSite>,
+}
+
+impl<S: Sink> Stream<S> {
+    /// Choose where RGB→NV12 happens. [`PreprocessPlacement::Auto`] keeps the
+    /// per-backend default, which is what callers who never set it get.
+    #[must_use]
+    pub fn with_preprocess(mut self, placement: preprocess_placement::PreprocessPlacement) -> Self {
+        self.preprocess = placement;
+        self
+    }
+
+    /// The placement this stream actually uses, once a frame has opened it.
+    ///
+    /// `auto` is resolved against the backend and the frame's location, so the
+    /// answer is not knowable before the first frame arrives.
+    #[must_use]
+    pub fn resolved_preprocess(&self) -> Option<preprocess_placement::PreprocessSite> {
+        self.resolved_preprocess
+    }
 }
 
 impl<S: Sink> Stream<S> {
@@ -187,10 +213,13 @@ impl<S: Sink> Stream<S> {
     /// emits its first keyframe, so `ensure_sink` runs when the first unit is
     /// actually produced (which may be several frames in for lookahead encoders).
     fn ensure_encoder(&mut self, frame: &FrameRef) -> Result<(), RuntimeError> {
-        self.ensure_encoder_for(&frame.desc)
+        self.ensure_encoder_for(
+            &frame.desc,
+            preprocess_placement::SourceLocation::Host,
+        )
     }
 
-    fn ensure_encoder_for(&mut self, desc: &FrameDesc) -> Result<(), RuntimeError> {
+    fn ensure_encoder_for(&mut self, desc: &FrameDesc, source: preprocess_placement::SourceLocation) -> Result<(), RuntimeError> {
         if self.encoder_open {
             return Ok(());
         }
@@ -215,13 +244,31 @@ impl<S: Sink> Stream<S> {
             "resolved calibration"
         );
         let cfg = EncoderConfig::from_calibration(cal, self.enc.codec_key());
-        self.encoder = Some(build_encoder(
+        let built = build_encoder(
             &cfg,
             desc,
             self.enc.output.codec,
             self.enc.output.backend,
             self.enc.timebase,
-        )?);
+        )?;
+        // Placement is a caller decision; the transfers it implies are ours.
+        let site = preprocess_placement::resolve(
+            self.preprocess,
+            source,
+            backend_converts_on_device(self.enc.output.backend),
+            cfg!(feature = "gpu-preprocess"),
+        )
+        .map_err(|e| RuntimeError::Preprocess(blazar_preprocess::PreprocessError::UnsupportedDtype(blazar_core::Dtype::U8)))?;
+        self.resolved_preprocess = Some(site);
+        if site == preprocess_placement::PreprocessSite::Cpu {
+            tracing::info!(request_id = %self.request_id, placement = "cpu", "preprocess placement");
+            self.encoder = Some(Box::new(
+                blazar_encoder::cpu_preprocess::CpuPreprocessEncoder::new(built),
+            ));
+        } else {
+            tracing::info!(request_id = %self.request_id, placement = "gpu", "preprocess placement");
+            self.encoder = Some(built);
+        }
         self.encoder_open = true;
         Ok(())
     }
@@ -348,7 +395,22 @@ impl<S: Sink> Stream<S> {
         if frames == 0 {
             return Err(RuntimeError::EmptyBatch);
         }
-        self.ensure_encoder_for(&desc)?;
+        // A device tensor can only be converted on the device: honouring a
+        // `cpu` placement would mean downloading it, which is the caller's
+        // copy to make until the runtime implements it.
+        if preprocess_placement::resolve(
+            self.preprocess,
+            preprocess_placement::SourceLocation::Device,
+            backend_converts_on_device(self.enc.output.backend),
+            cfg!(feature = "gpu-preprocess"),
+        ) == Ok(preprocess_placement::PreprocessSite::Cpu)
+        {
+            return Err(RuntimeError::Encode(blazar_encoder::EncodeError::Backend(
+                "preprocess=\"cpu\" cannot convert a device tensor yet: copy it to host first                  (tensor.cpu()) or use preprocess=\"auto\""
+                    .into(),
+            )));
+        }
+        self.ensure_encoder_for(&desc, preprocess_placement::SourceLocation::Device)?;
         if boundary == Some(Boundary::SceneCut) {
             if let Some(enc) = self.encoder.as_mut() {
                 enc.request_keyframe();
@@ -487,6 +549,17 @@ fn wrap_gpu(enc: Box<dyn VideoEncoder>) -> Result<Box<dyn VideoEncoder>, Runtime
     Ok(enc)
 }
 
+/// Whether this backend converts a host frame into memory it already encodes
+/// from, making a device-side conversion cheaper than a CPU one.
+pub fn backend_converts_on_device(backend: VideoEncoderBackend) -> bool {
+    matches!(
+        backend,
+        VideoEncoderBackend::NvencAv1
+            | VideoEncoderBackend::NvencH264
+            | VideoEncoderBackend::NvencHevc
+    )
+}
+
 fn build_encoder(
     cfg: &EncoderConfig,
     desc: &FrameDesc,
@@ -618,7 +691,6 @@ fn build_encoder(
     }
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use blazar_core::{

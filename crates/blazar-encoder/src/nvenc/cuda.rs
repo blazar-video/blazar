@@ -37,7 +37,7 @@ extern "C" __global__ void rgb_to_nv12(
 
     unsigned char* __restrict__ dst = (unsigned char*)dst_ptrs[fi];
     const int pixels = w * h;
-    const int elem = (fmt == 0) ? 4 : 2;
+    const int elem = (fmt == 0) ? 4 : ((fmt == 1) ? 2 : 1);
     // THWC is B,T,H,W,C: every frame owns 3*pixels samples in a row.
     // BCTHW is B,C,T,H,W: frame t of channel c is at c*T*H*W + t*H*W, so the
     // channel stride is frames*pixels, not pixels. With T == 1 the two agree,
@@ -60,6 +60,12 @@ extern "C" __global__ void rgb_to_nv12(
                 const float* f = (const float*)src;
                 if (layout == 0) { r = f[p*3]; g = f[p*3+1]; b = f[p*3+2]; }
                 else { r = f[p]; g = f[channel_stride + p]; b = f[2*channel_stride + p]; }
+            } else if (fmt == 2) {
+                // u8 RGB is full-range by definition, so it is normalised here
+                // and the `range` argument is ignored for this format.
+                const unsigned char* u = (const unsigned char*)src;
+                if (layout == 0) { r = u[p*3] * (1.0f/255.0f); g = u[p*3+1] * (1.0f/255.0f); b = u[p*3+2] * (1.0f/255.0f); }
+                else { r = u[p] * (1.0f/255.0f); g = u[channel_stride + p] * (1.0f/255.0f); b = u[2*channel_stride + p] * (1.0f/255.0f); }
             } else {
                 const unsigned short* s = (const unsigned short*)src;
                 unsigned short vr, vg, vb;
@@ -69,7 +75,8 @@ extern "C" __global__ void rgb_to_nv12(
                 g = __uint_as_float(((unsigned)vg) << 16);
                 b = __uint_as_float(((unsigned)vb) << 16);
             }
-            if (range == 1) { r = (r + 1.0f) * 0.5f; g = (g + 1.0f) * 0.5f; b = (b + 1.0f) * 0.5f; }
+            if (fmt == 2) { /* already normalised to 0..1 above */ }
+            else if (range == 1) { r = (r + 1.0f) * 0.5f; g = (g + 1.0f) * 0.5f; b = (b + 1.0f) * 0.5f; }
             else if (range == 2) { r *= 1.0f / 255.0f; g *= 1.0f / 255.0f; b *= 1.0f / 255.0f; }
             r = fminf(fmaxf(r, 0.0f), 1.0f);
             g = fminf(fmaxf(g, 0.0f), 1.0f);
@@ -196,7 +203,7 @@ impl Nv12Converter {
         stacked: bool,
         pitch: u32,
     ) -> Result<(), EncodeError> {
-        if !matches!(desc.dtype, Dtype::F32 | Dtype::Bf16) {
+        if !matches!(desc.dtype, Dtype::F32 | Dtype::Bf16 | Dtype::U8) {
             return Err(EncodeError::Backend(format!(
                 "GPU preprocess does not handle {:?}",
                 desc.dtype
@@ -208,6 +215,8 @@ impl Nv12Converter {
         };
         let fmt = match desc.dtype {
             Dtype::F32 => 0i32,
+            Dtype::U8 => 2i32,
+            // Bf16 reads 16-bit samples; F16 never reaches here (rejected above).
             _ => 1i32,
         };
         let range = match desc.range {

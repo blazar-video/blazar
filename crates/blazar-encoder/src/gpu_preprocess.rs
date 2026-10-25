@@ -11,11 +11,11 @@
 use std::sync::Arc;
 
 use blazar_core::{Dtype, FrameDesc, Pts};
-use blazar_preprocess::PreprocessedFrame;
+use blazar_preprocess::{CpuPreprocess, PreprocessStage, PreprocessedFrame};
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DevicePtr};
 
 use crate::nvenc::cuda::Nv12Converter;
-use crate::EncodeError;
+use crate::{EncodeError, VideoEncoder};
 
 /// Reusable GPU conversion stage.
 ///
@@ -75,7 +75,7 @@ impl GpuPreprocess {
         bytes: &[u8],
         desc: &FrameDesc,
     ) -> Result<PreprocessedFrame, EncodeError> {
-        if !matches!(desc.dtype, Dtype::F32 | Dtype::Bf16) {
+        if !matches!(desc.dtype, Dtype::F32 | Dtype::Bf16 | Dtype::U8) {
             return Err(EncodeError::Backend(format!(
                 "GPU preprocess does not handle {:?}",
                 desc.dtype
@@ -121,14 +121,19 @@ impl GpuPreprocess {
         if frames == 0 {
             return Ok(Vec::new());
         }
-        if !matches!(desc.dtype, Dtype::F32 | Dtype::Bf16) {
+        if !matches!(desc.dtype, Dtype::F32 | Dtype::Bf16 | Dtype::U8) {
             return Err(EncodeError::Backend(format!(
                 "GPU preprocess does not handle {:?}",
                 desc.dtype
             )));
         }
         self.resize(desc)?;
-        let elem = if matches!(desc.dtype, Dtype::F32) { 4 } else { 2 };
+        let elem = match desc.dtype {
+            Dtype::F32 => 4,
+            Dtype::Bf16 => 2,
+            Dtype::U8 => 1,
+            _ => 2,
+        };
         let pixels = desc.width as u64 * desc.height as u64;
         // Device layout: (C,T,H,W) advances one plane per frame; THWC advances
         // a whole frame.
@@ -303,3 +308,4 @@ impl crate::VideoEncoder for GpuPreprocessEncoder {
         self.inner.codec_config()
     }
 }
+

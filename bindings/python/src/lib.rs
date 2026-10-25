@@ -649,6 +649,10 @@ struct PyEncoder {
     fps: Option<f64>,
     /// Held while a hardware session is open; `None` for software backends.
     _session: Option<SessionPermit>,
+    /// Where the caller asked for RGB→NV12 conversion.
+    preprocess: blazar_runtime::preprocess_placement::PreprocessPlacement,
+    /// Which backend, so `auto` can be resolved for reporting.
+    backend: blazar_core::VideoEncoderBackend,
 }
 
 #[pymethods]
@@ -668,6 +672,7 @@ impl PyEncoder {
         video_extradata = None,
         queue_depth = 4,
         max_buffered_units = 240,
+        preprocess = "auto",
     ))]
     fn new(
         py: Python<'_>,
@@ -681,6 +686,7 @@ impl PyEncoder {
         video_extradata: Option<Vec<u8>>,
         queue_depth: usize,
         max_buffered_units: usize,
+        preprocess: &str,
     ) -> PyResult<Self> {
         if queue_depth == 0 {
             return Err(PyValueError::new_err("queue_depth must be >= 1"));
@@ -752,7 +758,11 @@ impl PyEncoder {
             sink,
             calibrations.index.clone(),
         );
-        let stream = runtime.open_stream(request_id);
+        let placement: blazar_runtime::preprocess_placement::PreprocessPlacement =
+            preprocess.parse().map_err(|e: blazar_runtime::preprocess_placement::PlacementError| {
+                PyValueError::new_err(e.to_string())
+            })?;
+        let stream = runtime.open_stream(request_id).with_preprocess(placement);
 
         let (job_tx, job_rx) = mpsc::sync_channel::<Job>(queue_depth);
         let (event_tx, event_rx) = mpsc::channel::<WorkerEvent>();
@@ -784,6 +794,8 @@ impl PyEncoder {
             frame_size: None,
             fps: None,
             _session: session,
+            preprocess: placement,
+            backend,
         })
     }
 
@@ -1043,6 +1055,22 @@ impl PyEncoder {
         if let Some(err) = self.error_message() {
             return Err(PyRuntimeError::new_err(err));
         }
+        {
+            use blazar_runtime::preprocess_placement::{resolve, PreprocessSite, SourceLocation};
+            let site = resolve(
+                self.preprocess,
+                SourceLocation::Device,
+                blazar_runtime::backend_converts_on_device(self.backend),
+                cfg!(feature = "gpu-preprocess"),
+            )
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            if site == PreprocessSite::Cpu {
+                return Err(PyRuntimeError::new_err(
+                    "preprocess=\"cpu\" cannot convert a device tensor yet: copy it to host first \
+                     (tensor.cpu()) or use preprocess=\"auto\"",
+                ));
+            }
+        }
         let is_cuda: bool = tensor.getattr("is_cuda")?.extract()?;
         if !is_cuda {
             return Err(PyValueError::new_err("tensor must be on CUDA"));
@@ -1232,6 +1260,25 @@ impl PyEncoder {
             return Err(PyRuntimeError::new_err(err));
         }
         Ok(())
+    }
+
+    /// Where host frames are converted to NV12: `"cpu"` or `"gpu"`.
+    ///
+    /// `preprocess="auto"` resolves against the backend: a backend that
+    /// converts into the surface it encodes from does it on the device, a CPU
+    /// codec does it on the host. Device tensors always convert on the device
+    /// unless `preprocess="cpu"` is rejected at submit time.
+    #[getter]
+    fn preprocess(&self) -> PyResult<String> {
+        use blazar_runtime::preprocess_placement::{resolve, SourceLocation};
+        let site = resolve(
+            self.preprocess,
+            SourceLocation::Host,
+            blazar_runtime::backend_converts_on_device(self.backend),
+            cfg!(feature = "gpu-preprocess"),
+        )
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(site.as_str().to_owned())
     }
 
     /// Monotonic counters: `submitted`, `encoded`, `bytes`, `queued`,

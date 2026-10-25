@@ -85,6 +85,26 @@ for backend failures. A backend whose build feature is off raises rather than
 silently substituting a stub. When a consumer GPU's driver refuses a new NVENC
 session the message says so and names `BLAZAR_MAX_NVENC_SESSIONS`.
 
+## Preprocess placement
+
+RGB→NV12 conversion can run on the host or on the device. `Encoder(..., preprocess=...)`
+chooses, and `encoder.preprocess` reports what a host frame gets:
+
+| value | meaning |
+|---|---|
+| `"auto"` (default) | Follow the backend: NVENC converts on the device (the kernel writes straight into the surface NVENC encodes from, so the upload is the only copy); CPU codecs convert on the host, because a device conversion would have to be downloaded again. |
+| `"cpu"` | Always convert on the host. |
+| `"gpu"` | Always convert on the device. Requires a wheel built with `gpu-preprocess`; otherwise constructing the encoder raises `ValueError`. |
+
+Two behaviours worth knowing:
+
+- **Placement is a cost, not a contract.** The runtime performs whatever copy a
+  placement implies. You are never required to move a tensor to host before
+  submitting it.
+- **Device tensors convert on the device.** `preprocess="cpu"` with
+  `submit_device_batch` raises rather than silently converting on the device:
+  honouring it would mean downloading the tensor, which is not implemented yet.
+
 ## Environment
 
 | Variable | Meaning |
