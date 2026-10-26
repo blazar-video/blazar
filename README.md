@@ -76,10 +76,13 @@ with an i7-14700KF host, WSL2.
 
 | Backend | Frames arrive as | u8 | f32 | bf16 |
 |---|---|---|---|---|
-| NVENC H.264 | host arrays, CPU rgb2yuv | not supported | 8.46 | not supported |
+| NVENC H.264 | host arrays, GPU rgb2yuv | 6.35¹ | 8.46 | not supported |
 | NVENC H.264 | device tensor, GPU rgb2yuv | not supported | **3.20** | 4.48 |
 | x264 | host arrays, CPU rgb2yuv | **4.65** | 6.74 | not supported |
 | x264 | device tensor, GPU rgb2yuv | not supported | 6.68 | 7.06 |
+
+¹ Measured with the device-to-host copy inside the clock, which the rows above
+exclude; see [Against PyAV and the ffmpeg CLI](#against-pyav-and-the-ffmpeg-cli).
 
 What the table says:
 
@@ -96,21 +99,58 @@ copy.
 measured *slower* (4.48 against 3.20) for reasons not yet established. Do not size
 a deployment on it until that is explained.
 
-The four "not supported" cells are real gaps, not omissions:
+The remaining "not supported" cells are real gaps, not omissions:
 
-- NVENC host frames cannot be `u8`: the GPU preprocess stage runs even for host
-  input and has no `u8` branch, so `u8` frames must be widened to `f32` first.
 - Device tensors must be `float32` or `bfloat16`; `uint8` is rejected, because a
-  VAE does not emit it.
+  VAE does not emit it. (Host `u8` is supported: the NVENC convert kernel reads
+  8-bit samples directly, measured in the next section.)
 - Host `bf16` is rejected because the binding infers dtype from the buffer format
   and bfloat16 has no numpy dtype to infer from. An explicit dtype argument would
   close this.
 
-For comparison, measured on the same box in an earlier pass and not re-run since:
-SGLang's `CudaVideoEncoder` (ffmpeg/libx264) 9.13 ms/frame, vLLM-Omni's PyAV path
-48.07. Both stage through host memory and use library default settings; blazar uses
-a calibration target, so treat this as "what each stack costs as it ships", not a
-quality-matched comparison.
+### Against PyAV and the ffmpeg CLI
+
+All three start from the same `(1,3,T,H,W)` bf16 CUDA tensor, which is what a model
+hands over. The clock covers each path's own device-to-host copy, its conversion,
+and its encode; tensor construction and the frame generator run outside it. 121 real
+frames, `h264_nvenc` at `preset p5`, ConstQP 30, GOP 120, 2 B-frames, yuv420p on
+every row. Frame counts verified at 121 each.
+
+| Path | Conversion | 1088p ms/frame | 1088p fps | 720p ms/frame |
+|---|---|---|---|---|
+| blazar, device tensor | device kernel, no copy | **3.88** | 258 | **2.78** |
+| blazar, host arrays | device kernel | 6.35 | 158 | 3.70 |
+| PyAV, host arrays | swscale | 9.37 | 107 | 4.29 |
+| ffmpeg CLI, raw pipe | swscale | 19.81 | 51 | 8.94 |
+
+- **Zero-copy is 2.4x PyAV and 5.1x the CLI at 1088p**, narrowing to 1.5x and 3.2x
+  at 720p, because the copy scales with tensor size while NVENC's own time does not.
+- **Host `u8` is the honest second place.** The same transfer volume as PyAV
+  (6.2 MB/frame) and 1.5x faster, because the conversion runs on the device while
+  NVENC is busy instead of on the CPU in front of it.
+- **Output sizes differ** (5.36 / 5.34 / 3.79 / 3.43 MB) at nominally identical
+  settings, so this compares throughput, not matched quality.
+
+For scale, measured earlier and not re-run since: SGLang's `CudaVideoEncoder`
+(ffmpeg/libx264) 9.13 ms/frame, vLLM-Omni's PyAV path 48.07.
+
+### Concurrency and the GIL
+
+720p `u8` frames, 200 frames per thread, one encoder per thread, same NVENC settings.
+
+| Arm | 1 thread | 2 threads | 4 threads | scaling | per-thread at 4 |
+|---|---|---|---|---|---|
+| blazar | 155.9 fps | 383.0 | **620.8** | **4.0x** | 155.2 |
+| PyAV | 33.7 | 61.9 | 63.0 | **1.9x** | 15.7 |
+
+Blazar scales near-linearly because `submit` only enqueues onto that stream's Rust
+worker; the interpreter is released immediately. PyAV stops at 2x and its per-thread
+rate halves, because `VideoFrame.from_ndarray`, `reformat` and `mux` all run under
+the GIL. The aggregate gap at 4 threads is ~10x, against 1.5x on a single stream at
+the same resolution, so the advantage compounds with concurrency.
+
+Draining after every submit (what a streaming loop does) costs about 7% at 4
+threads and nothing at one.
 
 **Batch kernel** (Nsight Compute A/B): 2.28-2.72x over per-frame launches, device
 path only. `submit_batch` on host frames is slower than a per-frame loop, because the
