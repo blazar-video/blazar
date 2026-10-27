@@ -4,18 +4,18 @@ Blazar is an encoder for generative video with optimized paths for both batched 
 
 ## Features
 
-[x] Hardware encode: NVENC (H.264/AVC, H.265/HEVC, AV1), VideoToolbox (H.265/AVC, H.265/HEVC)
-[x] Software encode: libx264 (H.264/AVC), libx265 (H.265/HEVC), libvpx (VP9), SVT-AV1 (AV1)
-[x] File output: fMP4
-[x] Buffer output
-[x] GPU-Accelerated YUV Conversion
-[x] SIMD-Accelerated YUV Conversion
-[x] Runtime selectable configuration files
+- [x] Hardware encode: NVENC (H.264/AVC, H.265/HEVC, AV1), VideoToolbox (H.265/AVC, H.265/HEVC)
+- [x] Software encode: libx264 (H.264/AVC), libx265 (H.265/HEVC), libvpx (VP9), SVT-AV1 (AV1)
+- [x] File output: fMP4
+- [x] Buffer output
+- [x] GPU-Accelerated YUV Conversion
+- [x] SIMD-Accelerated YUV Conversion
+- [x] Runtime selectable configuration files
 
 ## Links
 
 - [Python API Docs](docs/python-api.md)
-- [Calibrations](/blazar-video/calibrations)
+- [Calibrations](https://github.com/blazar-video/calibrations)
 
 ## How it works
 
@@ -35,7 +35,7 @@ with blazar.Encoder(calibrations=cals, identity={"family": "wan", "version": "2.
     stream.submit_device_batch(tensor, fps=24.0, range="unit01")
 ```
 
-Create the encoder with a pointer to the [calibrations](/blazar-video/calibrations) directory you wish to use. These calibrations can be for a mixture of models, scene types, codecs, and codec backends.
+Create the encoder with a pointer to the [calibrations](https://github.com/blazar-video/calibrations) directory you wish to use. These calibrations can be for a mixture of models, scene types, codecs, and codec backends.
 
 ## Performance
 
