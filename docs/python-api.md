@@ -24,7 +24,7 @@ without waiting for the codec.
 ```python
 with blazar.Encoder(calibrations=cals, identity={...}, target="balanced",
                     backend="nvenc", codec="h264", output="out.mp4") as stream:
-    stream.submit_device_batch(tensor, fps=24.0, range="unit01")
+    stream.submit(tensor, fps=24.0, range="unit01")
 ```
 
 ### Constructor
@@ -38,6 +38,7 @@ with blazar.Encoder(calibrations=cals, identity={...}, target="balanced",
 | `backend_pool` | `str` | What `backend="auto"` may choose: `"any"` (default, hardware preferred then software), `"hardware"` (never falls back), `"software"`. Ignored when `backend` is named. |
 | `output` | `str \| None` | Output path, or `None` to keep encoded units in memory and hand them back from `poll()`. |
 | `max_buffered_units` | `int` | When `output` is `None`: how many encoded units may sit in the buffer before a write fails. Defaults to 240. |
+| `layout` | `str \| None` | `"thwc"` or `"bcthw"`, fixed for the stream: a container written with two interpretations of one shape is unplayable. `None` infers it from the first frame and locks. |
 | `codec` | `str` | Wire codec: `"h264"`, `"hevc"`, `"av1"`, `"vp9"`. Pairing it with an implementation that cannot encode it is an error at construction. |
 | `request_id` | `str` | Tag used in logs and events. Defaults to `"stream"`. |
 | `video_extradata` | `bytes \| None` | Codec configuration override. Leave `None` for real encoders. |
@@ -47,14 +48,13 @@ with blazar.Encoder(calibrations=cals, identity={...}, target="balanced",
 
 | Method | Returns | Meaning |
 |---|---|---|
-| `submit(frame, width, height, fps, layout, range, pts_ticks=None, scene_cut=False)` | `int` | Queue one host frame. `layout` is `"thwc"` (`H, W, 3`) or `"bcthw"` (`3, H, W`), optionally with a leading batch axis. `range` is `"unit01"`, `"signed_unit"` or `"full_u8"`. Returns the assigned PTS. |
-| `submit_batch(frames, width, height, fps, layout, range, pts_ticks=None, scene_cut=False)` | `int` | Queue many host frames in one call. |
-| `submit_device_batch(tensor, fps, range, pts_ticks=None, scene_cut=False)` | `int` | Queue a CUDA tensor shaped `(1, 3, T, H, W)`, `torch.float32` or `torch.bfloat16`, contiguous. This is the fast path: no host copy and, for CPU codecs, colour conversion on the GPU. |
+| `submit(frames, fps, width=None, height=None, layout=None, range="unit01", pts_ticks=None, scene_cut=False)` | `int` | Queue frames. A numpy array takes the host path and is copied once; a CUDA tensor takes the device path and is read in place. The type decides, so there is one call rather than one per residency; `encoder.residency` reports which path the stream took. A sequence of host frames is accepted and encoded in order; a sequence mixing host and device is an error. `width`/`height` are required for host frames and carried by the tensor's shape for device frames. `layout` defaults to the one fixed at `Encoder(...)`. `range` is `"unit01"`, `"signed_unit"` or `"full_u8"`, and is validated against the dtype. Returns the last assigned PTS. |
 | `poll(timeout=None)` | `list[dict]` | Encoded events, all the same shape: `kind` (`"encoded"`, `"failed"` or `"closed"`), `seq`, `pts`, `dts`, `keyframe`, `units`, `bytes`, `encode_us`, `queue_depth`, `data`. A per-frame event summarises one submitted frame and reports how many access units it produced; with `output=None` each unit also arrives as its own event with `units` 1 and `data` holding the encoded bytes. With an output file, `data` is `None`. `pts` is presentation order and is deliberately not monotonic once B-frames reorder; `dts` is the monotonic one. |
 | `flush(timeout=None)` | `None` | Encode everything queued. |
 | `close(timeout=None)` | `None` | Flush and finalise the output. Safe to call twice. |
 | `resolved_backend` | `str \| None` | Which backend actually answered. `None` until the first frame when `backend="auto"`, because the choice depends on what opens a session here. A property. |
 | `preprocess` | `str` | Where host frames are converted to NV12: `"cpu"` or `"gpu"`. A property; see [Preprocess placement](#preprocess-placement). |
+| `residency` | `str \| None` | `"host"` or `"device"`, fixed by the first submit. A property. |
 | `stats` | `dict` | Counters for the stream: `encoded`, `bytes`, `failed`, `max_encode_us`. A property, not a method. |
 | `error_message()` | `str \| None` | Why the stream failed, if it did. |
 | `failed_event_message()` | `str \| None` | Error recorded by the worker, including backend-specific text. |
@@ -128,9 +128,8 @@ takes the first that opens. Consequences worth knowing:
   backend explicitly when you need byte-stability — corpus generation and
   calibration sweeps both do.
 
-The pair-shaped spellings (`backend="nvenc_h264"`) still parse but emit a
-`DeprecationWarning`: they restate `codec`, and the two could disagree. They are
-removed in the next minor release.
+A pair-shaped spelling (`backend="nvenc_h264"`) is rejected: it restates `codec`,
+and the two could disagree. Name the implementation and pass `codec=`.
 
 ## Preprocess placement
 
@@ -149,7 +148,7 @@ Two behaviours worth knowing:
   placement implies. You are never required to move a tensor to host before
   submitting it.
 - **Device tensors convert on the device.** `preprocess="cpu"` with
-  `submit_device_batch` raises rather than silently converting on the device:
+  `submit` with a device tensor raises rather than silently converting on the device:
   honouring it would mean downloading the tensor, which is not implemented yet.
 
 ## Environment

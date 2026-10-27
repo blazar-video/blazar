@@ -32,7 +32,7 @@ with blazar.Encoder(calibrations=cals, identity={"family": "wan", "version": "2.
                     output="out.mp4") as stream:
     stream.submit(frame, width=W, height=H, fps=24.0, layout="thwc", range="unit01")
     # or, with device tensors:
-    stream.submit_device_batch(tensor, fps=24.0, range="unit01")
+    stream.submit(tensor, fps=24.0, range="unit01")
 ```
 
 Create the encoder with a pointer to the [calibrations](https://github.com/blazar-video/calibrations) directory you wish to use. These calibrations can be for a mixture of models, scene types, codecs, and codec backends.

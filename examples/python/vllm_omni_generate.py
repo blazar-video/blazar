@@ -114,7 +114,7 @@ def main() -> int:
     parser.add_argument("--fps", type=float, default=16.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=Path, default=Path("/tmp/vllm_omni_blazar.mp4"))
-    parser.add_argument("--backend", default="nvenc_av1", choices=["svtav1", "nvenc_av1"])
+    parser.add_argument("--backend", default="nvenc", choices=["svtav1", "nvenc"])
     parser.add_argument("--target", default="balanced", choices=["low_latency", "balanced", "quality"])
     parser.add_argument("--calibrations", type=Path, default=repo_calibrations())
     parser.add_argument("--keep-engine", action="store_true",
@@ -194,7 +194,7 @@ def main() -> int:
         torch.cuda.empty_cache()
 
     calibrations = blazar.Calibrations.load(str(args.calibrations))
-    extradata = None if args.backend == "nvenc_av1" else bytes([0x81, 0x04, 0x0C, 0x00])
+    extradata = None if args.backend == "nvenc" else bytes([0x81, 0x04, 0x0C, 0x00])
 
     encode_started = time.perf_counter()
     with blazar.Encoder(

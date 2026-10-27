@@ -153,6 +153,15 @@ pub fn is_hardware(backend: VideoEncoderBackend) -> bool {
     )
 }
 
+/// Whether a backend can serve `codec`.
+///
+/// `mock` is special: it emits no compressed data and carries whatever codec the
+/// caller names, so tests do not depend on real hardware or a real codec build.
+#[must_use]
+pub fn serves(backend: VideoEncoderBackend, codec: VideoCodec) -> bool {
+    matches!(backend, VideoEncoderBackend::Mock) || codec_of(backend) == codec
+}
+
 /// The codec a backend encodes.
 #[must_use]
 pub fn codec_of(backend: VideoEncoderBackend) -> VideoCodec {
@@ -196,7 +205,7 @@ pub fn candidates_for(codec: VideoCodec, pool: BackendPool, built: bool) -> Vec<
     ORDER
         .iter()
         .copied()
-        .filter(|b| codec_of(*b) == codec)
+        .filter(|b| serves(*b, codec))
         .filter(|b| match pool {
             BackendPool::Any => true,
             BackendPool::Hardware => is_hardware(*b),
@@ -245,7 +254,7 @@ pub fn select(
             .copied()
             .unwrap_or(Candidate::new(backend, false, false));
 
-        if codec_of(backend) != codec {
+        if !serves(backend, codec) {
             continue;
         }
         supported_any_pool = true;

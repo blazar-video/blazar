@@ -51,40 +51,17 @@ class Encoder:
     ) -> None: ...
     def submit(
         self,
-        frame: np.ndarray | Any,
-        *,
-        width: int,
-        height: int,
+        frames: np.ndarray | Any,
         fps: float,
-        layout: Layout,
-        range: Range,
+        width: int | None = None,
+        height: int | None = None,
+        layout: Layout | None = None,
+        range: Range = "unit01",
         pts_ticks: int | None = None,
         scene_cut: bool = False,
     ) -> int:
-        """Queue one host frame; returns the assigned PTS."""
-    def submit_batch(
-        self,
-        frames: Sequence[np.ndarray | Any],
-        *,
-        width: int,
-        height: int,
-        fps: float,
-        layout: Layout,
-        range: Range,
-        pts_ticks: int | None = None,
-        scene_cut: bool = False,
-    ) -> int:
-        """Queue many host frames in one call."""
-    def submit_device_batch(
-        self,
-        tensor: Any,
-        *,
-        fps: float,
-        range: Range,
-        pts_ticks: int | None = None,
-        scene_cut: bool = False,
-    ) -> int:
-        """Queue a CUDA ``(1, 3, T, H, W)`` float32/bfloat16 contiguous tensor."""
+        """Queue frames; a numpy array takes the host path, a CUDA tensor the device path."""
+
     def poll(self, timeout: float | None = None) -> list[dict[str, Any]]:
         """Encoded units produced so far."""
     def flush(self, timeout: float | None = None) -> None:
@@ -96,6 +73,9 @@ class Encoder:
 
     @property
     def preprocess(self) -> str | None: ...
+
+    @property
+    def residency(self) -> str | None: ...
 
     @property
     def stats(self) -> dict[str, Any]: ...

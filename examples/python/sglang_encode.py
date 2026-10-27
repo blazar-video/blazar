@@ -11,7 +11,7 @@ sglang 0.5.22 running Wan 2.1 T2V 1.3B:
       correction, clamp) is a torch op that runs on the GPU just as well, so the
       transfer is the only part worth removing. ``blazar.sglang_interop`` replaces
       this method with one that keeps the tensor on the device and hands it to
-      ``Encoder.submit_device_batch``. Reversible (``device_output`` context
+      ``Encoder.submit`` with a CUDA tensor. Reversible (``device_output`` context
       manager); refuses to install if the private method moved rather than
       degrading silently to the host path.
 
@@ -74,7 +74,7 @@ def load_interop():
     """Import ``blazar.sglang_interop`` by path.
 
     The package ``__init__`` imports the compiled binding; the interop module
-    itself takes any object with ``submit_device_batch``, so loading it directly
+    itself takes any object with ``submit``, so loading it directly
     keeps ``--fake`` runnable even where the binding is not built for torch.
     """
     path = Path(__file__).resolve().parents[1] / "bindings" / "python" / "python" / "blazar" / "sglang_interop.py"
@@ -136,8 +136,8 @@ def run_swizzled(interop, encoder, stage, clips, *, fps: float, width: int, heig
     The stage's ``_postprocess_output`` is what sglang calls per request. After
     ``install``, calling it hands the post-processed tensor to ``on_frames``.
 
-    On CUDA the tensor goes to ``submit_device_batch`` with no host copy — the
-    seam the swizzle exists for. Off CUDA (a Mac dev box) ``submit_device_batch``
+    On CUDA the tensor goes to ``submit`` with no host copy — the
+    seam the swizzle exists for. Off CUDA (a Mac dev box) ``submit``
     rejects the tensor by design, so this falls back to the host submit so the
     install/postprocess path and the file are still exercised. The fallback is
     labelled, not silent: ``--fake`` on a Mac proves the hook fires and the file
@@ -151,7 +151,7 @@ def run_swizzled(interop, encoder, stage, clips, *, fps: float, width: int, heig
         seen["frames"] += count
         if bool(getattr(frames, "is_cuda", False)):
             batched = frames if frames.is_contiguous() else frames.contiguous()
-            encoder.submit_device_batch(batched, fps=fps, range="unit01")
+            encoder.submit(batched, fps=fps, range="unit01")
             seen["device"] = True
             return
         # Host fallback: (1, 3, T, H, W) -> per-frame THWC numpy.

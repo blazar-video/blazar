@@ -197,7 +197,7 @@ def main() -> int:
     if args.real and (args.width % 8 or args.height % 8):
         parser.error("--real needs width and height divisible by 8")
 
-    extradata = None if args.backend == "nvenc_av1" else FAKE_AV1C
+    extradata = None if args.backend == "nvenc" else FAKE_AV1C
     if extradata is not None:
         print("note: mock backend - output is NOT decodable, structure only")
 

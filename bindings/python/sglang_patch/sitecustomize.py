@@ -74,7 +74,7 @@ if os.environ.get("BLAZAR_SWIZZLE") == "1":
                         )
                         _state["output"] = output
                     opened = _time.perf_counter()
-                    _state["encoder"].submit_device_batch(batched, fps=16.0, range="unit01")
+                    _state["encoder"].submit(batched, fps=16.0, range="unit01")
                     # Encode and write before returning. The encode is async on
                     # the worker and SGLang SIGKILLs this process at teardown, so
                     # a signal handler cannot be relied on to finish the file:

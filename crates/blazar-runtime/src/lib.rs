@@ -275,6 +275,45 @@ impl<S: Sink> Stream<S> {
             )));
         }
 
+        // An explicitly named backend is not a pool: resolve its calibration and
+        // build it, letting both errors surface as they are. Only `auto` has
+        // alternatives to fall back to.
+        if !self.backend_auto {
+            let backend = candidates[0];
+            let key = codec_key(backend);
+            let query = Query::new(&self.enc.identity, "*", key, self.enc.target);
+            let cal = self
+                .enc
+                .index
+                .resolve(&query)
+                .ok_or(RuntimeError::NoCalibration)?;
+            tracing::info!(
+                request_id = %self.request_id,
+                source = ?cal.source,
+                origin = %cal.origin,
+                "resolved calibration"
+            );
+            let cfg = EncoderConfig::from_calibration(cal, key);
+            let built = build_encoder(&cfg, desc, self.enc.output.codec, backend, self.enc.timebase)?;
+            self.resolved_backend = Some(backend);
+            let site = preprocess_placement::resolve(
+                self.preprocess,
+                source,
+                backend_converts_on_device(backend),
+                cfg!(feature = "gpu-preprocess"),
+            )
+            .map_err(|e| RuntimeError::BadPlacement(e.to_string()))?;
+            self.resolved_preprocess = Some(site);
+            tracing::info!(request_id = %self.request_id, placement = site.as_str(), "preprocess placement");
+            self.encoder = Some(if site == preprocess_placement::PreprocessSite::Cpu {
+                Box::new(blazar_encoder::cpu_preprocess::CpuPreprocessEncoder::new(built))
+            } else {
+                built
+            });
+            self.encoder_open = true;
+            return Ok(());
+        }
+
         let mut rejected: Vec<String> = Vec::new();
         let mut chosen: Option<(VideoEncoderBackend, Box<dyn VideoEncoder>)> = None;
         for backend in candidates {

@@ -65,7 +65,8 @@ def test_nvenc_output_decodes(tmp_path):
         calibrations=calibrations,
         identity={"family": "wan", "version": "2.1", "quant": "bf16", "size": "1.3b"},
         target="low_latency",
-        backend="nvenc_av1",
+        backend="nvenc",
+        codec="av1",
         output=str(out),
         video_extradata=None,  # the real encoder derives av1C from its keyframe
         request_id="nvenc-pytest",

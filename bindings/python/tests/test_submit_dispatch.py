@@ -82,3 +82,54 @@ def test_layout_is_fixed_at_open() -> None:
 def test_unknown_layout_is_rejected_at_open() -> None:
     with pytest.raises(ValueError, match="layout"):
         encoder(layout="twhc")
+
+
+def test_a_device_submit_reads_the_callers_tensor_rather_than_copying() -> None:
+    """Two identical submits, then the same tensor mutated before the second.
+
+    If submit copied, the two encoded batches would be identical. Mutating after
+    submit must change what gets encoded, which is the only way to prove the
+    kernel read the caller's memory.
+    """
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("no CUDA device")
+
+    def encode_once(fill: bool):
+        enc = encoder()
+        tensor = torch.zeros((1, 3, FRAMES, HEIGHT, WIDTH), dtype=torch.bfloat16, device="cuda")
+        # submit first, then write the tensor: a copying implementation would
+        # encode zeros, a zero-copy one encodes this.
+        enc.submit(tensor, fps=24.0, range="signed_unit")
+        if fill:
+            tensor.fill_(1.0)
+        enc.close()
+        units = [e for e in enc.poll() if e["kind"] == "encoded" and e["data"] is not None]
+        return sum(len(u["data"]) for u in units)
+
+    black = encode_once(fill=False)
+    white = encode_once(fill=True)
+    assert black != white, (
+        "identical output for a black and a white tensor: submit copied instead of reading "
+        "the caller's memory"
+    )
+
+
+def test_a_sequence_mixing_host_and_device_frames_is_refused() -> None:
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("no CUDA device")
+    enc = encoder()
+    frames = [host_frame(0), torch.zeros((1, 3, 1, HEIGHT, WIDTH), dtype=torch.bfloat16, device="cuda")]
+    with pytest.raises(ValueError, match="cannot mix host and device"):
+        enc.submit(frames, fps=24.0, width=WIDTH, height=HEIGHT, layout="thwc", range="unit8")
+    enc.close()
+
+
+def test_a_sequence_of_host_frames_is_encoded_in_order() -> None:
+    enc = encoder()
+    frames = [host_frame(i) for i in range(FRAMES)]
+    enc.submit(frames, fps=24.0, width=WIDTH, height=HEIGHT, layout="thwc", range="full_u8")
+    enc.close()
+    units = [e for e in enc.poll() if e["kind"] == "encoded" and e["data"] is not None]
+    assert len(units) == FRAMES

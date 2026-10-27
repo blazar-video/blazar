@@ -15,7 +15,7 @@ child where a parent-process monkey-patch never arrives.
   returns `output=None, output_file_paths=[...]`, because SGLang encodes inside
   `_encode_while_decoding`.
 - The tensor arrives as `[1, 3, 9, 320, 480]`, `torch.float32`, `cuda:0`, values
-  in `[0, 1]` — exactly the BCTHW layout `submit_device_batch` wants, except that
+  in `[0, 1]` — exactly the BCTHW layout `submit` wants, except that
   it is **not contiguous**. `.contiguous()` costs 0.11-0.13 ms for 9 frames.
 - **One encoder per process.** Creating a session per request costs 337-598 ms,
   against roughly 4 ms to encode the 9 frames. Per-request encoders are slower

@@ -34,7 +34,7 @@ def frames() -> list[np.ndarray]:
     return out
 
 
-def encode(preprocess: str, backend: str = "nvenc_h264", codec: str = "h264"):
+def encode(preprocess: str, backend: str = "nvenc", codec: str = "h264"):
     encoder = blazar.Encoder(
         calibrations=blazar.Calibrations.load(CALIBRATIONS),
         identity={"family": "wan", "version": "2.1", "quant": "bf16", "size": "1.3b"},
@@ -58,7 +58,7 @@ def needs_nvenc() -> None:
             calibrations=blazar.Calibrations.load(CALIBRATIONS),
             identity={"family": "wan", "version": "2.1", "quant": "bf16", "size": "1.3b"},
             target="balanced",
-            backend="nvenc_h264",
+            backend="nvenc",
             codec="h264",
             output=None,
         )
@@ -118,11 +118,11 @@ def test_device_tensor_with_cpu_placement_is_an_error_not_a_silent_device_conver
         calibrations=blazar.Calibrations.load(CALIBRATIONS),
         identity={"family": "wan", "version": "2.1", "quant": "bf16", "size": "1.3b"},
         target="balanced",
-        backend="nvenc_h264",
+        backend="nvenc",
         codec="h264",
         output=None,
         preprocess="cpu",
     )
     tensor = torch.zeros((1, 3, 4, HEIGHT, WIDTH), dtype=torch.bfloat16, device="cuda")
     with pytest.raises(RuntimeError, match="device tensor"):
-        encoder.submit_device_batch(tensor, fps=24.0, range="signed_unit")
+        encoder.submit(tensor, fps=24.0, range="signed_unit")

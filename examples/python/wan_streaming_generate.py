@@ -85,7 +85,7 @@ def main() -> int:
     parser.add_argument("--latent-chunk", type=int, default=2)
     parser.add_argument("--vllm-omni", type=Path, default=Path.home() / "dev/code/vllm-omni")
     parser.add_argument("--output", type=Path, default=Path("/tmp/wan_stream.mp4"))
-    parser.add_argument("--backend", default="nvenc_av1", choices=["svtav1", "nvenc_av1"])
+    parser.add_argument("--backend", default="nvenc", choices=["svtav1", "nvenc"])
     parser.add_argument("--target", default="balanced", choices=["low_latency", "balanced", "quality"])
     parser.add_argument("--calibrations", type=Path, default=repo_calibrations())
     parser.add_argument("--interleave", action="store_true",
@@ -169,7 +169,7 @@ def main() -> int:
         """One submission per decoded chunk: one GPU kernel launch for the batch.
 
         Falls back to the per-frame path only if the binding predates
-        ``submit_batch``.
+        ``submit`` with a sequence.
         """
         nonlocal submitted, first_frame_s
         if not chunk:
@@ -177,7 +177,7 @@ def main() -> int:
         if not args.interleave:
             buffered.extend(chunk)
             return
-        batched = getattr(stream, "submit_batch", None)
+        batched = getattr(stream, "submit", None)
         if batched is None:
             for frame in chunk:
                 stream.submit(
@@ -234,7 +234,7 @@ def main() -> int:
             decoder.release(state)
             torch.cuda.empty_cache()
             if buffered:
-                batched = getattr(stream, "submit_batch", None)
+                batched = getattr(stream, "submit", None)
                 if batched is None:
                     for frame in buffered:
                         stream.submit(

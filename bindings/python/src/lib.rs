@@ -303,18 +303,10 @@ fn parse_backend_for(
 ) -> PyResult<blazar_core::VideoEncoderBackend> {
     use blazar_core::{VideoCodec, VideoEncoderBackend as B};
     if backend.contains('_') {
-        let pair = parse_backend(backend)?;
-        let warning = py.import("warnings")?;
-        warning.call_method1(
-            "warn",
-            (
-                format!(
-                    "backend={backend:?} restates the codec; pass backend= and codec= instead"
-                ),
-                py.get_type::<pyo3::exceptions::PyDeprecationWarning>(),
-            ),
-        )?;
-        return Ok(pair);
+        return Err(PyValueError::new_err(format!(
+            "backend={backend:?} restates the codec; name the implementation and pass codec= \
+             (for example backend=\"nvenc\", codec=\"h264\")"
+        )));
     }
     let resolved = match (backend, codec) {
         ("nvenc", VideoCodec::H264) => B::NvencH264,
@@ -1019,6 +1011,51 @@ impl PyEncoder {
         if !fps.is_finite() || fps <= 0.0 {
             return Err(PyValueError::new_err("fps must be > 0"));
         }
+        // A sequence is a batch of host frames. It must not mix residencies:
+        // half a batch on each path is a caller bug, not something to guess at.
+        if frame.is_instance_of::<pyo3::types::PyList>() || frame.is_instance_of::<pyo3::types::PyTuple>() {
+            let items: Vec<Bound<'_, PyAny>> = frame.extract()?;
+            let mut saw_host = false;
+            let mut saw_device = false;
+            for item in &items {
+                if is_torch_tensor(py, item) {
+                    saw_device = true;
+                } else {
+                    saw_host = true;
+                }
+            }
+            if saw_host && saw_device {
+                return Err(PyValueError::new_err(
+                    "a single submit cannot mix host and device frames; split the call or convert",
+                ));
+            }
+            if saw_device {
+                return Err(PyValueError::new_err(
+                    "submit one device tensor, not a sequence of them: frames already batched \
+                     belong in a single (1, 3, T, H, W) tensor",
+                ));
+            }
+            let (mut last, mut count) = (0, 0);
+            for item in &items {
+                last = self.submit(
+                    py,
+                    item,
+                    fps,
+                    width,
+                    height,
+                    layout,
+                    range,
+                    pts_ticks,
+                    scene_cut && count == 0,
+                )?;
+                count += 1;
+            }
+            if count == 0 {
+                return Err(PyValueError::new_err("submit was given an empty sequence"));
+            }
+            return Ok(last);
+        }
+
         // Geometry comes from the caller for host frames and from the tensor for
         // device frames, so these are optional here and checked per path.
         let (width, height) = match (width, height) {
@@ -1131,149 +1168,7 @@ impl PyEncoder {
         Ok(seq)
     }
 
-    /// Queue several frames as one submission. GPU backends convert them with
-    /// one kernel launch, then encode them one at a time. Returns the batch's
-    /// submission id; `poll()` reports one event for the batch.
-    ///
-    /// Frames must share geometry and format. Use this for a tensor the model
-    /// already produced as a chunk (BCTHW with T > 1) instead of a Python loop.
-    #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (
-        frames,
-        width,
-        height,
-        fps,
-        layout,
-        range,
-        pts_ticks = None,
-        scene_cut = false,
-    ))]
-    fn submit_batch(
-        &mut self,
-        py: Python<'_>,
-        frames: Vec<Bound<'_, PyAny>>,
-        width: u32,
-        height: u32,
-        fps: f64,
-        layout: &str,
-        range: &str,
-        pts_ticks: Option<u64>,
-        scene_cut: bool,
-    ) -> PyResult<u64> {
-        if frames.is_empty() {
-            return Err(PyValueError::new_err("frames is empty"));
-        }
-        if !fps.is_finite() || fps <= 0.0 {
-            return Err(PyValueError::new_err("fps must be > 0"));
-        }
-        if width == 0 || height == 0 {
-            return Err(PyValueError::new_err("width and height must be non-zero"));
-        }
-        if let Some(err) = self.error_message() {
-            return Err(PyRuntimeError::new_err(err));
-        }
-        let jobs_out = self
-            .jobs
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("encoder state lock poisoned"))?
-            .clone()
-            .ok_or_else(|| closed_error(&self.request_id))?;
 
-        let layout = parse_layout(layout)?;
-        let range = parse_range(range)?;
-
-        if let Some((prev_w, prev_h)) = self.frame_size {
-            if (prev_w, prev_h) != (width, height) {
-                return Err(PyValueError::new_err(format!(
-                    "frame size changed from {prev_w}x{prev_h} to {width}x{height}; \
-                     open a new Encoder for a new stream"
-                )));
-            }
-        }
-        if let Some(prev_fps) = self.fps {
-            if (prev_fps - fps).abs() > 1e-9 {
-                return Err(PyValueError::new_err(format!(
-                    "fps changed from {prev_fps} to {fps}; open a new Encoder for a new stream"
-                )));
-            }
-        }
-
-        let mut jobs = Vec::with_capacity(frames.len());
-        for (index, frame) in frames.iter().enumerate() {
-            let (bytes, dtype) = copy_frame(py, frame)?;
-            let frame_index = self.frame_index + index as u64;
-            let pts = pts_ticks
-                .map(|first| {
-                    let step = self.timebase.ticks_per_frame(fps);
-                    first + index as u64 * step
-                })
-                .unwrap_or_else(|| {
-                    Pts::from_frame_index(frame_index, fps, self.timebase).0
-                });
-            let desc = FrameDesc {
-                width,
-                height,
-                dtype,
-                range,
-                layout,
-                colorspace: ColorSpace::AssumedBt709,
-                fps,
-                pts: Pts(pts),
-            };
-            jobs.push(FrameJob {
-                seq: self.seq,
-                bytes,
-                desc,
-                boundary: if index == 0 && scene_cut {
-                    Some(Boundary::SceneCut)
-                } else {
-                    None
-                },
-            });
-        }
-
-        let count = jobs.len() as u64;
-        self.shared.queued.fetch_add(1, Ordering::Relaxed);
-        let sent = py.detach(move || jobs_out.send(Job::Batch(jobs)));
-        if sent.is_err() {
-            self.shared.queued.fetch_sub(1, Ordering::Relaxed);
-            return Err(PyRuntimeError::new_err(
-                self.error_message()
-                    .unwrap_or_else(|| "encoder worker stopped".to_string()),
-            ));
-        }
-
-        let seq = self.seq;
-        self.seq += 1;
-        self.submitted += count;
-        self.frame_index += count;
-        self.frame_size.get_or_insert((width, height));
-        self.fps.get_or_insert(fps);
-        Ok(seq)
-    }
-
-    /// Deprecated alias for `submit`, which dispatches on the frame's type.
-    ///
-    /// Frames already on the GPU take the zero-copy path: the NV12 kernel reads
-    /// the tensor's memory directly, and the binding keeps a reference until the
-    /// worker has encoded the batch, so the caller may drop it after this
-    /// returns.
-    #[pyo3(signature = (tensor, fps, range = "unit01", pts_ticks = None, scene_cut = false))]
-    fn submit_device_batch(
-        &mut self,
-        py: Python<'_>,
-        tensor: &Bound<'_, PyAny>,
-        fps: f64,
-        range: &str,
-        pts_ticks: Option<u64>,
-        scene_cut: bool,
-    ) -> PyResult<u64> {
-        warn_deprecated(
-            py,
-            "submit_device_batch is now submit(tensor, ...): submit dispatches on the frame type",
-        )?;
-        self.submit_device_impl(py, tensor, fps, range, pts_ticks, scene_cut)
-    }
 
     fn submit_device_impl(
         &mut self,

@@ -104,7 +104,6 @@ def test_an_implementation_that_cannot_encode_the_codec_is_rejected() -> None:
         encode("x264", codec="hevc")
 
 
-def test_the_pair_shaped_spelling_still_works_but_warns() -> None:
-    with pytest.warns(DeprecationWarning, match="restates the codec"):
-        backend, units = encode("nvenc_h264")
-        assert backend == "nvenc_h264" and units > 0
+def test_a_pair_shaped_backend_is_rejected_with_the_fix() -> None:
+    with pytest.raises(ValueError, match="restates the codec"):
+        encode("nvenc_h264")
