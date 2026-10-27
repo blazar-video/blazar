@@ -85,6 +85,49 @@ for backend failures. A backend whose build feature is off raises rather than
 silently substituting a stub. When a consumer GPU's driver refuses a new NVENC
 session the message says so and names `BLAZAR_MAX_NVENC_SESSIONS`.
 
+## Backend selection
+
+`backend` names an **implementation**; `codec` names the wire codec. They are not
+redundant: `nvenc` encodes h264, hevc or av1, and `codec` says which.
+
+| `backend` | codecs |
+|---|---|
+| `nvenc` | h264, hevc, av1 |
+| `videotoolbox` | h264, hevc |
+| `svtav1` | av1 |
+| `x264` / `x265` | h264 / hevc |
+| `vp9` | vp9 |
+| `mock` | any (tests only, produces no data) |
+| `auto` | picks from `backend_pool` |
+
+`backend_pool` constrains `auto` and is a constraint, not a preference:
+
+| pool | behaviour |
+|---|---|
+| `"any"` (default) | hardware first, software as the fallback |
+| `"hardware"` | hardware only; **errors rather than falling back** |
+| `"software"` | software only |
+
+```python
+enc = blazar.Encoder(..., backend="auto", backend_pool="hardware", codec="h264")
+enc.resolved_backend    # "nvenc_h264" once the stream has opened, else None
+```
+
+Availability cannot be queried cheaply — an NVENC session costs ~50-100 ms and one
+of the 9 consumer session slots — so `auto` tries candidates in a fixed order and
+takes the first that opens. Consequences worth knowing:
+
+- The resolved backend is logged and reported, so a fallback is never invisible.
+- The calibration is resolved **after** selection and keyed on what answered, so a
+  fallback that changes quality is recorded rather than hidden.
+- A stream's backend can differ between runs when hardware is transiently
+  unavailable (a busy box hitting the session cap is the realistic case). Name the
+  backend explicitly when you need byte-stability — corpus generation and
+  calibration sweeps both do.
+
+The pair-shaped spellings (`backend="nvenc_h264"`) still parse but emit a
+`DeprecationWarning`: they restate `codec`, and the two could disagree.
+
 ## Preprocess placement
 
 RGB→NV12 conversion can run on the host or on the device. `Encoder(..., preprocess=...)`

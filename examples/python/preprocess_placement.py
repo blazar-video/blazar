@@ -57,7 +57,7 @@ def encode(calibrations, placement: str, backend: str) -> tuple[str, int, int]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--calibrations", default="calibrations/default")
-    parser.add_argument("--backend", default="nvenc_h264")
+    parser.add_argument("--backend", default="nvenc")
     args = parser.parse_args(argv)
 
     calibrations = blazar.Calibrations.load(args.calibrations)

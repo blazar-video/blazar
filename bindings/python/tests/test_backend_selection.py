@@ -90,3 +90,21 @@ def test_unknown_pool_is_rejected_before_any_frame() -> None:
             output=None,
             backend_pool="Hardware",
         )
+
+
+def test_backend_names_the_implementation_not_the_codec() -> None:
+    backend, units = encode("x264")
+    assert backend == "x264" and units > 0
+    backend, units = encode("nvenc", codec="h264")
+    assert backend == "nvenc_h264" and units > 0
+
+
+def test_an_implementation_that_cannot_encode_the_codec_is_rejected() -> None:
+    with pytest.raises(ValueError, match="does not encode"):
+        encode("x264", codec="hevc")
+
+
+def test_the_pair_shaped_spelling_still_works_but_warns() -> None:
+    with pytest.warns(DeprecationWarning, match="restates the codec"):
+        backend, units = encode("nvenc_h264")
+        assert backend == "nvenc_h264" and units > 0

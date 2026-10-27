@@ -260,6 +260,53 @@ fn publish_backend<S: blazar_sink::Sink>(stream: &blazar_runtime::Stream<S>, sha
     }
 }
 
+
+/// Resolve `backend` + `codec` into the pair the runtime builds.
+///
+/// `backend` names an implementation (`nvenc`, `videotoolbox`, `x264`, `x265`,
+/// `svtav1`, `vp9`, `mock`) or `auto`. The old pair-shaped spellings
+/// (`nvenc_h264`) still parse, with a DeprecationWarning: they restate `codec`,
+/// and the two could disagree.
+fn parse_backend_for(
+    py: Python<'_>,
+    backend: &str,
+    codec: blazar_core::VideoCodec,
+) -> PyResult<blazar_core::VideoEncoderBackend> {
+    use blazar_core::{VideoCodec, VideoEncoderBackend as B};
+    if backend.contains('_') {
+        let pair = parse_backend(backend)?;
+        let warning = py.import("warnings")?;
+        warning.call_method1(
+            "warn",
+            (
+                format!(
+                    "backend={backend:?} restates the codec; pass backend= and codec= instead"
+                ),
+                py.get_type::<pyo3::exceptions::PyDeprecationWarning>(),
+            ),
+        )?;
+        return Ok(pair);
+    }
+    let resolved = match (backend, codec) {
+        ("nvenc", VideoCodec::H264) => B::NvencH264,
+        ("nvenc", VideoCodec::Hevc) => B::NvencHevc,
+        ("nvenc", VideoCodec::Av1) => B::NvencAv1,
+        ("videotoolbox", VideoCodec::H264) => B::VideoToolboxH264,
+        ("videotoolbox", VideoCodec::Hevc) => B::VideoToolboxHevc,
+        ("x264", VideoCodec::H264) => B::X264,
+        ("x265", VideoCodec::Hevc) => B::X265,
+        ("svtav1", VideoCodec::Av1) => B::SvtAv1,
+        ("vp9", VideoCodec::Vp9) => B::Vp9,
+        ("mock", _) => B::Mock,
+        (name, codec) => {
+            return Err(PyValueError::new_err(format!(
+                "backend {name:?} does not encode {codec:?}"
+            )))
+        }
+    };
+    Ok(resolved)
+}
+
 fn worker_main(
     mut stream: Stream<SinkTarget>,
     jobs: Receiver<Job>,
@@ -720,19 +767,19 @@ impl PyEncoder {
         };
         let identity = model_identity(identity)?;
         let target = parse_target(target)?;
+        let codec = parse_codec(codec)?;
         let (backend_auto, backend) = if backend == "auto" {
             // A concrete backend still has to be named for `Output`, but it is
             // never built: `with_backend_auto` makes the runtime choose.
-            (true, parse_backend("x264")?)
+            (true, blazar_core::VideoEncoderBackend::X264)
         } else {
-            (false, parse_backend(backend)?)
+            (false, parse_backend_for(py, backend, codec)?)
         };
         let pool: blazar_runtime::backend_selection::BackendPool = backend_pool
             .parse()
             .map_err(|e: blazar_runtime::backend_selection::SelectionError| {
                 PyValueError::new_err(e.to_string())
             })?;
-        let codec = parse_codec(codec)?;
 
         // Queue rather than let the driver refuse: a server that half-starts is
         // worse than one that starts slowly.

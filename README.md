@@ -176,6 +176,15 @@ the scalar reference at 1080p:
 Numbers on this machine move by 10-15% between runs, so treat differences under that
 as noise.
 
+## Choosing a backend
+
+`backend` names the implementation and `codec` the wire codec, so `nvenc` with
+`codec="av1"` and `nvenc` with `codec="h264"` are different sessions without the
+name having to say so twice. `backend="auto"` picks from `backend_pool`:
+`"any"` prefers hardware and falls back to software, `"hardware"` errors rather
+than falling back, `"software"` stays software. `encoder.resolved_backend`
+reports what answered; name it explicitly when you need byte-stability.
+
 ## Limits worth knowing
 
 - NVENC has no lossless mode. Lossless calibration requires the CPU codecs
