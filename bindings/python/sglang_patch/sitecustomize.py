@@ -58,6 +58,9 @@ if os.environ.get("BLAZAR_SWIZZLE") == "1":
                     # One encoder per process. Creating a session per request
                     # costs 300-600 ms, which swamps the 9-frame encode (~4 ms).
                     if _state.get("encoder") is None:
+                        # The sink will not create the directory, and a missing
+                        # one fails the whole generation at the encoder open.
+                        os.makedirs("/var/tmp/blazar/sglang_live", exist_ok=True)
                         output = f"/var/tmp/blazar/sglang_live/persistent_{os.getpid()}.mp4"
                         _state["encoder"] = blazar.Encoder(
                             calibrations=blazar.Calibrations.load(
@@ -65,13 +68,19 @@ if os.environ.get("BLAZAR_SWIZZLE") == "1":
                             ),
                             identity={"family": "wan", "version": "2.1", "quant": "bf16", "size": "1.3b"},
                             target="balanced",
-                            backend="nvenc_h264",
+                            backend="nvenc",
                             codec="h264",
                             output=output,
                         )
                         _state["output"] = output
                     opened = _time.perf_counter()
                     _state["encoder"].submit_device_batch(batched, fps=16.0, range="unit01")
+                    # Encode and write before returning. The encode is async on
+                    # the worker and SGLang SIGKILLs this process at teardown, so
+                    # a signal handler cannot be relied on to finish the file:
+                    # ~40 ms here buys a decodable fragment even under SIGKILL.
+                    _state["encoder"].flush()
+                    record["flushed"] = True
                     record["submit_ms"] = round((_time.perf_counter() - opened) * 1000, 2)
                     submitted = True
                 record["submitted"] = submitted

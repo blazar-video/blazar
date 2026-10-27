@@ -216,6 +216,13 @@ struct Shared {
     /// Backend that actually answered, published by the worker once the stream
     /// opens. `backend="auto"` cannot know it before the first frame.
     resolved_backend: Mutex<Option<String>>,
+    /// Layout fixed at open (`"thwc"`/`"bcthw"`), or `None` until the first
+    /// frame decides. A stream's layout does not change: a container written
+    /// with two interpretations of the same shape is unplayable.
+    layout: Mutex<Option<String>>,
+    /// `"host"` or `"device"`, decided by the first submit. Switching would put
+    /// half a clip on each path, so it is refused instead.
+    residency: Mutex<Option<String>>,
 }
 
 /// Hand each unit the memory sink has buffered to the caller.
@@ -260,6 +267,28 @@ fn publish_backend<S: blazar_sink::Sink>(stream: &blazar_runtime::Stream<S>, sha
     }
 }
 
+
+
+/// Is this a `torch.Tensor`? torch may not be installed, in which case nothing
+/// can be one.
+fn is_torch_tensor(py: Python<'_>, frame: &Bound<'_, PyAny>) -> bool {
+    match py.import("torch").and_then(|t| t.getattr("Tensor")) {
+        Ok(class) => frame.is_instance(&class).unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
+fn warn_deprecated(py: Python<'_>, message: &str) -> PyResult<()> {
+    let warnings = py.import("warnings")?;
+    warnings.call_method1(
+        "warn",
+        (
+            message,
+            py.get_type::<pyo3::exceptions::PyDeprecationWarning>(),
+        ),
+    )?;
+    Ok(())
+}
 
 /// Resolve `backend` + `codec` into the pair the runtime builds.
 ///
@@ -719,6 +748,53 @@ struct PyEncoder {
     backend: blazar_core::VideoEncoderBackend,
 }
 
+impl PyEncoder {
+    /// Fix the stream's residency on the first submit and refuse a change.
+    fn claim_residency(&self, residency: &str) -> PyResult<()> {
+        let mut slot = self
+            .shared
+            .residency
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("residency lock poisoned"))?;
+        match slot.as_deref() {
+            None => {
+                *slot = Some(residency.to_owned());
+                Ok(())
+            }
+            Some(current) if current == residency => Ok(()),
+            Some(current) => Err(PyValueError::new_err(format!(
+                "this stream is opened for {current} frames; got {residency} frames. \
+                 Open a second Encoder for the other residency"
+            ))),
+        }
+    }
+
+    /// Fix the stream's layout on the first submit and refuse a change.
+    fn claim_layout(&self, layout: blazar_core::Layout) -> PyResult<()> {
+        let name = match layout {
+            blazar_core::Layout::Thwc => "thwc",
+            blazar_core::Layout::Bcthw => "bcthw",
+        };
+        let mut slot = self
+            .shared
+            .layout
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("layout lock poisoned"))?;
+        match slot.as_deref() {
+            None => {
+                *slot = Some(name.to_owned());
+                Ok(())
+            }
+            Some(current) if current == name => Ok(()),
+            Some(current) => Err(PyValueError::new_err(format!(
+                "layout={current:?} is fixed for this stream; got a {name} array. \
+                 Pass layout={current:?} at Encoder(...)"
+            ))),
+        }
+    }
+
+}
+
 #[pymethods]
 impl PyEncoder {
     // Explicit keyword arguments mirror the Rust contract; folding them into a
@@ -738,6 +814,7 @@ impl PyEncoder {
         max_buffered_units = 240,
         preprocess = "auto",
         backend_pool = "any",
+        layout = None,
     ))]
     fn new(
         py: Python<'_>,
@@ -753,7 +830,16 @@ impl PyEncoder {
         max_buffered_units: usize,
         preprocess: &str,
         backend_pool: &str,
+        layout: Option<&str>,
     ) -> PyResult<Self> {
+        // Validated here so a typo fails before a frame is submitted.
+        let initial_layout = match layout {
+            Some(value) => {
+                parse_layout(value)?;
+                Some(value.to_owned())
+            }
+            None => None,
+        };
         if queue_depth == 0 {
             return Err(PyValueError::new_err("queue_depth must be >= 1"));
         }
@@ -852,6 +938,8 @@ impl PyEncoder {
             stats: Mutex::new(WorkerStats::default()),
             queued: AtomicUsize::new(0),
             resolved_backend: Mutex::new(None),
+            layout: Mutex::new(initial_layout),
+            residency: Mutex::new(None),
         });
 
         let worker_shared = Arc::clone(&shared);
@@ -880,20 +968,39 @@ impl PyEncoder {
         })
     }
 
+    /// Device frames: same entry point as host frames, dispatched by type.
+    fn submit_device_frame(
+        &mut self,
+        py: Python<'_>,
+        tensor: &Bound<'_, PyAny>,
+        fps: f64,
+        range: &str,
+        pts_ticks: Option<u64>,
+        scene_cut: bool,
+    ) -> PyResult<u64> {
+        self.claim_residency("device")?;
+        self.claim_layout(blazar_core::Layout::Bcthw)?;
+        self.submit_device_impl(py, tensor, fps, range, pts_ticks, scene_cut)
+    }
+
     /// Copy one frame into the encoder's queue. Returns immediately (the encode
     /// happens on the worker). Blocks only if the queue is full, with the GIL
     /// released so other Python threads keep running.
     ///
-    /// `frame` must be a C-contiguous float32 array (numpy), shaped per `layout`:
-    /// THWC = `(height, width, 3)`, BCTHW = `(1, 3, 1, height, width)`.
+    /// `frame` is a numpy array (host) or a CUDA tensor (device); the type picks
+    /// the path, so there is one submit rather than one per residency.
+    ///
+    /// Host frames need `width`/`height` and a `layout` (from `Encoder(...)` or
+    /// this call). Device tensors carry their shape: `(1, 3, T, H, W)` bcthw,
+    /// contiguous, on CUDA, and are read in place.
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         frame,
-        width,
-        height,
         fps,
-        layout,
-        range,
+        width = None,
+        height = None,
+        layout = None,
+        range = "unit01",
         pts_ticks = None,
         scene_cut = false,
     ))]
@@ -901,10 +1008,10 @@ impl PyEncoder {
         &mut self,
         py: Python<'_>,
         frame: &Bound<'_, PyAny>,
-        width: u32,
-        height: u32,
         fps: f64,
-        layout: &str,
+        width: Option<u32>,
+        height: Option<u32>,
+        layout: Option<&str>,
         range: &str,
         pts_ticks: Option<u64>,
         scene_cut: bool,
@@ -912,9 +1019,20 @@ impl PyEncoder {
         if !fps.is_finite() || fps <= 0.0 {
             return Err(PyValueError::new_err("fps must be > 0"));
         }
-        if width == 0 || height == 0 {
-            return Err(PyValueError::new_err("width and height must be non-zero"));
-        }
+        // Geometry comes from the caller for host frames and from the tensor for
+        // device frames, so these are optional here and checked per path.
+        let (width, height) = match (width, height) {
+            (Some(w), Some(h)) if w > 0 && h > 0 => (w, h),
+            (Some(_), Some(_)) => {
+                return Err(PyValueError::new_err("width and height must be non-zero"))
+            }
+            _ if is_torch_tensor(py, frame) => (0, 0),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "width and height are required for host frames",
+                ))
+            }
+        };
         if let Some(err) = self.error_message() {
             return Err(PyRuntimeError::new_err(err));
         }
@@ -925,8 +1043,28 @@ impl PyEncoder {
             .clone()
             .ok_or_else(|| closed_error(&self.request_id))?;
 
-        let layout = parse_layout(layout)?;
+        if is_torch_tensor(py, frame) {
+            return self.submit_device_frame(py, frame, fps, range, pts_ticks, scene_cut);
+        }
+
+        let requested_layout: String = match layout {
+            Some(value) => value.to_owned(),
+            None => self
+                .shared
+                .layout
+                .lock()
+                .ok()
+                .and_then(|slot| slot.clone())
+                .ok_or_else(|| {
+                    PyValueError::new_err(
+                        "layout is required for host frames; pass layout= at Encoder(...) or per call",
+                    )
+                })?,
+        };
+        let layout = parse_layout(&requested_layout)?;
         let range = parse_range(range)?;
+        self.claim_residency("host")?;
+        self.claim_layout(layout)?;
 
         // A stream's geometry is part of its container metadata (opened on the
         // first frame). Changing it mid-stream produces an unplayable file, so
@@ -1114,14 +1252,30 @@ impl PyEncoder {
         Ok(seq)
     }
 
-    /// Queue a batch whose frames are already on the GPU, shaped like the
-    /// model's VAE output: `(1, 3, T, H, W)` bf16 (or f32), contiguous, CUDA.
+    /// Deprecated alias for `submit`, which dispatches on the frame's type.
     ///
-    /// Nothing is copied to the host: the NV12 kernel reads the tensor's memory
-    /// directly. The binding keeps a reference to `tensor` until the worker has
-    /// encoded the batch, so the caller may drop it after this returns.
+    /// Frames already on the GPU take the zero-copy path: the NV12 kernel reads
+    /// the tensor's memory directly, and the binding keeps a reference until the
+    /// worker has encoded the batch, so the caller may drop it after this
+    /// returns.
     #[pyo3(signature = (tensor, fps, range = "unit01", pts_ticks = None, scene_cut = false))]
     fn submit_device_batch(
+        &mut self,
+        py: Python<'_>,
+        tensor: &Bound<'_, PyAny>,
+        fps: f64,
+        range: &str,
+        pts_ticks: Option<u64>,
+        scene_cut: bool,
+    ) -> PyResult<u64> {
+        warn_deprecated(
+            py,
+            "submit_device_batch is now submit(tensor, ...): submit dispatches on the frame type",
+        )?;
+        self.submit_device_impl(py, tensor, fps, range, pts_ticks, scene_cut)
+    }
+
+    fn submit_device_impl(
         &mut self,
         py: Python<'_>,
         tensor: &Bound<'_, PyAny>,
@@ -1352,6 +1506,18 @@ impl PyEncoder {
         Ok(self
             .shared
             .resolved_backend
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or(None))
+    }
+
+    /// `"host"` or `"device"`: which path this stream takes, decided by the
+    /// first submit. `None` before then.
+    #[getter]
+    fn residency(&self) -> PyResult<Option<String>> {
+        Ok(self
+            .shared
+            .residency
             .lock()
             .map(|value| value.clone())
             .unwrap_or(None))

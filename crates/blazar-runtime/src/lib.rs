@@ -441,6 +441,11 @@ impl<S: Sink> Stream<S> {
             for u in &units {
                 self.enc.sink.write(u)?;
             }
+            // Get the units on disk before returning. A fragmented MP4 written
+            // here is decodable without a trailer, which is the difference
+            // between a truncated file and no file when the host is killed
+            // before `close()` — SGLang SIGKILLs its scheduler on shutdown.
+            self.enc.sink.flush()?;
         }
 
         let seq = self.seq;
@@ -501,6 +506,11 @@ impl<S: Sink> Stream<S> {
             for u in &units {
                 self.enc.sink.write(u)?;
             }
+            // Get the units on disk before returning. A fragmented MP4 written
+            // here is decodable without a trailer, which is the difference
+            // between a truncated file and no file when the host is killed
+            // before `close()` — SGLang SIGKILLs its scheduler on shutdown.
+            self.enc.sink.flush()?;
         }
         let seq = self.seq;
         self.seq += 1;
@@ -549,6 +559,11 @@ impl<S: Sink> Stream<S> {
             for u in &units {
                 self.enc.sink.write(u)?;
             }
+            // Get the units on disk before returning. A fragmented MP4 written
+            // here is decodable without a trailer, which is the difference
+            // between a truncated file and no file when the host is killed
+            // before `close()` — SGLang SIGKILLs its scheduler on shutdown.
+            self.enc.sink.flush()?;
         }
 
         let seq = self.seq;
@@ -571,6 +586,11 @@ impl<S: Sink> Stream<S> {
             for u in &units {
                 self.enc.sink.write(u)?;
             }
+            // Get the units on disk before returning. A fragmented MP4 written
+            // here is decodable without a trailer, which is the difference
+            // between a truncated file and no file when the host is killed
+            // before `close()` — SGLang SIGKILLs its scheduler on shutdown.
+            self.enc.sink.flush()?;
         }
         if self.sink_open {
             self.enc.sink.flush()?;
@@ -591,6 +611,11 @@ impl<S: Sink> Stream<S> {
             for u in &units {
                 self.enc.sink.write(u)?;
             }
+            // Get the units on disk before returning. A fragmented MP4 written
+            // here is decodable without a trailer, which is the difference
+            // between a truncated file and no file when the host is killed
+            // before `close()` — SGLang SIGKILLs its scheduler on shutdown.
+            self.enc.sink.flush()?;
         }
         if self.sink_open {
             self.enc.sink.close()?;
