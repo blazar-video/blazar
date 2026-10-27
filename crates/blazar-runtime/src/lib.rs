@@ -22,6 +22,7 @@
 //! is present and returns `Unsupported` so callers compile against the final
 //! shape.
 
+pub mod backend_selection;
 pub mod preprocess_placement;
 use blazar_calibration::{CalibrationIndex, Query};
 use blazar_core::{
@@ -36,6 +37,10 @@ use thiserror::Error;
 pub enum RuntimeError {
     #[error("no calibration resolved for the stream (index missing its default?)")]
     NoCalibration,
+    #[error("no backend available: {0}")]
+    NoBackend(String),
+    #[error("invalid preprocess placement: {0}")]
+    BadPlacement(String),
     #[error("preprocess error: {0}")]
     Preprocess(#[from] blazar_preprocess::PreprocessError),
     #[error("encode error: {0}")]
@@ -150,6 +155,9 @@ impl<S: Sink> Encoder<S> {
             sink_open: false,
             last_desc: None,
             closed: false,
+            backend_auto: false,
+            backend_pool: backend_selection::BackendPool::Any,
+            resolved_backend: None,
             preprocess: preprocess_placement::PreprocessPlacement::Auto,
             resolved_preprocess: None,
         }
@@ -172,6 +180,12 @@ pub struct Stream<S: Sink> {
     /// first emitted unit (lookahead encoders) can still be created at flush.
     last_desc: Option<FrameDesc>,
     closed: bool,
+    /// Let the runtime choose the backend, subject to `backend_pool`.
+    backend_auto: bool,
+    /// Which implementations `backend_auto` may pick from.
+    backend_pool: backend_selection::BackendPool,
+    /// The backend that actually answered, once a frame has opened the stream.
+    resolved_backend: Option<VideoEncoderBackend>,
     /// Where the caller asked for RGB→NV12 to happen.
     preprocess: preprocess_placement::PreprocessPlacement,
     /// What `auto` resolved to, once the backend and frame location are known.
@@ -179,6 +193,23 @@ pub struct Stream<S: Sink> {
 }
 
 impl<S: Sink> Stream<S> {
+    /// Let the runtime pick the backend from `pool` instead of naming one.
+    ///
+    /// `auto` is a constraint plus a preference: hardware is tried first and
+    /// software is the fallback under `Any`; `Hardware` never falls back.
+    #[must_use]
+    pub fn with_backend_auto(mut self, auto: bool, pool: backend_selection::BackendPool) -> Self {
+        self.backend_auto = auto;
+        self.backend_pool = pool;
+        self
+    }
+
+    /// The backend that produced this stream, once it has opened.
+    #[must_use]
+    pub fn resolved_backend(&self) -> Option<VideoEncoderBackend> {
+        self.resolved_backend
+    }
+
     /// Choose where RGB→NV12 happens. [`PreprocessPlacement::Auto`] keeps the
     /// per-backend default, which is what callers who never set it get.
     #[must_use]
@@ -224,41 +255,82 @@ impl<S: Sink> Stream<S> {
             return Ok(());
         }
 
-        // Resolve the calibration. Scene defaults to agnostic ("*") in Phase 1;
-        // a real classifier feeds this later (architecture §5).
-        let query = Query::new(
-            &self.enc.identity,
-            "*",
-            self.enc.codec_key(),
-            self.enc.target,
-        );
-        let cal = self
-            .enc
-            .index
-            .resolve(&query)
-            .ok_or(RuntimeError::NoCalibration)?;
-        tracing::info!(
-            request_id = %self.request_id,
-            source = ?cal.source,
-            origin = %cal.origin,
-            "resolved calibration"
-        );
-        let cfg = EncoderConfig::from_calibration(cal, self.enc.codec_key());
-        let built = build_encoder(
-            &cfg,
-            desc,
-            self.enc.output.codec,
-            self.enc.output.backend,
-            self.enc.timebase,
-        )?;
+        // Which backend serves this stream. An explicit backend is honoured as
+        // given; `auto` walks the pool in preference order and takes the first
+        // that opens a session, because availability cannot be queried cheaply.
+        let candidates = if self.backend_auto {
+            backend_selection::candidates_for(
+                self.enc.output.codec,
+                self.backend_pool,
+                true,
+            )
+        } else {
+            vec![self.enc.output.backend]
+        };
+        if candidates.is_empty() {
+            return Err(RuntimeError::NoBackend(format!(
+                "backend_pool {:?} has no built backend for {:?}",
+                self.backend_pool.as_str(),
+                self.enc.output.codec
+            )));
+        }
+
+        let mut rejected: Vec<String> = Vec::new();
+        let mut chosen: Option<(VideoEncoderBackend, Box<dyn VideoEncoder>)> = None;
+        for backend in candidates {
+            let key = codec_key(backend);
+            let query = Query::new(&self.enc.identity, "*", key, self.enc.target);
+            let Some(cal) = self.enc.index.resolve(&query) else {
+                rejected.push(format!("{}: no calibration", backend_selection::backend_name(backend)));
+                continue;
+            };
+            let cfg = EncoderConfig::from_calibration(cal, key);
+            match build_encoder(&cfg, desc, self.enc.output.codec, backend, self.enc.timebase) {
+                Ok(encoder) => {
+                    tracing::info!(
+                        request_id = %self.request_id,
+                        backend = backend_selection::backend_name(backend),
+                        origin = %cal.origin,
+                        "resolved backend"
+                    );
+                    chosen = Some((backend, encoder));
+                    break;
+                }
+                Err(error) => {
+                    // Only a hardware pool may not silently become software;
+                    // under `Any` the next candidate is the fallback.
+                    tracing::warn!(
+                        request_id = %self.request_id,
+                        backend = backend_selection::backend_name(backend),
+                        %error,
+                        "backend unavailable, trying the next candidate"
+                    );
+                    rejected.push(format!(
+                        "{}: {error}",
+                        backend_selection::backend_name(backend)
+                    ));
+                }
+            }
+        }
+
+        let Some((backend, built)) = chosen else {
+            return Err(RuntimeError::NoBackend(format!(
+                "no backend in pool {:?} could open a session for {:?} (tried {})",
+                self.backend_pool.as_str(),
+                self.enc.output.codec,
+                rejected.join(", ")
+            )));
+        };
+        self.resolved_backend = Some(backend);
+
         // Placement is a caller decision; the transfers it implies are ours.
         let site = preprocess_placement::resolve(
             self.preprocess,
             source,
-            backend_converts_on_device(self.enc.output.backend),
+            backend_converts_on_device(backend),
             cfg!(feature = "gpu-preprocess"),
         )
-        .map_err(|e| RuntimeError::Preprocess(blazar_preprocess::PreprocessError::UnsupportedDtype(blazar_core::Dtype::U8)))?;
+        .map_err(|e| RuntimeError::BadPlacement(e.to_string()))?;
         self.resolved_preprocess = Some(site);
         if site == preprocess_placement::PreprocessSite::Cpu {
             tracing::info!(request_id = %self.request_id, placement = "cpu", "preprocess placement");
@@ -547,6 +619,23 @@ fn wrap_gpu(enc: Box<dyn VideoEncoder>) -> Result<Box<dyn VideoEncoder>, Runtime
 #[allow(dead_code)] // only called from the codec arms below
 fn wrap_gpu(enc: Box<dyn VideoEncoder>) -> Result<Box<dyn VideoEncoder>, RuntimeError> {
     Ok(enc)
+}
+
+/// Calibration key for a backend. Pair-shaped (`nvenc_h264`), because a
+/// calibration is specific to an implementation *and* a codec.
+fn codec_key(backend: VideoEncoderBackend) -> &'static str {
+    match backend {
+        VideoEncoderBackend::SvtAv1 => "svtav1",
+        VideoEncoderBackend::NvencAv1 => "nvenc_av1",
+        VideoEncoderBackend::NvencH264 => "nvenc_h264",
+        VideoEncoderBackend::NvencHevc => "nvenc_hevc",
+        VideoEncoderBackend::Mock => "mock",
+        VideoEncoderBackend::X264 => "x264",
+        VideoEncoderBackend::X265 => "x265",
+        VideoEncoderBackend::Vp9 => "vp9",
+        VideoEncoderBackend::VideoToolboxH264 => "videotoolbox_h264",
+        VideoEncoderBackend::VideoToolboxHevc => "videotoolbox_hevc",
+    }
 }
 
 /// Whether this backend converts a host frame into memory it already encodes

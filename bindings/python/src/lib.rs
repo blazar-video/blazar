@@ -213,6 +213,9 @@ struct Shared {
     error: Mutex<Option<String>>,
     stats: Mutex<WorkerStats>,
     queued: AtomicUsize,
+    /// Backend that actually answered, published by the worker once the stream
+    /// opens. `backend="auto"` cannot know it before the first frame.
+    resolved_backend: Mutex<Option<String>>,
 }
 
 /// Hand each unit the memory sink has buffered to the caller.
@@ -244,6 +247,19 @@ fn drain_memory_units(shared: &Arc<Shared>, memory: &Option<blazar_sink::MemoryH
     }
 }
 
+/// Record which backend answered, once the stream has opened. `backend="auto"`
+/// resolves during the first submit, so this is the earliest it is knowable.
+fn publish_backend<S: blazar_sink::Sink>(stream: &blazar_runtime::Stream<S>, shared: &Shared) {
+    if let Some(backend) = stream.resolved_backend() {
+        let name = blazar_runtime::backend_selection::backend_name(backend).to_owned();
+        if let Ok(mut slot) = shared.resolved_backend.lock() {
+            if slot.as_deref() != Some(name.as_str()) {
+                *slot = Some(name);
+            }
+        }
+    }
+}
+
 fn worker_main(
     mut stream: Stream<SinkTarget>,
     jobs: Receiver<Job>,
@@ -271,6 +287,7 @@ fn worker_main(
         match job {
             Job::Frame(job) => {
                 shared.queued.fetch_sub(1, Ordering::Relaxed);
+                publish_backend(&stream, &shared);
                 let started = Instant::now();
                 let frame = FrameRef::new(FrameBuffer::host_owned(job.bytes), job.desc);
                 let result = stream.submit_video(frame, None, job.boundary);
@@ -673,6 +690,7 @@ impl PyEncoder {
         queue_depth = 4,
         max_buffered_units = 240,
         preprocess = "auto",
+        backend_pool = "any",
     ))]
     fn new(
         py: Python<'_>,
@@ -687,6 +705,7 @@ impl PyEncoder {
         queue_depth: usize,
         max_buffered_units: usize,
         preprocess: &str,
+        backend_pool: &str,
     ) -> PyResult<Self> {
         if queue_depth == 0 {
             return Err(PyValueError::new_err("queue_depth must be >= 1"));
@@ -701,7 +720,18 @@ impl PyEncoder {
         };
         let identity = model_identity(identity)?;
         let target = parse_target(target)?;
-        let backend = parse_backend(backend)?;
+        let (backend_auto, backend) = if backend == "auto" {
+            // A concrete backend still has to be named for `Output`, but it is
+            // never built: `with_backend_auto` makes the runtime choose.
+            (true, parse_backend("x264")?)
+        } else {
+            (false, parse_backend(backend)?)
+        };
+        let pool: blazar_runtime::backend_selection::BackendPool = backend_pool
+            .parse()
+            .map_err(|e: blazar_runtime::backend_selection::SelectionError| {
+                PyValueError::new_err(e.to_string())
+            })?;
         let codec = parse_codec(codec)?;
 
         // Queue rather than let the driver refuse: a server that half-starts is
@@ -762,7 +792,10 @@ impl PyEncoder {
             preprocess.parse().map_err(|e: blazar_runtime::preprocess_placement::PlacementError| {
                 PyValueError::new_err(e.to_string())
             })?;
-        let stream = runtime.open_stream(request_id).with_preprocess(placement);
+        let stream = runtime
+            .open_stream(request_id)
+            .with_preprocess(placement)
+            .with_backend_auto(backend_auto, pool);
 
         let (job_tx, job_rx) = mpsc::sync_channel::<Job>(queue_depth);
         let (event_tx, event_rx) = mpsc::channel::<WorkerEvent>();
@@ -771,6 +804,7 @@ impl PyEncoder {
             error: Mutex::new(None),
             stats: Mutex::new(WorkerStats::default()),
             queued: AtomicUsize::new(0),
+            resolved_backend: Mutex::new(None),
         });
 
         let worker_shared = Arc::clone(&shared);
@@ -1260,6 +1294,20 @@ impl PyEncoder {
             return Err(PyRuntimeError::new_err(err));
         }
         Ok(())
+    }
+
+    /// The backend that actually produced this stream.
+    ///
+    /// With `backend="auto"` this is `None` until the first frame, because the
+    /// choice depends on what opens a session on this host.
+    #[getter]
+    fn resolved_backend(&self) -> PyResult<Option<String>> {
+        Ok(self
+            .shared
+            .resolved_backend
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or(None))
     }
 
     /// Where host frames are converted to NV12: `"cpu"` or `"gpu"`.
