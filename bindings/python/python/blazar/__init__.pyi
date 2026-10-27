@@ -7,9 +7,9 @@ import numpy as np
 __all__ = ["Calibrations", "Encoder"]
 
 Target = Literal["low_latency", "balanced", "quality"]
-Backend = Literal[
-    "nvenc_av1", "nvenc_h264", "nvenc_hevc", "x264", "x265", "svtav1", "vp9", "mock"
-]
+Backend = Literal["nvenc", "videotoolbox", "svtav1", "x264", "x265", "vp9", "mock", "auto"]
+BackendPool = Literal["any", "hardware", "software"]
+Preprocess = Literal["auto", "cpu", "gpu"]
 Codec = Literal["h264", "hevc", "av1", "vp9"]
 Layout = Literal["thwc", "bcthw"]
 Range = Literal["unit01", "signed_unit", "full_u8"]
@@ -45,6 +45,9 @@ class Encoder:
         request_id: str = "stream",
         video_extradata: bytes | None = None,
         queue_depth: int = ...,
+        max_buffered_units: int = ...,
+        preprocess: Preprocess = "auto",
+        backend_pool: BackendPool = "any",
     ) -> None: ...
     def submit(
         self,
@@ -88,6 +91,13 @@ class Encoder:
         """Encode everything queued."""
     def close(self, timeout: float | None = None) -> None:
         """Flush and finalise the output. Safe to call twice."""
+    @property
+    def resolved_backend(self) -> str | None: ...
+
+    @property
+    def preprocess(self) -> str | None: ...
+
+    @property
     def stats(self) -> dict[str, Any]: ...
     def error_message(self) -> str | None: ...
     def failed_event_message(self) -> str | None: ...

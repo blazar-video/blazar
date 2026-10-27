@@ -23,7 +23,7 @@ without waiting for the codec.
 
 ```python
 with blazar.Encoder(calibrations=cals, identity={...}, target="balanced",
-                    backend="nvenc_h264", codec="h264", output="out.mp4") as stream:
+                    backend="nvenc", codec="h264", output="out.mp4") as stream:
     stream.submit_device_batch(tensor, fps=24.0, range="unit01")
 ```
 
@@ -34,10 +34,11 @@ with blazar.Encoder(calibrations=cals, identity={...}, target="balanced",
 | `calibrations` | `Calibrations` | Loaded calibration set. |
 | `identity` | `dict` | Model identity: `{"family", "version", "quant", "size"}`. Used to pick the calibration. |
 | `target` | `str` | `"low_latency"`, `"balanced"` or `"quality"`. |
-| `backend` | `str` | `"nvenc_av1"`, `"nvenc_h264"`, `"nvenc_hevc"`, `"videotoolbox_h264"`, `"videotoolbox_hevc"` (macOS), `"x264"`, `"x265"`, `"svtav1"`, `"vp9"`, or `"mock"` (tests only, compresses nothing). |
+| `backend` | `str` | Implementation: `"nvenc"`, `"videotoolbox"` (macOS), `"svtav1"`, `"x264"`, `"x265"`, `"vp9"`, `"mock"` (tests only, compresses nothing), or `"auto"`. The codec comes from `codec`, not from the name; see [Backend selection](#backend-selection). |
+| `backend_pool` | `str` | What `backend="auto"` may choose: `"any"` (default, hardware preferred then software), `"hardware"` (never falls back), `"software"`. Ignored when `backend` is named. |
 | `output` | `str \| None` | Output path, or `None` to keep encoded units in memory and hand them back from `poll()`. |
 | `max_buffered_units` | `int` | When `output` is `None`: how many encoded units may sit in the buffer before a write fails. Defaults to 240. |
-| `codec` | `str` | Wire codec: `"h264"`, `"hevc"`, `"av1"`, `"vp9"`. Required for CPU backends, because `backend` and `codec` are separate choices. |
+| `codec` | `str` | Wire codec: `"h264"`, `"hevc"`, `"av1"`, `"vp9"`. Pairing it with an implementation that cannot encode it is an error at construction. |
 | `request_id` | `str` | Tag used in logs and events. Defaults to `"stream"`. |
 | `video_extradata` | `bytes \| None` | Codec configuration override. Leave `None` for real encoders. |
 | `queue_depth` | `int` | Frames the worker may hold ahead of the encoder. |
@@ -52,6 +53,8 @@ with blazar.Encoder(calibrations=cals, identity={...}, target="balanced",
 | `poll(timeout=None)` | `list[dict]` | Encoded events, all the same shape: `kind` (`"encoded"`, `"failed"` or `"closed"`), `seq`, `pts`, `dts`, `keyframe`, `units`, `bytes`, `encode_us`, `queue_depth`, `data`. A per-frame event summarises one submitted frame and reports how many access units it produced; with `output=None` each unit also arrives as its own event with `units` 1 and `data` holding the encoded bytes. With an output file, `data` is `None`. `pts` is presentation order and is deliberately not monotonic once B-frames reorder; `dts` is the monotonic one. |
 | `flush(timeout=None)` | `None` | Encode everything queued. |
 | `close(timeout=None)` | `None` | Flush and finalise the output. Safe to call twice. |
+| `resolved_backend` | `str \| None` | Which backend actually answered. `None` until the first frame when `backend="auto"`, because the choice depends on what opens a session here. A property. |
+| `preprocess` | `str` | Where host frames are converted to NV12: `"cpu"` or `"gpu"`. A property; see [Preprocess placement](#preprocess-placement). |
 | `stats` | `dict` | Counters for the stream: `encoded`, `bytes`, `failed`, `max_encode_us`. A property, not a method. |
 | `error_message()` | `str \| None` | Why the stream failed, if it did. |
 | `failed_event_message()` | `str \| None` | Error recorded by the worker, including backend-specific text. |
@@ -126,7 +129,8 @@ takes the first that opens. Consequences worth knowing:
   calibration sweeps both do.
 
 The pair-shaped spellings (`backend="nvenc_h264"`) still parse but emit a
-`DeprecationWarning`: they restate `codec`, and the two could disagree.
+`DeprecationWarning`: they restate `codec`, and the two could disagree. They are
+removed in the next minor release.
 
 ## Preprocess placement
 

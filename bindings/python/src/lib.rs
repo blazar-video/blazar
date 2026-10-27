@@ -1599,6 +1599,8 @@ fn parse_target(value: &str) -> PyResult<Target> {
     }
 }
 
+/// Parse a pair-shaped backend name. Deprecated: `backend` should name the
+/// implementation and `codec` the codec, resolved by `parse_backend_for`.
 fn parse_backend(value: &str) -> PyResult<VideoEncoderBackend> {
     match value {
         "svtav1" => Ok(VideoEncoderBackend::SvtAv1),
@@ -1612,7 +1614,8 @@ fn parse_backend(value: &str) -> PyResult<VideoEncoderBackend> {
         "x265" => Ok(VideoEncoderBackend::X265),
         "vp9" => Ok(VideoEncoderBackend::Vp9),
         other => Err(PyValueError::new_err(format!(
-            "unknown backend {other:?} (expected svtav1|nvenc_av1|nvenc_h264|nvenc_hevc|x264|x265|vp9|videotoolbox_h264|videotoolbox_hevc|mock)"
+            "unknown backend {other:?} (expected nvenc|videotoolbox|svtav1|x264|x265|vp9|mock|auto, \
+             or a deprecated pair name such as nvenc_h264)"
         ))),
     }
 }

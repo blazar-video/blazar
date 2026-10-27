@@ -42,7 +42,7 @@ with blazar.Encoder(
     calibrations=calibrations,
     identity={"family": "wan", "version": "2.1", "quant": "bf16", "size": "1.3b"},
     target="balanced",
-    backend="nvenc_av1",           # "svtav1" (mock here) on machines without CUDA
+    backend="svtav1",              # or "nvenc", or "auto" with backend_pool=
     output="out.mp4",
     queue_depth=4,                 # frames the encoder may be behind
 ) as stream:
