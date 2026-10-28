@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! GPU RGB→NV12 conversion for the NVENC input buffers.
 //!
 //! The CPU path costs ~3 ms/frame at 1080p. This module compiles a small CUDA
@@ -13,8 +14,8 @@ use std::sync::Arc;
 
 use crate::EncodeError;
 use blazar_core::{ColorRange, ColorSpace, Dtype, FrameDesc, Layout};
-use cudarc::driver::{DevicePtr, 
-    CudaContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
+use cudarc::driver::{
+    CudaContext, CudaFunction, CudaSlice, CudaStream, DevicePtr, LaunchConfig, PushKernelArg,
 };
 
 /// CUDA C source. THWC = 0, BCTHW = 1; f32 = 0, bf16 = 1; ranges 0/1/2.

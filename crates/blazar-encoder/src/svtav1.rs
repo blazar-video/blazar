@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Software AV1 via SVT-AV1.
 //!
 //! Consumes the NV12 planes `GpuPreprocess` produces, so the pixel work stays
@@ -102,7 +103,11 @@ impl SvtAv1Encoder {
     }
 
     /// Send one picture (or EOS) and collect every packet the encoder returns.
-    fn drain(&mut self, frame: Option<&PreprocessedFrame>, eos: bool) -> Result<Vec<EncodedUnit>, EncodeError> {
+    fn drain(
+        &mut self,
+        frame: Option<&PreprocessedFrame>,
+        eos: bool,
+    ) -> Result<Vec<EncodedUnit>, EncodeError> {
         let mut io: sys::EbSvtIOFormat = unsafe { std::mem::zeroed() };
         let mut header: sys::EbBufferHeaderType = unsafe { std::mem::zeroed() };
         header.size = std::mem::size_of::<sys::EbBufferHeaderType>() as u32;
@@ -121,7 +126,8 @@ impl SvtAv1Encoder {
             io.cb_stride = self.width / 2;
             io.cr_stride = self.width / 2;
             header.p_buffer = (&mut io as *mut sys::EbSvtIOFormat).cast();
-            header.n_filled_len = frame.y.len() as u32 + frame.u.len() as u32 + frame.v.len() as u32;
+            header.n_filled_len =
+                frame.y.len() as u32 + frame.u.len() as u32 + frame.v.len() as u32;
             header.pts = frame.pts.0 as i64;
             if self.force_keyframe {
                 header.pic_type = sys::EbAv1PictureType::EB_AV1_KEY_PICTURE;
@@ -144,7 +150,8 @@ impl SvtAv1Encoder {
         loop {
             let mut packet: *mut sys::EbBufferHeaderType = ptr::null_mut();
             // SAFETY: get_packet returns a library-owned buffer or null.
-            let rc = unsafe { sys::svt_av1_enc_get_packet(self.handle, &mut packet, u8::from(eos)) };
+            let rc =
+                unsafe { sys::svt_av1_enc_get_packet(self.handle, &mut packet, u8::from(eos)) };
             if rc != sys::EbErrorType::EB_ErrorNone {
                 break;
             }

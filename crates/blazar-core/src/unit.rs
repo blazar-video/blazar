@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Encoded output units — what the encoder hands the sink (architecture §6).
 //!
 //! `write` takes structured units (bytes + pts/dts/keyframe/duration), not raw

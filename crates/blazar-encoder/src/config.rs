@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Translating a resolved calibration into encoder settings.
 //!
 //! `[video.common]` has fixed cross-codec semantics; each backend translates it

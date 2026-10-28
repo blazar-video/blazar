@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! GPU preprocessing must agree with the CPU path byte-for-byte modulo float
 //! ordering. This is the test that decides whether the kernel's colour math and
 //! NV12 layout are right; encode/decode can hide either mistake.
@@ -25,14 +26,7 @@ fn frame_desc(w: u32, h: u32, layout: Layout, dtype: Dtype, range: ColorRange) -
     }
 }
 
-fn host_rgb(
-    w: u32,
-    h: u32,
-    layout: Layout,
-    dtype: Dtype,
-    range: ColorRange,
-    seed: u64,
-) -> Vec<u8> {
+fn host_rgb(w: u32, h: u32, layout: Layout, dtype: Dtype, range: ColorRange, seed: u64) -> Vec<u8> {
     let mut state = 0x9e37_79b9_7f4a_7c15u64 ^ seed;
     let components = (w * h * 3) as usize;
     // Values are generated once in sample order (row-major, RGB interleaved) and
@@ -156,11 +150,23 @@ fn gpu_matches_cpu_for_a_batch_of_frames() {
     let mut bytes = Vec::new();
     let mut expected = Vec::new();
     for frame_index in 0..n {
-        let data = host_rgb(w, h, Layout::Thwc, Dtype::F32, ColorRange::Unit01, frame_index as u64 + 1);
+        let data = host_rgb(
+            w,
+            h,
+            Layout::Thwc,
+            Dtype::F32,
+            ColorRange::Unit01,
+            frame_index as u64 + 1,
+        );
         let frame = FrameRef::new(FrameBuffer::host_owned(data.clone()), desc);
         expected.push(
-            to_nv12(&CpuPreprocess::new().process(&frame).expect("cpu preprocess"), pitch)
-                .expect("cpu nv12"),
+            to_nv12(
+                &CpuPreprocess::new()
+                    .process(&frame)
+                    .expect("cpu preprocess"),
+                pitch,
+            )
+            .expect("cpu nv12"),
         );
         bytes.extend_from_slice(&data);
     }
@@ -218,12 +224,31 @@ fn check_bcthw_batch(device_layout: bool) {
     let mut bytes = vec![0u8; 3 * n as usize * pixels * 4];
     let mut expected = Vec::new();
     for frame_index in 0..n {
-        let data = host_rgb(w, h, Layout::Thwc, Dtype::F32, ColorRange::Unit01, frame_index as u64 + 7);
-        let cpu_data = host_rgb(w, h, Layout::Bcthw, Dtype::F32, ColorRange::Unit01, frame_index as u64 + 7);
+        let data = host_rgb(
+            w,
+            h,
+            Layout::Thwc,
+            Dtype::F32,
+            ColorRange::Unit01,
+            frame_index as u64 + 7,
+        );
+        let cpu_data = host_rgb(
+            w,
+            h,
+            Layout::Bcthw,
+            Dtype::F32,
+            ColorRange::Unit01,
+            frame_index as u64 + 7,
+        );
         let frame = FrameRef::new(FrameBuffer::host_owned(cpu_data), desc);
         expected.push(
-            to_nv12(&CpuPreprocess::new().process(&frame).expect("cpu preprocess"), pitch)
-                .expect("cpu nv12"),
+            to_nv12(
+                &CpuPreprocess::new()
+                    .process(&frame)
+                    .expect("cpu preprocess"),
+                pitch,
+            )
+            .expect("cpu nv12"),
         );
         for c in 0..3usize {
             for p in 0..pixels {

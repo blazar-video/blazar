@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Software H.264 via libx264.
 //!
 //! GPL: this module is only compiled with the `enc-x264` feature, and enabling
@@ -116,12 +117,14 @@ impl X264Encoder {
 
         let mut pic: x264_picture_t = unsafe { std::mem::zeroed() };
         // SAFETY: the context is valid and the dimensions match the encoder.
-        let rc = unsafe { x264_picture_alloc(
-            &mut pic,
-            X264_CSP_I420 as c_int,
-            width as c_int,
-            height as c_int,
-        ) };
+        let rc = unsafe {
+            x264_picture_alloc(
+                &mut pic,
+                X264_CSP_I420 as c_int,
+                width as c_int,
+                height as c_int,
+            )
+        };
         if rc != 0 {
             return Err(EncodeError::Backend(format!(
                 "x264_picture_alloc failed ({rc})"
@@ -240,7 +243,9 @@ impl X264Encoder {
             x264_encoder_encode(self.enc, &mut nals, &mut nal_count, frame_ptr, &mut pic_out)
         };
         if size < 0 {
-            return Err(EncodeError::Backend(format!("x264_encoder_encode ({size})")));
+            return Err(EncodeError::Backend(format!(
+                "x264_encoder_encode ({size})"
+            )));
         }
         self.force_keyframe = false;
         if nal_count == 0 || nals.is_null() {
@@ -257,7 +262,8 @@ impl X264Encoder {
                 continue;
             }
             // SAFETY: the payload has i_payload bytes.
-            let payload = unsafe { std::slice::from_raw_parts(nal.p_payload, nal.i_payload as usize) };
+            let payload =
+                unsafe { std::slice::from_raw_parts(nal.p_payload, nal.i_payload as usize) };
             au.extend_from_slice(payload);
         }
         if au.is_empty() {
@@ -268,7 +274,8 @@ impl X264Encoder {
         if parsed.config.is_some() {
             self.codec_config = parsed.config.clone();
         }
-        let keyframe = pic_out.i_type == X264_TYPE_IDR as c_int || pic_out.i_type == X264_TYPE_I as c_int;
+        let keyframe =
+            pic_out.i_type == X264_TYPE_IDR as c_int || pic_out.i_type == X264_TYPE_I as c_int;
         let dts = self.emitted * self.frame_duration;
         self.emitted += 1;
         // The packet emitted on this call belongs to whichever frame x264 has
@@ -359,7 +366,8 @@ impl VideoEncoder for X264Encoder {
             if parsed.config.is_some() {
                 self.codec_config = parsed.config.clone();
             }
-            let keyframe = pic_out.i_type == X264_TYPE_IDR as c_int || pic_out.i_type == X264_TYPE_I as c_int;
+            let keyframe =
+                pic_out.i_type == X264_TYPE_IDR as c_int || pic_out.i_type == X264_TYPE_I as c_int;
             let dts = self.emitted * self.frame_duration;
             self.emitted += 1;
             units.push(EncodedUnit::video(
@@ -396,4 +404,3 @@ impl Drop for X264Encoder {
         }
     }
 }
-

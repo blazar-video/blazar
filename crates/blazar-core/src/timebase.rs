@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Shared timebase and presentation timestamps.
 //!
 //! Both runtimes (xDiT, vLLM-Omni) expose no per-frame PTS — only an `fps`

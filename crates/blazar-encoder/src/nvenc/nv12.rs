@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Planar YUV 4:2:0 → NV12, with explicit row pitch.
 //!
 //! The CPU preprocess stage produces three separate planes (`y`, `u`, `v`),

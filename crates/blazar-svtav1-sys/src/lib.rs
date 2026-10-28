@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Bindings to the SVT-AV1 encoder API (`EbSvtAv1Enc.h`).
 //!
 //! Generated at build time from the header found by pkg-config, so the struct
@@ -14,13 +15,12 @@
 #[allow(
     rustdoc::broken_intra_doc_links,
     rustdoc::invalid_html_tags,
-    rustdoc::bare_urls,
+    rustdoc::bare_urls
 )]
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 pub use generated::*;
-
 
 // ---------------------------------------------------------------------------
 // Version differences, normalised here so the encoder does not need cfgs.

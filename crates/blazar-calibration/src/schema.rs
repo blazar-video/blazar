@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Calibration file schema (calibration-format §2–§6).
 //!
 //! A calibration is the contract between the Python calibrator and the Rust

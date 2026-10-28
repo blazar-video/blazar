@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Annex B (H.264/HEVC) to MP4 sample formats, plus `avcC`/`hvcC` records.
 //!
 //! NVENC emits H.264 and HEVC as Annex B: NAL units separated by `00 00 01` or

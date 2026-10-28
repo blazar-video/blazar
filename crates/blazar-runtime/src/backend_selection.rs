@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Which backend serves a request, and what may be considered.
 //!
 //! `backend="auto"` picks from a pool the caller constrains: `hardware`,
@@ -50,9 +51,17 @@ impl BackendPool {
 #[derive(Debug, PartialEq, Eq)]
 pub enum SelectionError {
     /// The pool allows nothing that supports this codec.
-    NoCandidate { codec: VideoCodec, pool: BackendPool, rejected: Vec<Rejection> },
+    NoCandidate {
+        codec: VideoCodec,
+        pool: BackendPool,
+        rejected: Vec<Rejection>,
+    },
     /// Anything that did support the codec was not built or not usable here.
-    NoneAvailable { codec: VideoCodec, pool: BackendPool, rejected: Vec<Rejection> },
+    NoneAvailable {
+        codec: VideoCodec,
+        pool: BackendPool,
+        rejected: Vec<Rejection>,
+    },
     UnknownPool(String),
 }
 
@@ -85,13 +94,21 @@ impl core::fmt::Display for SelectionError {
                 .join(", ")
         }
         match self {
-            Self::NoCandidate { codec, pool, rejected } => write!(
+            Self::NoCandidate {
+                codec,
+                pool,
+                rejected,
+            } => write!(
                 f,
                 "no backend in pool {:?} encodes {codec:?} (considered: {})",
                 pool.as_str(),
                 explain(rejected)
             ),
-            Self::NoneAvailable { codec, pool, rejected } => write!(
+            Self::NoneAvailable {
+                codec,
+                pool,
+                rejected,
+            } => write!(
                 f,
                 "every backend in pool {:?} that encodes {codec:?} was unusable (considered: {})",
                 pool.as_str(),
@@ -120,7 +137,11 @@ pub struct Candidate {
 impl Candidate {
     #[must_use]
     pub fn new(backend: VideoEncoderBackend, built: bool, usable: bool) -> Self {
-        Self { backend, built, usable }
+        Self {
+            backend,
+            built,
+            usable,
+        }
     }
 }
 
@@ -166,8 +187,7 @@ pub fn serves(backend: VideoEncoderBackend, codec: VideoCodec) -> bool {
 #[must_use]
 pub fn codec_of(backend: VideoEncoderBackend) -> VideoCodec {
     match backend {
-        VideoEncoderBackend::NvencAv1
-        | VideoEncoderBackend::SvtAv1 => VideoCodec::Av1,
+        VideoEncoderBackend::NvencAv1 | VideoEncoderBackend::SvtAv1 => VideoCodec::Av1,
         VideoEncoderBackend::NvencH264
         | VideoEncoderBackend::X264
         | VideoEncoderBackend::VideoToolboxH264 => VideoCodec::H264,
@@ -201,7 +221,11 @@ const ORDER: &[VideoEncoderBackend] = &[
 /// these in turn and reports the ones that failed. `built` comes from the cargo
 /// features, which are static.
 #[must_use]
-pub fn candidates_for(codec: VideoCodec, pool: BackendPool, built: bool) -> Vec<VideoEncoderBackend> {
+pub fn candidates_for(
+    codec: VideoCodec,
+    pool: BackendPool,
+    built: bool,
+) -> Vec<VideoEncoderBackend> {
     ORDER
         .iter()
         .copied()
@@ -286,9 +310,17 @@ pub fn select(
     }
 
     if supported_any_pool {
-        Err(SelectionError::NoneAvailable { codec, pool, rejected })
+        Err(SelectionError::NoneAvailable {
+            codec,
+            pool,
+            rejected,
+        })
     } else {
-        Err(SelectionError::NoCandidate { codec, pool, rejected })
+        Err(SelectionError::NoCandidate {
+            codec,
+            pool,
+            rejected,
+        })
     }
 }
 
@@ -350,7 +382,9 @@ mod tests {
         let error = select(VideoCodec::H264, BackendPool::Hardware, &no_hw).unwrap_err();
         match error {
             SelectionError::NoneAvailable { rejected, .. } => assert!(
-                rejected.iter().any(|r| r.reason == RejectionReason::Unavailable),
+                rejected
+                    .iter()
+                    .any(|r| r.reason == RejectionReason::Unavailable),
                 "the error must name the hardware that was not usable: {rejected:?}"
             ),
             other => panic!("expected NoneAvailable, got {other:?}"),
@@ -385,8 +419,10 @@ mod tests {
         let built_but_not_usable = only(VideoEncoderBackend::NvencH264, true, false);
         match select(VideoCodec::H264, BackendPool::Any, &built_but_not_usable).unwrap_err() {
             SelectionError::NoneAvailable { rejected, .. } => assert!(
-                rejected.iter().any(|r| r.backend == VideoEncoderBackend::NvencH264
-                    && r.reason == RejectionReason::Unavailable),
+                rejected
+                    .iter()
+                    .any(|r| r.backend == VideoEncoderBackend::NvencH264
+                        && r.reason == RejectionReason::Unavailable),
                 "the backend that was built but unusable must be named: {rejected:?}"
             ),
             other => panic!("expected NoneAvailable, got {other:?}"),

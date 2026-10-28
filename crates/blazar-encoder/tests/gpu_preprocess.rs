@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The GPU conversion stage must produce the same NV12 the CPU stage does: it
 //! is the same pixels, just converted on the other processor.
 
@@ -58,7 +59,9 @@ fn check(w: u32, h: u32, layout: Layout, dtype: Dtype, range: ColorRange) {
     let bytes = host_rgb(w, h, layout, dtype, range);
 
     let frame = FrameRef::new(FrameBuffer::host_owned(bytes.clone()), desc);
-    let cpu = CpuPreprocess::new().process(&frame).expect("cpu preprocess");
+    let cpu = CpuPreprocess::new()
+        .process(&frame)
+        .expect("cpu preprocess");
 
     let mut gpu = GpuPreprocess::new().expect("gpu preprocess");
     let out = gpu.convert(&bytes, &desc).expect("gpu convert");
@@ -67,7 +70,11 @@ fn check(w: u32, h: u32, layout: Layout, dtype: Dtype, range: ColorRange) {
     assert_eq!(out.u.len(), cpu.u.len(), "cb size");
     assert_eq!(out.v.len(), cpu.v.len(), "cr size");
 
-    for (plane, (g, c)) in [("y", (&out.y, &cpu.y)), ("u", (&out.u, &cpu.u)), ("v", (&out.v, &cpu.v))] {
+    for (plane, (g, c)) in [
+        ("y", (&out.y, &cpu.y)),
+        ("u", (&out.u, &cpu.u)),
+        ("v", (&out.v, &cpu.v)),
+    ] {
         let worst = g
             .iter()
             .zip(c)
@@ -138,16 +145,20 @@ fn u8_host_output_matches_cpu_preprocess() {
         let bytes = host_rgb_u8(w, h, layout);
 
         let frame = FrameRef::new(FrameBuffer::host_owned(bytes.clone()), desc);
-        let cpu = CpuPreprocess::new().process(&frame).expect("cpu preprocess");
+        let cpu = CpuPreprocess::new()
+            .process(&frame)
+            .expect("cpu preprocess");
         let mut gpu = GpuPreprocess::new().expect("gpu preprocess");
         let out = gpu.convert(&bytes, &desc).expect("gpu convert");
 
         assert_eq!(out.y.len(), cpu.y.len(), "luma size");
         assert_eq!(out.u.len(), cpu.u.len(), "cb size");
         assert_eq!(out.v.len(), cpu.v.len(), "cr size");
-        for (plane, (g, c)) in
-            [("y", (&out.y, &cpu.y)), ("u", (&out.u, &cpu.u)), ("v", (&out.v, &cpu.v))]
-        {
+        for (plane, (g, c)) in [
+            ("y", (&out.y, &cpu.y)),
+            ("u", (&out.u, &cpu.u)),
+            ("v", (&out.v, &cpu.v)),
+        ] {
             let worst = g
                 .iter()
                 .zip(c)

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! libx264 backend: real encode on the CPU, no GPU required.
 
 #![cfg(feature = "enc-x264")]
@@ -72,7 +73,11 @@ fn encodes_frames_and_reports_avcc() {
             offset += 4 + declared;
             nals += 1;
         }
-        assert_eq!(offset, unit.bytes.len(), "length prefixes must cover the sample");
+        assert_eq!(
+            offset,
+            unit.bytes.len(),
+            "length prefixes must cover the sample"
+        );
         assert!(nals >= 1);
         assert_eq!(unit.duration, 3750);
     }
@@ -83,7 +88,9 @@ fn encodes_frames_and_reports_avcc() {
     sorted.sort_unstable();
     assert_eq!(
         sorted,
-        (0..units.len() as u64).map(|i| i * 3750).collect::<Vec<_>>(),
+        (0..units.len() as u64)
+            .map(|i| i * 3750)
+            .collect::<Vec<_>>(),
         "PTS set does not match the submitted frames"
     );
     assert_eq!(units[0].pts.0, 0, "first emitted unit must be frame 0");

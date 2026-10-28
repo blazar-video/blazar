@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Generate SVT-AV1 bindings from the header installed by the package manager.
 //!
 //! The published `svt-av1-sys` crate is unbuildable with current bindgen, so

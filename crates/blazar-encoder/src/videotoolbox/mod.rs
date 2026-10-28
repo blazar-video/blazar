@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Apple VideoToolbox H.264/HEVC encoder.
 //!
 //! VideoToolbox is handed NV12 `CVPixelBuffer`s. The buffers are created by this
@@ -167,7 +168,11 @@ impl VideoToolboxEncoder {
         let bframes = cfg.bframes;
         // Real time off: the caller wants quality for the bitrate, not the
         // lowest latency. `low_latency` targets set bframes = 0 instead.
-        set_bool_property(self.session, unsafe { kVTCompressionPropertyKey_RealTime }, false)?;
+        set_bool_property(
+            self.session,
+            unsafe { kVTCompressionPropertyKey_RealTime },
+            false,
+        )?;
         set_bool_property(
             self.session,
             unsafe { kVTCompressionPropertyKey_AllowFrameReordering },
@@ -418,7 +423,11 @@ fn set_bool_property(
 ) -> Result<(), EncodeError> {
     // SAFETY: `key` is a framework constant and the session is live.
     let status = unsafe {
-        let v = if value { kCFBooleanTrue } else { kCFBooleanFalse };
+        let v = if value {
+            kCFBooleanTrue
+        } else {
+            kCFBooleanFalse
+        };
         VTSessionSetProperty(session, key, v)
     };
     if status != 0 {
@@ -552,7 +561,9 @@ unsafe fn read_parameter_sets(fd: CMFormatDescriptionRef, codec: Codec) -> Optio
         return None;
     }
     let refs: Vec<&[u8]> = sets.iter().map(|s| s.as_slice()).collect();
-    config_from_parameter_sets(codec.annex_b(), &refs).ok().flatten()
+    config_from_parameter_sets(codec.annex_b(), &refs)
+        .ok()
+        .flatten()
 }
 
 /// # Safety

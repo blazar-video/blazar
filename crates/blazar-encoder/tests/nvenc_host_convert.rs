@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Where should a host u8 frame be converted to NV12 before NVENC?
 //!
 //! The public API is the same either way — `submit(u8_frame)`. The choice is
@@ -27,8 +28,18 @@ use blazar_encoder::nvenc::NvencEncoder;
 use blazar_encoder::VideoEncoder;
 use blazar_preprocess::{CpuPreprocess, PreprocessStage};
 
-fn w() -> u32 { std::env::var("W").ok().and_then(|v| v.parse().ok()).unwrap_or(1920) }
-fn h() -> u32 { std::env::var("H").ok().and_then(|v| v.parse().ok()).unwrap_or(1088) }
+fn w() -> u32 {
+    std::env::var("W")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1920)
+}
+fn h() -> u32 {
+    std::env::var("H")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1088)
+}
 const FPS: f64 = 24.0;
 const FRAMES: usize = 48;
 const ROUNDS: usize = 3;
@@ -47,8 +58,14 @@ fn desc(pts: u64) -> FrameDesc {
 }
 
 fn cfg() -> EncoderConfig {
-    let crf = std::env::var("CRF").ok().and_then(|v| v.parse().ok()).unwrap_or(30u32);
-    let bframes = std::env::var("BF").ok().and_then(|v| v.parse().ok()).unwrap_or(2u32);
+    let crf = std::env::var("CRF")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30u32);
+    let bframes = std::env::var("BF")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2u32);
     EncoderConfig {
         rate_control: RateControl::Crf(crf),
         keyint: 120,
@@ -88,12 +105,20 @@ fn encoder() -> NvencEncoder {
 fn gpu_round_trip(src: &[Vec<u8>], gpu: &mut GpuPreprocess, enc: &mut NvencEncoder) -> usize {
     let mut bytes = 0;
     for (index, frame) in src.iter().enumerate() {
-        let nv12 = gpu.convert(frame, &desc(index as u64 * 3750)).expect("gpu convert");
+        let nv12 = gpu
+            .convert(frame, &desc(index as u64 * 3750))
+            .expect("gpu convert");
         if index == 0 {
             let cw = (w() as usize).div_ceil(2) * (h() as usize).div_ceil(2);
-            eprintln!("  planes: y={} u={} v={}  expected y={} u={} v={}",
-                nv12.y.len(), nv12.u.len(), nv12.v.len(),
-                (w() * h()) as usize, cw, cw);
+            eprintln!(
+                "  planes: y={} u={} v={}  expected y={} u={} v={}",
+                nv12.y.len(),
+                nv12.u.len(),
+                nv12.v.len(),
+                (w() * h()) as usize,
+                cw,
+                cw
+            );
         }
         for unit in enc.encode(&nv12).expect("encode") {
             bytes += unit.bytes.len();
@@ -110,13 +135,22 @@ fn cpu_convert(src: &[Vec<u8>], enc: &mut NvencEncoder) -> usize {
     let cpu = CpuPreprocess::new();
     let mut bytes = 0;
     for (index, frame) in src.iter().enumerate() {
-        let host = FrameRef::new(FrameBuffer::host_owned(frame.clone()), desc(index as u64 * 3750));
+        let host = FrameRef::new(
+            FrameBuffer::host_owned(frame.clone()),
+            desc(index as u64 * 3750),
+        );
         let nv12 = cpu.process(&host).expect("cpu preprocess");
         if index == 0 {
             let cw = (w() as usize).div_ceil(2) * (h() as usize).div_ceil(2);
-            eprintln!("  planes: y={} u={} v={}  expected y={} u={} v={}",
-                nv12.y.len(), nv12.u.len(), nv12.v.len(),
-                (w() * h()) as usize, cw, cw);
+            eprintln!(
+                "  planes: y={} u={} v={}  expected y={} u={} v={}",
+                nv12.y.len(),
+                nv12.u.len(),
+                nv12.v.len(),
+                (w() * h()) as usize,
+                cw,
+                cw
+            );
         }
         for unit in enc.encode(&nv12).expect("encode") {
             bytes += unit.bytes.len();
@@ -133,14 +167,20 @@ fn conversion_only(src: &[Vec<u8>], gpu: &mut GpuPreprocess) -> (f64, f64) {
     let cpu = CpuPreprocess::new();
     let t = Instant::now();
     for (index, frame) in src.iter().enumerate() {
-        let host = FrameRef::new(FrameBuffer::host_owned(frame.clone()), desc(index as u64 * 3750));
+        let host = FrameRef::new(
+            FrameBuffer::host_owned(frame.clone()),
+            desc(index as u64 * 3750),
+        );
         std::hint::black_box(cpu.process(&host).expect("cpu preprocess"));
     }
     let cpu_ms = t.elapsed().as_secs_f64() * 1e3 / src.len() as f64;
 
     let t = Instant::now();
     for (index, frame) in src.iter().enumerate() {
-        std::hint::black_box(gpu.convert(frame, &desc(index as u64 * 3750)).expect("gpu convert"));
+        std::hint::black_box(
+            gpu.convert(frame, &desc(index as u64 * 3750))
+                .expect("gpu convert"),
+        );
     }
     let gpu_ms = t.elapsed().as_secs_f64() * 1e3 / src.len() as f64;
     (cpu_ms, gpu_ms)
@@ -171,25 +211,25 @@ fn host_convert_timings() {
     let only = std::env::var("ROW").unwrap_or_default();
     for _ in 0..ROUNDS {
         if only != "cpu" {
-        let mut enc = encoder();
-        let t = Instant::now();
-        let bytes = gpu_round_trip(&src, &mut gpu, &mut enc);
-        let ms = t.elapsed().as_secs_f64() * 1e3 / src.len() as f64;
-        if ms < gpu_best {
-            gpu_best = ms;
-            gpu_bytes = bytes;
-        }
+            let mut enc = encoder();
+            let t = Instant::now();
+            let bytes = gpu_round_trip(&src, &mut gpu, &mut enc);
+            let ms = t.elapsed().as_secs_f64() * 1e3 / src.len() as f64;
+            if ms < gpu_best {
+                gpu_best = ms;
+                gpu_bytes = bytes;
+            }
         }
 
         if only != "gpu" {
-        let mut enc = encoder();
-        let t = Instant::now();
-        let bytes = cpu_convert(&src, &mut enc);
-        let ms = t.elapsed().as_secs_f64() * 1e3 / src.len() as f64;
-        if ms < cpu_best {
-            cpu_best = ms;
-            cpu_bytes = bytes;
-        }
+            let mut enc = encoder();
+            let t = Instant::now();
+            let bytes = cpu_convert(&src, &mut enc);
+            let ms = t.elapsed().as_secs_f64() * 1e3 / src.len() as f64;
+            if ms < cpu_best {
+                cpu_best = ms;
+                cpu_bytes = bytes;
+            }
         }
     }
 
@@ -212,5 +252,8 @@ fn host_convert_timings() {
             cpu_bytes as f64 / 1e6
         );
     }
-    assert!(gpu_bytes > 0 || cpu_bytes > 0, "at least one path must produce output");
+    assert!(
+        gpu_bytes > 0 || cpu_bytes > 0,
+        "at least one path must produce output"
+    );
 }

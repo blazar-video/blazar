@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! libvpx VP9 backend: real encode on the CPU.
 
 #![cfg(feature = "enc-vp9")]

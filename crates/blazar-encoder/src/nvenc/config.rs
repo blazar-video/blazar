@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Translation from the backend-neutral calibration config to NVENC parameters.
 //!
 //! Kept free of SDK types on purpose: this is where the policy lives (what a

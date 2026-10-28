@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Software HEVC via libx265.
 //!
 //! GPL, same as `x264.rs`: only compiled with `enc-x265`, and enabling that
@@ -83,9 +84,7 @@ impl X265Encoder {
     ) -> Result<Self, EncodeError> {
         let preset = std::ffi::CString::new("medium").expect("static");
         // SAFETY: `param` is a valid owned block; the strings outlive the call.
-        let rc = unsafe {
-            x265_param_default_preset(param, preset.as_ptr(), ptr::null())
-        };
+        let rc = unsafe { x265_param_default_preset(param, preset.as_ptr(), ptr::null()) };
         if rc < 0 {
             return Err(EncodeError::Backend(format!(
                 "x265_param_default_preset failed ({rc})"
@@ -248,7 +247,9 @@ impl X265Encoder {
             x265_encoder_encode(self.enc, &mut nals, &mut nal_count, pic_in, &mut pic_out)
         };
         if size < 0 {
-            return Err(EncodeError::Backend(format!("x265_encoder_encode ({size})")));
+            return Err(EncodeError::Backend(format!(
+                "x265_encoder_encode ({size})"
+            )));
         }
         self.force_keyframe = false;
         if size == 0 || nal_count == 0 || nals.is_null() {
@@ -275,8 +276,7 @@ impl X265Encoder {
             self.codec_config = parsed.config.clone();
         }
         let slice_type = pic_out.sliceType;
-        let keyframe =
-            slice_type == X265_TYPE_IDR as i32 || slice_type == X265_TYPE_I as i32;
+        let keyframe = slice_type == X265_TYPE_IDR as i32 || slice_type == X265_TYPE_I as i32;
         let dts = self.emitted * self.frame_duration;
         self.emitted += 1;
         // The packet returned here belongs to whichever frame x265 finished,

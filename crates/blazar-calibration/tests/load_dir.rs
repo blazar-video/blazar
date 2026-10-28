@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `CalibrationIndex::load_dir` contract: strict, deterministic, and loud.
 //!
 //! Embedders (the Python binding, test harnesses, anything that is not the

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! GPU RGB -> NV12 conversion as a reusable stage.
 //!
 //! This is the first piece of the pipeline split: the conversion no longer
@@ -99,14 +100,26 @@ impl GpuPreprocess {
         self.stream
             .memcpy_htod(&[ptr], &mut self.dst_ptrs.slice_mut(0..1))
             .map_err(|e| EncodeError::Backend(format!("upload dst pointer: {e}")))?;
-        self.converter
-            .convert_batch(&self.stream, &self.staging, &self.dst_ptrs, desc, 1, self.pitch)?;
+        self.converter.convert_batch(
+            &self.stream,
+            &self.staging,
+            &self.dst_ptrs,
+            desc,
+            1,
+            self.pitch,
+        )?;
         let nv12 = self
             .stream
             .clone_dtoh(&self.device)
             .map_err(|e| EncodeError::Backend(format!("download nv12: {e}")))?;
 
-        Ok(depitch(&nv12, desc.width, desc.height, self.pitch, desc.pts))
+        Ok(depitch(
+            &nv12,
+            desc.width,
+            desc.height,
+            self.pitch,
+            desc.pts,
+        ))
     }
 
     /// Convert `frames` frames that already live on the GPU, returning packed
@@ -163,7 +176,13 @@ impl GpuPreprocess {
                 .stream
                 .clone_dtoh(&self.device)
                 .map_err(|e| EncodeError::Backend(format!("download nv12: {e}")))?;
-            out.push(depitch(&nv12, desc.width, desc.height, self.pitch, desc.pts));
+            out.push(depitch(
+                &nv12,
+                desc.width,
+                desc.height,
+                self.pitch,
+                desc.pts,
+            ));
         }
         Ok(out)
     }
@@ -177,8 +196,14 @@ impl GpuPreprocess {
         let pitch = desc.width.div_ceil(64) * 64;
         let rows = desc.height + desc.height.div_ceil(2);
         let nv12_len = pitch as usize * rows as usize;
-        let rgb_len = (desc.width as usize) * (desc.height as usize) * 3
-            * if matches!(desc.dtype, Dtype::F32) { 4 } else { 2 };
+        let rgb_len = (desc.width as usize)
+            * (desc.height as usize)
+            * 3
+            * if matches!(desc.dtype, Dtype::F32) {
+                4
+            } else {
+                2
+            };
         if nv12_len > self.device.len() {
             self.device = self
                 .stream
@@ -308,4 +333,3 @@ impl crate::VideoEncoder for GpuPreprocessEncoder {
         self.inner.codec_config()
     }
 }
-

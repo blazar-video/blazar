@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Which configuration fields does the installed SVT-AV1 accept?
 //!
 //! Run with `--nocapture`: the versions differ in what `set_parameter` validates,
@@ -5,8 +6,8 @@
 
 #![cfg(feature = "enc-svtav1")]
 
-use std::ptr;
 use blazar_svtav1_sys as sys;
+use std::ptr;
 
 unsafe fn attempt(name: &str, apply: impl FnOnce(&mut sys::EbSvtAv1EncConfiguration)) {
     let mut config: sys::EbSvtAv1EncConfiguration = std::mem::zeroed();
@@ -27,7 +28,11 @@ unsafe fn attempt(name: &str, apply: impl FnOnce(&mut sys::EbSvtAv1EncConfigurat
     let rc = sys::svt_av1_enc_set_parameter(handle, &mut config);
     println!(
         "{name:40} {}",
-        if rc == sys::EbErrorType::EB_ErrorNone { "ok".to_string() } else { format!("FAILED ({rc})") }
+        if rc == sys::EbErrorType::EB_ErrorNone {
+            "ok".to_string()
+        } else {
+            format!("FAILED ({rc})")
+        }
     );
     let _ = sys::svt_av1_enc_deinit(handle);
     let _ = sys::svt_av1_enc_deinit_handle(handle);
@@ -50,8 +55,16 @@ unsafe fn attempt_untouched(name: &str, mutate: impl FnOnce(&mut sys::EbSvtAv1En
     };
     println!(
         "{name:40} set={} init={}",
-        if set == sys::EbErrorType::EB_ErrorNone { "ok" } else { "FAILED" },
-        if init == sys::EbErrorType::EB_ErrorNone { "ok" } else { "skipped/failed" }
+        if set == sys::EbErrorType::EB_ErrorNone {
+            "ok"
+        } else {
+            "FAILED"
+        },
+        if init == sys::EbErrorType::EB_ErrorNone {
+            "ok"
+        } else {
+            "skipped/failed"
+        }
     );
     let _ = sys::svt_av1_enc_deinit(handle);
     let _ = sys::svt_av1_enc_deinit_handle(handle);
@@ -60,10 +73,16 @@ unsafe fn attempt_untouched(name: &str, mutate: impl FnOnce(&mut sys::EbSvtAv1En
 #[test]
 fn probe_config_fields() {
     unsafe {
-        println!("EB_ErrorNone={} EB_ErrorBadParameter={}", sys::EbErrorType::EB_ErrorNone, sys::EbErrorType::EB_ErrorBadParameter);
-        println!("rust sizeof(EbSvtAv1EncConfiguration)={} sizeof(EbBufferHeaderType)={}",
-                 std::mem::size_of::<sys::EbSvtAv1EncConfiguration>(),
-                 std::mem::size_of::<sys::EbBufferHeaderType>());
+        println!(
+            "EB_ErrorNone={} EB_ErrorBadParameter={}",
+            sys::EbErrorType::EB_ErrorNone,
+            sys::EbErrorType::EB_ErrorBadParameter
+        );
+        println!(
+            "rust sizeof(EbSvtAv1EncConfiguration)={} sizeof(EbBufferHeaderType)={}",
+            std::mem::size_of::<sys::EbSvtAv1EncConfiguration>(),
+            std::mem::size_of::<sys::EbBufferHeaderType>()
+        );
         attempt_untouched("untouched", |_| {});
         attempt_untouched("full 2.x default-ish", |c| {
             c.source_width = 96;
@@ -111,8 +130,13 @@ fn probe_config_fields() {
             sys::set_random_access(c);
             sys::set_rate_control_cqp(c, 32);
         });
-        attempt_untouched("width/height only", |c| { c.source_width = 96; c.source_height = 64; });
-        attempt_untouched("format only", |c| { c.encoder_color_format = sys::EbColorFormat::EB_YUV420; });
+        attempt_untouched("width/height only", |c| {
+            c.source_width = 96;
+            c.source_height = 64;
+        });
+        attempt_untouched("format only", |c| {
+            c.encoder_color_format = sys::EbColorFormat::EB_YUV420;
+        });
         attempt_untouched("rc only", |c| sys::set_rate_control_cqp(c, 32));
         attempt("baseline", |_| {});
         attempt("intra_period_length=5", |c| c.intra_period_length = 5);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Minimal VideoToolbox bindings, declared here rather than pulled from a
 //! crate so the dependency surface stays small and auditable.
 //!
@@ -126,13 +127,16 @@ extern "C" {
         pixel_buffer_out: *mut CVPixelBufferRef,
     ) -> CVReturn;
 
-    pub fn CVPixelBufferLockBaseAddress(buffer: CVPixelBufferRef, flags: CVOptionFlags) -> CVReturn;
+    pub fn CVPixelBufferLockBaseAddress(buffer: CVPixelBufferRef, flags: CVOptionFlags)
+        -> CVReturn;
     pub fn CVPixelBufferUnlockBaseAddress(
         buffer: CVPixelBufferRef,
         flags: CVOptionFlags,
     ) -> CVReturn;
-    pub fn CVPixelBufferGetBaseAddressOfPlane(buffer: CVPixelBufferRef, plane: usize)
-        -> *mut c_void;
+    pub fn CVPixelBufferGetBaseAddressOfPlane(
+        buffer: CVPixelBufferRef,
+        plane: usize,
+    ) -> *mut c_void;
     pub fn CVPixelBufferGetBytesPerRowOfPlane(buffer: CVPixelBufferRef, plane: usize) -> usize;
 }
 

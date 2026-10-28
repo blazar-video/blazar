@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Keyframe cadence for backends whose driver-scheduled GOP is not enough.
 //!
 //! NVENC's `gopLength` boundary produces an AV1 INTRA_ONLY frame on this driver,

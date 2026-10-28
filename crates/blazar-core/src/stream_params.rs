@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Stream parameters declared to a sink at `open` (architecture §6).
 //!
 //! Stream metadata describes the wire/container codec separately from the

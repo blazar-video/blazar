@@ -58,7 +58,7 @@ jobs:
         # Importing proves nothing: a wheel built with the wrong --features
         # imports perfectly and fails at the first frame, after publishing.
         run: |
-          pip install dist/*.whl
+          pip install bindings/python/dist/*.whl
           python - <<'PY'
           import blazar
           print("blazar", blazar.__version__, "backends:", blazar.backends())

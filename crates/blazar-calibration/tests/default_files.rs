@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Validates the actual shipped default calibration files in `calibrations/`.
 //!
 //! This is the contract check between the data (TOML on disk) and the loader:

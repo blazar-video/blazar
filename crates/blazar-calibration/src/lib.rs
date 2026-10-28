@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `blazar-calibration` — the calibration data contract: schema, loader, and
 //! resolution index (calibration-format.md; architecture §5.1).
 //!

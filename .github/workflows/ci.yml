@@ -75,7 +75,8 @@ jobs:
           working-directory: bindings/python
           args: --release --out dist
           manylinux: auto
-      - run: pip install dist/*.whl pytest numpy
+      # maturin ran with working-directory bindings/python, so the wheel is there
+      - run: pip install bindings/python/dist/*.whl pytest numpy
       - name: tests that need no encoder hardware
         env:
           BLAZAR_CALIBRATIONS: ${{ github.workspace }}/calibrations/default

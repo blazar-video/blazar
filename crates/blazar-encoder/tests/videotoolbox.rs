@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! VideoToolbox encoder tests.
 //!
 //! These run only on macOS with `enc-videotoolbox` enabled: the backend links
@@ -103,7 +104,10 @@ fn a_mismatched_frame_size_is_rejected() {
     let mut wrong = frame(0);
     wrong.width = W + 2;
     let err = enc.encode(&wrong).expect_err("size mismatch must fail");
-    assert!(format!("{err}").contains("frame is"), "unexpected error: {err}");
+    assert!(
+        format!("{err}").contains("frame is"),
+        "unexpected error: {err}"
+    );
 }
 
 /// The stream has to decode, not merely look like H.264.
@@ -191,7 +195,8 @@ fn length_prefixed(sample: &[u8]) -> Vec<&[u8]> {
     let mut out = Vec::new();
     let mut i = 0;
     while i + 4 <= sample.len() {
-        let len = u32::from_be_bytes([sample[i], sample[i + 1], sample[i + 2], sample[i + 3]]) as usize;
+        let len =
+            u32::from_be_bytes([sample[i], sample[i + 1], sample[i + 2], sample[i + 3]]) as usize;
         i += 4;
         if i + len > sample.len() {
             break;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Host frame -> preprocess -> x264 -> fMP4, through the buffered writer the
 //! Python binding uses.
 //!

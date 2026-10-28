@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! VideoToolbox -> fMP4, through the same runtime and sink the Python binding
 //! uses.
 //!
@@ -43,7 +44,9 @@ const FRAMES: u64 = 48;
 
 fn index() -> CalibrationIndex {
     let mut idx = CalibrationIndex::new();
-    idx.insert(load_str(VT_CAL, "default/videotoolbox_h264_balanced.toml").expect("calibration loads"));
+    idx.insert(
+        load_str(VT_CAL, "default/videotoolbox_h264_balanced.toml").expect("calibration loads"),
+    );
     idx
 }
 
@@ -167,7 +170,11 @@ fn the_muxed_file_decodes_with_ffprobe() {
     assert_eq!(field("codec_name"), "h264");
     assert_eq!(field("width"), W.to_string());
     assert_eq!(field("height"), H.to_string());
-    assert_eq!(field("nb_read_frames"), FRAMES.to_string(), "decoded frames");
+    assert_eq!(
+        field("nb_read_frames"),
+        FRAMES.to_string(),
+        "decoded frames"
+    );
     // Timestamps, not just pixels: each unit has to carry its duration or the
     // track looks like a 90000 fps stream one frame long.
     assert_eq!(field("avg_frame_rate"), "24/1", "frame rate from durations");

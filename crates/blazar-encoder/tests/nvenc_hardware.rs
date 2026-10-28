@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Hardware tests for the NVENC backend. Compiled only with `--features nvenc`.
 //!
 //! These are real encodes on whatever GPU is present, so they assert on
@@ -238,7 +239,6 @@ fn rgb_frame(index: u64) -> FrameRef {
 /// time. NVENC is deterministic for identical input and settings, so the
 /// payloads are compared byte for byte, not just counted.
 fn assert_batch_matches_singles(n: u64) {
-
     // Consumer GPUs cap concurrent NVENC sessions, and the rest of this suite
     // runs in parallel, so the two encoders are not held at the same time.
     let single_units = {
@@ -268,11 +268,17 @@ fn assert_batch_matches_singles(n: u64) {
     );
     let batch_bytes: Vec<u8> = batch_units.iter().flat_map(|u| u.bytes.clone()).collect();
     let single_bytes: Vec<u8> = single_units.iter().flat_map(|u| u.bytes.clone()).collect();
-    assert_eq!(batch_bytes, single_bytes, "batch and single payloads differ");
+    assert_eq!(
+        batch_bytes, single_bytes,
+        "batch and single payloads differ"
+    );
 
     let batch_dts: Vec<u64> = batch_units.iter().map(|u| u.dts.0).collect();
     let single_dts: Vec<u64> = single_units.iter().map(|u| u.dts.0).collect();
-    assert_eq!(batch_dts, single_dts, "batch and single decode order differ");
+    assert_eq!(
+        batch_dts, single_dts,
+        "batch and single decode order differ"
+    );
 }
 
 #[test]

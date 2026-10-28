@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Shared error type for the core contracts.
 
 use thiserror::Error;

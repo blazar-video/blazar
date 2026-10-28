@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! SVT-AV1 backend: real encode on the CPU.
 
 #![cfg(feature = "enc-svtav1")]

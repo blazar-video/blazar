@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Structured model identity — the calibration key axis for the model.
 //!
 //! Structured (`family/version/quant/size`) rather than a flat string so

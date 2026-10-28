@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! NVENC AV1 backend.
 //!
 //! Split into a testable core and a thin hardware shell:

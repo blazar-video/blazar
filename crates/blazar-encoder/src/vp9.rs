@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Software VP9 via libvpx.
 //!
 //! Like the other CPU backends it consumes the NV12 planes produced on the GPU,
@@ -15,7 +16,10 @@ use crate::{EncodeError, VideoEncoder};
 /// `vpcC` body for profile 0, 8-bit 4:2:0, full-range BT.709, no
 /// codec-initialization data. VP9 carries nothing else the muxer needs.
 const VPCC: [u8; 12] = [
-    1, 0, 0, 0, // version + flags
+    1,
+    0,
+    0,
+    0,  // version + flags
     0,  // profile 0 (8-bit 4:2:0)
     10, // level 1.0
     // bit_depth(4) | chroma_subsampling(3) | full_range(1)
@@ -23,7 +27,8 @@ const VPCC: [u8; 12] = [
     1, // colour_primaries BT.709
     1, // transfer_characteristics BT.709
     1, // matrix_coefficients BT.709
-    0, 0, // codec initialization data size
+    0,
+    0, // codec initialization data size
 ];
 
 pub struct Vp9Encoder {
@@ -136,7 +141,10 @@ impl Vp9Encoder {
     }
 
     /// Encode one frame (or flush when `frame` is None) and collect packets.
-    fn encode_impl(&mut self, frame: Option<&PreprocessedFrame>) -> Result<Vec<EncodedUnit>, EncodeError> {
+    fn encode_impl(
+        &mut self,
+        frame: Option<&PreprocessedFrame>,
+    ) -> Result<Vec<EncodedUnit>, EncodeError> {
         let (img_ptr, pts, flags) = match frame {
             Some(frame) => {
                 if frame.width & !1 != self.width || frame.height & !1 != self.height {
@@ -157,7 +165,11 @@ impl Vp9Encoder {
                     0
                 };
                 self.force_keyframe = false;
-                (&mut self.image as *mut sys::vpx_image, frame.pts.0 as i64, flags)
+                (
+                    &mut self.image as *mut sys::vpx_image,
+                    frame.pts.0 as i64,
+                    flags,
+                )
             }
             None => (ptr::null_mut(), 0, 0 as sys::vpx_enc_frame_flags_t),
         };

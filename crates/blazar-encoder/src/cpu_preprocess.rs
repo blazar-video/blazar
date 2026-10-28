@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! CPU-side conversion stage, usable on any backend.
 //!
 //! This is the explicit `preprocess="cpu"` placement for a backend that would

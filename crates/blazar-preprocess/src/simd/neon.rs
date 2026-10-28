@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! aarch64 NEON kernels for RGB -> YUV420.
 //!
 //! Six source shapes share one arithmetic core. NEON's structure loads do the
@@ -129,39 +130,45 @@ pub(crate) fn convert(
 
     let row_pair = |cy: usize, y_rows: &mut [u8], u_row: &mut [u8], v_row: &mut [u8]| {
         SCRATCH.with(|cell| {
-        let mut scratch = cell.borrow_mut();
-        scratch.ensure(w, scratch_len);
-        let Scratch { cb0, cr0, cb1, cr1, wide } = &mut *scratch;
-        let rows = y_rows.len() / w;
-        for (dy, y_row) in y_rows.chunks_exact_mut(w).enumerate() {
-            let sy = cy * 2 + dy;
-            debug_assert!(sy < h);
-            let (cb, cr) = if dy == 0 {
-                (&mut *cb0, &mut *cr0)
-            } else {
-                (&mut *cb1, &mut *cr1)
-            };
-            // SAFETY: the driver stays inside the row it is given, and the two
-            // scratch rows hold `w` floats each.
-            unsafe {
-                row(
-                    kind,
-                    &ctx,
-                    base,
-                    sy,
-                    wide,
-                    y_row.as_mut_ptr(),
-                    cb.as_mut_ptr(),
-                    cr.as_mut_ptr(),
-                );
+            let mut scratch = cell.borrow_mut();
+            scratch.ensure(w, scratch_len);
+            let Scratch {
+                cb0,
+                cr0,
+                cb1,
+                cr1,
+                wide,
+            } = &mut *scratch;
+            let rows = y_rows.len() / w;
+            for (dy, y_row) in y_rows.chunks_exact_mut(w).enumerate() {
+                let sy = cy * 2 + dy;
+                debug_assert!(sy < h);
+                let (cb, cr) = if dy == 0 {
+                    (&mut *cb0, &mut *cr0)
+                } else {
+                    (&mut *cb1, &mut *cr1)
+                };
+                // SAFETY: the driver stays inside the row it is given, and the two
+                // scratch rows hold `w` floats each.
+                unsafe {
+                    row(
+                        kind,
+                        &ctx,
+                        base,
+                        sy,
+                        wide,
+                        y_row.as_mut_ptr(),
+                        cb.as_mut_ptr(),
+                        cr.as_mut_ptr(),
+                    );
+                }
             }
-        }
-        // Odd heights: the last chroma row averages one luma row over itself.
-        if rows == 1 {
-            cb1.copy_from_slice(cb0);
-            cr1.copy_from_slice(cr0);
-        }
-        combine(cb0, cr0, cb1, cr1, cw, u_row, v_row);
+            // Odd heights: the last chroma row averages one luma row over itself.
+            if rows == 1 {
+                cb1.copy_from_slice(cb0);
+                cr1.copy_from_slice(cr0);
+            }
+            combine(cb0, cr0, cb1, cr1, cw, u_row, v_row);
         });
     };
 
@@ -241,7 +248,11 @@ unsafe fn widen_bf16(
         &[(sy * w * 3, 3 * w)]
     } else {
         // SAFETY: unused; the slice below is built from plain integers.
-        &[(sy * w, w), (plane_bytes / 2 + sy * w, w), (2 * plane_bytes / 2 + sy * w, w)]
+        &[
+            (sy * w, w),
+            (plane_bytes / 2 + sy * w, w),
+            (2 * plane_bytes / 2 + sy * w, w),
+        ]
     };
     let mut written = 0usize;
     for &(start, count) in runs {
@@ -307,7 +318,14 @@ unsafe fn store4(
 ///
 /// # Safety
 /// `base` must cover the frame; the outputs hold `w` elements.
-unsafe fn row_thwc_u8(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8, cb: *mut f32, cr: *mut f32) {
+unsafe fn row_thwc_u8(
+    ctx: &Ctx<'_>,
+    base: *const u8,
+    sy: usize,
+    y_out: *mut u8,
+    cb: *mut f32,
+    cr: *mut f32,
+) {
     let w = ctx.w;
     let p = base.add(sy * w * 3);
     let mut x = 0;
@@ -316,7 +334,11 @@ unsafe fn row_thwc_u8(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8,
         let mut ys = [0u8; 16];
         for q in 0..4usize {
             let pick = |c8: uint8x16_t| -> float32x4_t {
-                let half = if q < 2 { vget_low_u8(c8) } else { vget_high_u8(c8) };
+                let half = if q < 2 {
+                    vget_low_u8(c8)
+                } else {
+                    vget_high_u8(c8)
+                };
                 let wide = vmovl_u8(half);
                 let quarters = if q % 2 == 0 {
                     vget_low_u16(wide)
@@ -326,7 +348,10 @@ unsafe fn row_thwc_u8(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8,
                 vcvtq_f32_u32(vmovl_u16(quarters))
             };
             let (yq, cbv, crv) = core4(&ctx.k, pick(v.0), pick(v.1), pick(v.2));
-            vst1_lane_u32::<0>(ys.as_mut_ptr().add(q * 4) as *mut u32, vreinterpret_u32_u8(yq));
+            vst1_lane_u32::<0>(
+                ys.as_mut_ptr().add(q * 4) as *mut u32,
+                vreinterpret_u32_u8(yq),
+            );
             vst1q_f32(cb.add(x + q * 4), cbv);
             vst1q_f32(cr.add(x + q * 4), crv);
         }
@@ -335,7 +360,12 @@ unsafe fn row_thwc_u8(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8,
     }
     while x < w {
         let i = x * 3;
-        let (y8, cbv, crv) = pixel_unit(ctx.c, *p.add(i) as f32, *p.add(i + 1) as f32, *p.add(i + 2) as f32);
+        let (y8, cbv, crv) = pixel_unit(
+            ctx.c,
+            *p.add(i) as f32,
+            *p.add(i + 1) as f32,
+            *p.add(i + 2) as f32,
+        );
         *y_out.add(x) = y8;
         *cb.add(x) = cbv;
         *cr.add(x) = crv;
@@ -347,7 +377,14 @@ unsafe fn row_thwc_u8(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8,
 ///
 /// # Safety
 /// Each plane must cover the frame; the outputs hold `w` elements.
-unsafe fn row_bcthw_u8(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8, cb: *mut f32, cr: *mut f32) {
+unsafe fn row_bcthw_u8(
+    ctx: &Ctx<'_>,
+    base: *const u8,
+    sy: usize,
+    y_out: *mut u8,
+    cb: *mut f32,
+    cr: *mut f32,
+) {
     let w = ctx.w;
     let offset = sy * w;
     let (rp, gp, bp) = (
@@ -374,7 +411,12 @@ unsafe fn row_bcthw_u8(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8
         x += 8;
     }
     while x < w {
-        let (y8, cbv, crv) = pixel_unit(ctx.c, *rp.add(x) as f32, *gp.add(x) as f32, *bp.add(x) as f32);
+        let (y8, cbv, crv) = pixel_unit(
+            ctx.c,
+            *rp.add(x) as f32,
+            *gp.add(x) as f32,
+            *bp.add(x) as f32,
+        );
         *y_out.add(x) = y8;
         *cb.add(x) = cbv;
         *cr.add(x) = crv;
@@ -386,7 +428,14 @@ unsafe fn row_bcthw_u8(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8
 ///
 /// # Safety
 /// `base` must cover the frame; the outputs hold `w` elements.
-unsafe fn row_thwc_f32(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8, cb: *mut f32, cr: *mut f32) {
+unsafe fn row_thwc_f32(
+    ctx: &Ctx<'_>,
+    base: *const u8,
+    sy: usize,
+    y_out: *mut u8,
+    cb: *mut f32,
+    cr: *mut f32,
+) {
     let w = ctx.w;
     let p = (base as *const f32).add(sy * w * 3);
     let mut x = 0;
@@ -455,7 +504,15 @@ unsafe fn row_bcthw_f32(
 }
 
 /// Fold the 2x2 chroma blocks and quantize.
-fn combine(cb0: &[f32], cr0: &[f32], cb1: &[f32], cr1: &[f32], cw: usize, u: &mut [u8], v: &mut [u8]) {
+fn combine(
+    cb0: &[f32],
+    cr0: &[f32],
+    cb1: &[f32],
+    cr1: &[f32],
+    cw: usize,
+    u: &mut [u8],
+    v: &mut [u8],
+) {
     // Row 1 always holds data, because an odd height duplicates row 0 into it,
     // so every block is four samples and the divisor is always four.
     let inv = 0.25f32;
@@ -485,7 +542,13 @@ fn combine(cb0: &[f32], cr0: &[f32], cb1: &[f32], cr1: &[f32], cw: usize, u: &mu
         // Odd widths: the last chroma column owns a single luma column.
         let paired = 2 * cx + 1 < cb0.len();
         let inv = if paired { inv } else { 0.5f32 };
-        let s = |r: &[f32]| if paired { r[2 * cx] + r[2 * cx + 1] } else { r[2 * cx] };
+        let s = |r: &[f32]| {
+            if paired {
+                r[2 * cx] + r[2 * cx + 1]
+            } else {
+                r[2 * cx]
+            }
+        };
         u[cx] = q8((s(cb0) + s(cb1)) * inv);
         v[cx] = q8((s(cr0) + s(cr1)) * inv);
         cx += 1;
@@ -501,5 +564,8 @@ unsafe fn round_u8(v: float32x4_t) -> uint8x8_t {
     let bias = vbslq_f32(vcltq_f32(v, zero), vdupq_n_f32(-0.5), vdupq_n_f32(0.5));
     let clamped = vminq_f32(vmaxq_f32(vaddq_f32(v, bias), zero), vdupq_n_f32(255.0));
     let ints: int32x4_t = vcvtq_s32_f32(clamped);
-    vmovn_u16(vcombine_u16(vmovn_u32(vreinterpretq_u32_s32(ints)), vdup_n_u16(0)))
+    vmovn_u16(vcombine_u16(
+        vmovn_u32(vreinterpretq_u32_s32(ints)),
+        vdup_n_u16(0),
+    ))
 }

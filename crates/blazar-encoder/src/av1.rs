@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Minimal AV1 bitstream inspection, limited to what the container needs.
 //!
 //! The fMP4 sink requires an `av1C` codec configuration record *before* the

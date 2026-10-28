@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Python bindings for the Blazar runtime.
 //!
 //! Two classes, deliberately thin:

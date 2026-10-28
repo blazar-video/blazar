@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Generate libvpx bindings for the VP9 encoder from the system headers.
 
 use std::path::PathBuf;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Generate libx265 bindings for the HEVC encoder from the system headers.
 
 use std::path::PathBuf;

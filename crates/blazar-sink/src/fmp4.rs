@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! File sinks (architecture §6, build-order step 1).
 //!
 //! Two things live here:
@@ -270,11 +271,7 @@ impl<W: Write + Seek + Send + 'static> Sink for Fmp4FileSink<W> {
             ));
         }
         let streams = Self::stream_infos(&params)?;
-        let writer = self
-            .writer
-            .as_ref()
-            .ok_or(SinkError::NotOpen)?
-            .clone();
+        let writer = self.writer.as_ref().ok_or(SinkError::NotOpen)?.clone();
         // Honour the packet timebase as the track's media timescale. The muxer
         // otherwise defaults video to 1/1000, which truncates frame durations
         // (3750 ticks at 90 kHz is 41.667 ms, not 41) and drifts over a stream.

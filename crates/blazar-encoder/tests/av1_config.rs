@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 use blazar_encoder::av1::{av1c_from_keyframe, Av1Error};
 
 /// A real NVENC keyframe prefix captured on mosk (see `tests/fixtures/README.md`):

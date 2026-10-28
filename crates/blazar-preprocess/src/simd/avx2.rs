@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! x86_64 AVX2 kernels for RGB -> YUV420.
 //!
 //! Six source shapes, three loading strategies:
@@ -168,36 +169,42 @@ pub(crate) unsafe fn convert(
 
     let row_pair = |cy: usize, y_rows: &mut [u8], u_row: &mut [u8], v_row: &mut [u8]| {
         SCRATCH.with(|cell| {
-        let mut scratch = cell.borrow_mut();
-        scratch.ensure(w, scratch_len);
-        let Scratch { cb0, cr0, cb1, cr1, wide } = &mut *scratch;
-        let rows = y_rows.len() / w;
-        for (dy, y_row) in y_rows.chunks_exact_mut(w).enumerate() {
-            let sy = cy * 2 + dy;
-            debug_assert!(sy < h);
-            let (cb, cr) = if dy == 0 {
-                (&mut *cb0, &mut *cr0)
-            } else {
-                (&mut *cb1, &mut *cr1)
-            };
-            // SAFETY: the driver stays inside the row it is given; the scratch
-            // rows hold `w` floats each.
-            row(
-                kind,
-                &ctx,
-                base,
-                sy,
+            let mut scratch = cell.borrow_mut();
+            scratch.ensure(w, scratch_len);
+            let Scratch {
+                cb0,
+                cr0,
+                cb1,
+                cr1,
                 wide,
-                y_row.as_mut_ptr(),
-                cb.as_mut_ptr(),
-                cr.as_mut_ptr(),
-            );
-        }
-        if rows == 1 {
-            cb1.copy_from_slice(cb0);
-            cr1.copy_from_slice(cr0);
-        }
-        combine(cb0, cr0, cb1, cr1, cw, u_row, v_row);
+            } = &mut *scratch;
+            let rows = y_rows.len() / w;
+            for (dy, y_row) in y_rows.chunks_exact_mut(w).enumerate() {
+                let sy = cy * 2 + dy;
+                debug_assert!(sy < h);
+                let (cb, cr) = if dy == 0 {
+                    (&mut *cb0, &mut *cr0)
+                } else {
+                    (&mut *cb1, &mut *cr1)
+                };
+                // SAFETY: the driver stays inside the row it is given; the scratch
+                // rows hold `w` floats each.
+                row(
+                    kind,
+                    &ctx,
+                    base,
+                    sy,
+                    wide,
+                    y_row.as_mut_ptr(),
+                    cb.as_mut_ptr(),
+                    cr.as_mut_ptr(),
+                );
+            }
+            if rows == 1 {
+                cb1.copy_from_slice(cb0);
+                cr1.copy_from_slice(cr0);
+            }
+            combine(cb0, cr0, cb1, cr1, cw, u_row, v_row);
         });
     };
 
@@ -292,7 +299,10 @@ unsafe fn widen_bf16(
             let bits = _mm_loadu_si128(src.add(start + i).cast());
             let wide = _mm256_cvtepu16_epi32(bits);
             let float_bits = _mm256_slli_epi32(wide, 16);
-            _mm256_storeu_ps(scratch.as_mut_ptr().add(written + i), _mm256_castsi256_ps(float_bits));
+            _mm256_storeu_ps(
+                scratch.as_mut_ptr().add(written + i),
+                _mm256_castsi256_ps(float_bits),
+            );
             i += 8;
         }
         while i < count {
@@ -311,9 +321,18 @@ unsafe fn widen_bf16(
 /// Requires AVX2.
 #[inline(always)]
 unsafe fn core8(k: &K, r: __m256, g: __m256, b: __m256) -> (__m256i, __m256, __m256) {
-    let r = _mm256_min_ps(_mm256_max_ps(_mm256_fmadd_ps(r, k.scale, k.offset), k.zero), k.max);
-    let g = _mm256_min_ps(_mm256_max_ps(_mm256_fmadd_ps(g, k.scale, k.offset), k.zero), k.max);
-    let b = _mm256_min_ps(_mm256_max_ps(_mm256_fmadd_ps(b, k.scale, k.offset), k.zero), k.max);
+    let r = _mm256_min_ps(
+        _mm256_max_ps(_mm256_fmadd_ps(r, k.scale, k.offset), k.zero),
+        k.max,
+    );
+    let g = _mm256_min_ps(
+        _mm256_max_ps(_mm256_fmadd_ps(g, k.scale, k.offset), k.zero),
+        k.max,
+    );
+    let b = _mm256_min_ps(
+        _mm256_max_ps(_mm256_fmadd_ps(b, k.scale, k.offset), k.zero),
+        k.max,
+    );
     let y = _mm256_fmadd_ps(k.kr, r, _mm256_fmadd_ps(k.kg, g, _mm256_mul_ps(k.kb, b)));
     let cb = _mm256_fmadd_ps(_mm256_sub_ps(b, y), k.cb_scale, k.half);
     let cr = _mm256_fmadd_ps(_mm256_sub_ps(r, y), k.cr_scale, k.half);
@@ -326,9 +345,18 @@ unsafe fn core8(k: &K, r: __m256, g: __m256, b: __m256) -> (__m256i, __m256, __m
 /// Requires SSE4.1.
 #[inline(always)]
 unsafe fn core4(k: &K, r: __m128, g: __m128, b: __m128) -> (__m128i, __m128, __m128) {
-    let r = _mm_min_ps(_mm_max_ps(_mm_fmadd_ps(r, k.scale4, k.offset4), k.zero4), k.max4);
-    let g = _mm_min_ps(_mm_max_ps(_mm_fmadd_ps(g, k.scale4, k.offset4), k.zero4), k.max4);
-    let b = _mm_min_ps(_mm_max_ps(_mm_fmadd_ps(b, k.scale4, k.offset4), k.zero4), k.max4);
+    let r = _mm_min_ps(
+        _mm_max_ps(_mm_fmadd_ps(r, k.scale4, k.offset4), k.zero4),
+        k.max4,
+    );
+    let g = _mm_min_ps(
+        _mm_max_ps(_mm_fmadd_ps(g, k.scale4, k.offset4), k.zero4),
+        k.max4,
+    );
+    let b = _mm_min_ps(
+        _mm_max_ps(_mm_fmadd_ps(b, k.scale4, k.offset4), k.zero4),
+        k.max4,
+    );
     let y = _mm_fmadd_ps(k.kr4, r, _mm_fmadd_ps(k.kg4, g, _mm_mul_ps(k.kb4, b)));
     let cb = _mm_fmadd_ps(_mm_sub_ps(b, y), k.cb_scale4, k.half4);
     let cr = _mm_fmadd_ps(_mm_sub_ps(r, y), k.cr_scale4, k.half4);
@@ -366,12 +394,25 @@ unsafe fn store8(out: *mut u8, v: __m256i) {
 /// # Safety
 /// `base` must cover the frame; the outputs hold `w` elements.
 #[inline(always)]
-unsafe fn row_thwc_u8(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8, cb: *mut f32, cr: *mut f32) {
+unsafe fn row_thwc_u8(
+    ctx: &Ctx<'_>,
+    base: *const u8,
+    sy: usize,
+    y_out: *mut u8,
+    cb: *mut f32,
+    cr: *mut f32,
+) {
     let w = ctx.w;
     // Byte offsets of four pixels' R, G and B inside one 16-byte load.
-    let mask_r = _mm_setr_epi8(0, 3, 6, 9, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128);
-    let mask_g = _mm_setr_epi8(1, 4, 7, 10, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128);
-    let mask_b = _mm_setr_epi8(2, 5, 8, 11, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128);
+    let mask_r = _mm_setr_epi8(
+        0, 3, 6, 9, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128,
+    );
+    let mask_g = _mm_setr_epi8(
+        1, 4, 7, 10, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128,
+    );
+    let mask_b = _mm_setr_epi8(
+        2, 5, 8, 11, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128, -128,
+    );
     let p = base.add(sy * w * 3);
     let mut x = 0;
     while x + 4 <= w {
@@ -385,7 +426,12 @@ unsafe fn row_thwc_u8(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8,
     }
     while x < w {
         let i = x * 3;
-        let (y8, cbv, crv) = pixel_unit(ctx.c, *p.add(i) as f32, *p.add(i + 1) as f32, *p.add(i + 2) as f32);
+        let (y8, cbv, crv) = pixel_unit(
+            ctx.c,
+            *p.add(i) as f32,
+            *p.add(i + 1) as f32,
+            *p.add(i + 2) as f32,
+        );
         *y_out.add(x) = y8;
         *cb.add(x) = cbv;
         *cr.add(x) = crv;
@@ -398,7 +444,14 @@ unsafe fn row_thwc_u8(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8,
 /// # Safety
 /// Each plane must cover the frame; the outputs hold `w` elements.
 #[inline(always)]
-unsafe fn row_bcthw_u8(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8, cb: *mut f32, cr: *mut f32) {
+unsafe fn row_bcthw_u8(
+    ctx: &Ctx<'_>,
+    base: *const u8,
+    sy: usize,
+    y_out: *mut u8,
+    cb: *mut f32,
+    cr: *mut f32,
+) {
     let w = ctx.w;
     let offset = sy * w;
     let (rp, gp, bp) = (
@@ -419,7 +472,12 @@ unsafe fn row_bcthw_u8(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8
         x += 8;
     }
     while x < w {
-        let (y8, cbv, crv) = pixel_unit(ctx.c, *rp.add(x) as f32, *gp.add(x) as f32, *bp.add(x) as f32);
+        let (y8, cbv, crv) = pixel_unit(
+            ctx.c,
+            *rp.add(x) as f32,
+            *gp.add(x) as f32,
+            *bp.add(x) as f32,
+        );
         *y_out.add(x) = y8;
         *cb.add(x) = cbv;
         *cr.add(x) = crv;
@@ -436,7 +494,14 @@ unsafe fn row_bcthw_u8(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8
 /// # Safety
 /// `base` must cover the frame; the outputs hold `w` elements.
 #[inline(always)]
-unsafe fn row_thwc_f32(ctx: &Ctx<'_>, base: *const u8, sy: usize, y_out: *mut u8, cb: *mut f32, cr: *mut f32) {
+unsafe fn row_thwc_f32(
+    ctx: &Ctx<'_>,
+    base: *const u8,
+    sy: usize,
+    y_out: *mut u8,
+    cb: *mut f32,
+    cr: *mut f32,
+) {
     let w = ctx.w;
     let p = (base as *const f32).add(sy * w * 3);
     let index = _mm256_setr_epi32(0, 3, 6, 9, 12, 15, 18, 21);
@@ -506,7 +571,15 @@ unsafe fn row_bcthw_f32(
     }
 }
 
-fn combine(cb0: &[f32], cr0: &[f32], cb1: &[f32], cr1: &[f32], cw: usize, u: &mut [u8], v: &mut [u8]) {
+fn combine(
+    cb0: &[f32],
+    cr0: &[f32],
+    cb1: &[f32],
+    cr1: &[f32],
+    cw: usize,
+    u: &mut [u8],
+    v: &mut [u8],
+) {
     // Row 1 always holds data, because an odd height duplicates row 0 into it,
     // so every block is four samples and the divisor is always four.
     let mut cx = 0;
@@ -540,7 +613,13 @@ fn combine(cb0: &[f32], cr0: &[f32], cb1: &[f32], cr1: &[f32], cw: usize, u: &mu
         // Odd widths: the last chroma column owns a single luma column.
         let paired = 2 * cx + 1 < cb0.len();
         let inv = if paired { 0.25f32 } else { 0.5f32 };
-        let s = |r: &[f32]| if paired { r[2 * cx] + r[2 * cx + 1] } else { r[2 * cx] };
+        let s = |r: &[f32]| {
+            if paired {
+                r[2 * cx] + r[2 * cx + 1]
+            } else {
+                r[2 * cx]
+            }
+        };
         u[cx] = q8((s(cb0) + s(cb1)) * inv);
         v[cx] = q8((s(cr0) + s(cr1)) * inv);
         cx += 1;
@@ -568,11 +647,7 @@ unsafe fn round_u8_256(v: __m256) -> __m256i {
 #[inline(always)]
 unsafe fn round_u8_128(v: __m128) -> __m128i {
     let zero = _mm_setzero_ps();
-    let bias = _mm_blendv_ps(
-        _mm_set1_ps(0.5),
-        _mm_set1_ps(-0.5),
-        _mm_cmplt_ps(v, zero),
-    );
+    let bias = _mm_blendv_ps(_mm_set1_ps(0.5), _mm_set1_ps(-0.5), _mm_cmplt_ps(v, zero));
     let biased = _mm_add_ps(v, bias);
     let clamped = _mm_min_ps(_mm_max_ps(biased, zero), _mm_set1_ps(255.0));
     _mm_cvttps_epi32(clamped)

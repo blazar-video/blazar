@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! End-to-end Phase-1 pipeline test: host frame → preprocess → encode → sink.
 //!
 //! Exercises the full operator API against the DebugFileSink and asserts the
@@ -254,8 +255,8 @@ fn output(extradata: Option<Vec<u8>>) -> Output {
     Output {
         codec: VideoCodec::Av1,
         // The pipeline contract is tested on the mock; real backends have their own
-            // tests, and a real encoder's keyframe cadence is its own business.
-            backend: VideoEncoderBackend::Mock,
+        // tests, and a real encoder's keyframe cadence is its own business.
+        backend: VideoEncoderBackend::Mock,
         container: Container::FragmentedMp4,
         video_extradata: extradata,
         audio_extradata: None,

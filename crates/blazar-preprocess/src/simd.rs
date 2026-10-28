@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Vector RGB -> YUV420 kernels, dispatched per architecture.
 //!
 //! Every source the pipeline can produce has a kernel: interleaved or planar,
@@ -10,10 +11,10 @@
 //! rule — so a vector result differs from the scalar one by at most one level,
 //! and only where a value lands within rounding distance of a boundary.
 
-#[cfg(target_arch = "aarch64")]
-mod neon;
 #[cfg(target_arch = "x86_64")]
 mod avx2;
+#[cfg(target_arch = "aarch64")]
+mod neon;
 
 /// Which frame shape a kernel is reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

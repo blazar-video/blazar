@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Where RGB→NV12 happens, and what that implies for the caller.
 //!
 //! Placement is chosen by the caller (`preprocess="auto" | "cpu" | "gpu"`) but
@@ -173,7 +174,12 @@ mod tests {
     #[test]
     fn auto_converts_a_host_frame_on_the_device_when_the_backend_can_use_it() {
         assert_eq!(
-            resolve(PreprocessPlacement::Auto, SourceLocation::Host, DEVICE_CONVERT, GPU),
+            resolve(
+                PreprocessPlacement::Auto,
+                SourceLocation::Host,
+                DEVICE_CONVERT,
+                GPU
+            ),
             Ok(PreprocessSite::Gpu),
             "NVENC encodes from the surface the kernel wrote, so there is no download to avoid"
         );
@@ -182,7 +188,12 @@ mod tests {
     #[test]
     fn auto_converts_a_host_frame_on_the_cpu_for_a_cpu_codec() {
         assert_eq!(
-            resolve(PreprocessPlacement::Auto, SourceLocation::Host, HOST_EXPECTED, GPU),
+            resolve(
+                PreprocessPlacement::Auto,
+                SourceLocation::Host,
+                HOST_EXPECTED,
+                GPU
+            ),
             Ok(PreprocessSite::Cpu),
             "a device conversion for a CPU codec buys a download it cannot use"
         );
@@ -193,7 +204,12 @@ mod tests {
         for source in [SourceLocation::Host, SourceLocation::Device] {
             for backend_converts_on_device in [DEVICE_CONVERT, HOST_EXPECTED] {
                 assert_eq!(
-                    resolve(PreprocessPlacement::Auto, source, backend_converts_on_device, NO_GPU),
+                    resolve(
+                        PreprocessPlacement::Auto,
+                        source,
+                        backend_converts_on_device,
+                        NO_GPU
+                    ),
                     Ok(PreprocessSite::Cpu)
                 );
             }
@@ -205,7 +221,12 @@ mod tests {
         for source in [SourceLocation::Host, SourceLocation::Device] {
             for gpu_available in [GPU, NO_GPU] {
                 assert_eq!(
-                    resolve(PreprocessPlacement::Cpu, source, DEVICE_CONVERT, gpu_available),
+                    resolve(
+                        PreprocessPlacement::Cpu,
+                        source,
+                        DEVICE_CONVERT,
+                        gpu_available
+                    ),
                     Ok(PreprocessSite::Cpu),
                     "cpu placement downloads a device tensor rather than refusing"
                 );

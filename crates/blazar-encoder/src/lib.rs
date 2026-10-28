@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `blazar-encoder` — the media-encoder abstraction (architecture §3.1, §6).
 //!
 //! The "encoder backend" generalizes to a **media encoder** with video
@@ -8,24 +9,24 @@
 //! bindings land behind the `svtav1` feature.
 
 pub mod av1;
+pub mod config;
 pub mod cpu_preprocess;
 #[cfg(feature = "nvenc")]
 pub mod gpu_preprocess;
-pub mod config;
+pub mod nal;
+pub mod nvenc;
+#[cfg(feature = "enc-svtav1")]
+pub mod svtav1;
+#[cfg(all(feature = "enc-videotoolbox", target_os = "macos"))]
+pub mod videotoolbox;
+#[cfg(feature = "enc-vp9")]
+pub mod vp9;
 #[cfg(feature = "enc-x264")]
 pub mod x264;
 #[cfg(feature = "enc-x265")]
 pub mod x265;
-#[cfg(feature = "enc-svtav1")]
-pub mod svtav1;
-#[cfg(feature = "enc-vp9")]
-pub mod vp9;
-#[cfg(all(feature = "enc-videotoolbox", target_os = "macos"))]
-pub mod videotoolbox;
-pub mod nal;
-pub mod nvenc;
 
-use blazar_core::{FrameDesc, EncodedUnit, FrameRef, Timebase, TrackId};
+use blazar_core::{EncodedUnit, FrameDesc, FrameRef, Timebase, TrackId};
 use blazar_preprocess::{PreprocessStage, PreprocessedFrame};
 use thiserror::Error;
 

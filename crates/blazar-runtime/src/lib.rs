@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `blazar-runtime` — the operator API and Phase-1 pipeline spine
 //! (architecture §3, §4, §9).
 //!
@@ -244,13 +245,14 @@ impl<S: Sink> Stream<S> {
     /// emits its first keyframe, so `ensure_sink` runs when the first unit is
     /// actually produced (which may be several frames in for lookahead encoders).
     fn ensure_encoder(&mut self, frame: &FrameRef) -> Result<(), RuntimeError> {
-        self.ensure_encoder_for(
-            &frame.desc,
-            preprocess_placement::SourceLocation::Host,
-        )
+        self.ensure_encoder_for(&frame.desc, preprocess_placement::SourceLocation::Host)
     }
 
-    fn ensure_encoder_for(&mut self, desc: &FrameDesc, source: preprocess_placement::SourceLocation) -> Result<(), RuntimeError> {
+    fn ensure_encoder_for(
+        &mut self,
+        desc: &FrameDesc,
+        source: preprocess_placement::SourceLocation,
+    ) -> Result<(), RuntimeError> {
         if self.encoder_open {
             return Ok(());
         }
@@ -259,11 +261,7 @@ impl<S: Sink> Stream<S> {
         // given; `auto` walks the pool in preference order and takes the first
         // that opens a session, because availability cannot be queried cheaply.
         let candidates = if self.backend_auto {
-            backend_selection::candidates_for(
-                self.enc.output.codec,
-                self.backend_pool,
-                true,
-            )
+            backend_selection::candidates_for(self.enc.output.codec, self.backend_pool, true)
         } else {
             vec![self.enc.output.backend]
         };
@@ -294,7 +292,13 @@ impl<S: Sink> Stream<S> {
                 "resolved calibration"
             );
             let cfg = EncoderConfig::from_calibration(cal, key);
-            let built = build_encoder(&cfg, desc, self.enc.output.codec, backend, self.enc.timebase)?;
+            let built = build_encoder(
+                &cfg,
+                desc,
+                self.enc.output.codec,
+                backend,
+                self.enc.timebase,
+            )?;
             self.resolved_backend = Some(backend);
             let site = preprocess_placement::resolve(
                 self.preprocess,
@@ -306,7 +310,9 @@ impl<S: Sink> Stream<S> {
             self.resolved_preprocess = Some(site);
             tracing::info!(request_id = %self.request_id, placement = site.as_str(), "preprocess placement");
             self.encoder = Some(if site == preprocess_placement::PreprocessSite::Cpu {
-                Box::new(blazar_encoder::cpu_preprocess::CpuPreprocessEncoder::new(built))
+                Box::new(blazar_encoder::cpu_preprocess::CpuPreprocessEncoder::new(
+                    built,
+                ))
             } else {
                 built
             });
@@ -320,11 +326,20 @@ impl<S: Sink> Stream<S> {
             let key = codec_key(backend);
             let query = Query::new(&self.enc.identity, "*", key, self.enc.target);
             let Some(cal) = self.enc.index.resolve(&query) else {
-                rejected.push(format!("{}: no calibration", backend_selection::backend_name(backend)));
+                rejected.push(format!(
+                    "{}: no calibration",
+                    backend_selection::backend_name(backend)
+                ));
                 continue;
             };
             let cfg = EncoderConfig::from_calibration(cal, key);
-            match build_encoder(&cfg, desc, self.enc.output.codec, backend, self.enc.timebase) {
+            match build_encoder(
+                &cfg,
+                desc,
+                self.enc.output.codec,
+                backend,
+                self.enc.timebase,
+            ) {
                 Ok(encoder) => {
                     tracing::info!(
                         request_id = %self.request_id,
@@ -751,7 +766,10 @@ fn build_encoder(
                     Codec::H264
                 };
                 Ok(Box::new(VideoToolboxEncoder::new(
-                    desc.width, desc.height, codec, cfg,
+                    desc.width,
+                    desc.height,
+                    codec,
+                    cfg,
                 )?))
             }
             #[cfg(not(all(feature = "enc-videotoolbox", target_os = "macos")))]

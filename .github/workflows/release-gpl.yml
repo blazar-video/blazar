@@ -60,7 +60,7 @@ jobs:
         # silently lacked them would be an Apache wheel with a GPL label.
         if: matrix.platform == 'manylinux_2_28_x86_64'
         run: |
-          pip install dist/*.whl
+          pip install packaging/gpl/dist/*.whl
           python - <<'PY'
           import blazar
           present = set(blazar.backends())

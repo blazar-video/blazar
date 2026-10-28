@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Raw bindings to `libx265`.
 //!
 //! Generated from the system header at build time. Bindgen is not optional
@@ -14,7 +15,7 @@
 #[allow(
     rustdoc::broken_intra_doc_links,
     rustdoc::invalid_html_tags,
-    rustdoc::bare_urls,
+    rustdoc::bare_urls
 )]
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));

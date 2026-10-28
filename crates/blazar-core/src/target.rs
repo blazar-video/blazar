@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Operator target — states intent/constraint; resolves BOTH the calibration
 //! and the scheduling/lookahead policy (architecture §3).
 //!

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Link the extension module with chained fixups on macOS.
 //!
 //! rustc 1.95 + the Command Line Tools linker (ld-27) emit a classic

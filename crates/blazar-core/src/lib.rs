@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `blazar-core` — the shared contract types for the Blazar runtime.
 //!
 //! No I/O, no CUDA, no encoders. Just the value objects every other crate

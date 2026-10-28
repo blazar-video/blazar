@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Loading + validation with per-file safe failure (calibration-format §4.1).
 //!
 //! A single malformed calibration is rejected individually with a warning; it

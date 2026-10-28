@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `blazar-preprocess` — the preprocess stage (architecture §7).
 //!
 //! Between VAE output and encoder input there is mandatory, per-pixel work:
@@ -950,7 +951,11 @@ mod simd_tests {
     }
 
     fn max_diff(a: &[u8], b: &[u8]) -> u8 {
-        a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0)
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| x.abs_diff(*y))
+            .max()
+            .unwrap_or(0)
     }
 
     #[test]
@@ -1006,7 +1011,14 @@ mod vector_kernels {
     use super::*;
     use blazar_core::{ColorRange, ColorSpace, FrameBuffer, FrameDesc, FrameRef};
 
-    fn desc(w: u32, h: u32, layout: Layout, dtype: Dtype, range: ColorRange, cs: ColorSpace) -> FrameDesc {
+    fn desc(
+        w: u32,
+        h: u32,
+        layout: Layout,
+        dtype: Dtype,
+        range: ColorRange,
+        cs: ColorSpace,
+    ) -> FrameDesc {
         FrameDesc {
             width: w,
             height: h,
@@ -1083,7 +1095,11 @@ mod vector_kernels {
 
     fn max_diff(a: &[u8], b: &[u8]) -> u8 {
         assert_eq!(a.len(), b.len(), "plane length differs");
-        a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0)
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| x.abs_diff(*y))
+            .max()
+            .unwrap_or(0)
     }
 
     /// Every layout, dtype and range agrees with the scalar reference.
@@ -1124,8 +1140,18 @@ mod vector_kernels {
     fn u8_ignores_the_declared_range() {
         let (w, h) = (32usize, 16usize);
         let bytes = build(w, h, Layout::Thwc, Dtype::U8, ColorRange::Unit01);
-        let a = desc(w as u32, h as u32, Layout::Thwc, Dtype::U8, ColorRange::Unit01, ColorSpace::AssumedBt709);
-        let b = FrameDesc { range: ColorRange::FullU8, ..a.clone() };
+        let a = desc(
+            w as u32,
+            h as u32,
+            Layout::Thwc,
+            Dtype::U8,
+            ColorRange::Unit01,
+            ColorSpace::AssumedBt709,
+        );
+        let b = FrameDesc {
+            range: ColorRange::FullU8,
+            ..a.clone()
+        };
         let sa = scalar(&a, &bytes, w, h);
         let sb = scalar(&b, &bytes, w, h);
         assert_eq!(sa.0, sb.0);
@@ -1228,12 +1254,48 @@ mod bench_direct {
 
     fn cases() -> Vec<Case> {
         vec![
-            Case { name: "thwc_u8", layout: Layout::Thwc, dtype: Dtype::U8, size: 1, kind: simd::Kind::ThwcU8 },
-            Case { name: "bcthw_u8", layout: Layout::Bcthw, dtype: Dtype::U8, size: 1, kind: simd::Kind::BcthwU8 },
-            Case { name: "thwc_f32", layout: Layout::Thwc, dtype: Dtype::F32, size: 4, kind: simd::Kind::ThwcF32 },
-            Case { name: "bcthw_f32", layout: Layout::Bcthw, dtype: Dtype::F32, size: 4, kind: simd::Kind::BcthwF32 },
-            Case { name: "thwc_bf16", layout: Layout::Thwc, dtype: Dtype::Bf16, size: 2, kind: simd::Kind::ThwcBf16 },
-            Case { name: "bcthw_bf16", layout: Layout::Bcthw, dtype: Dtype::Bf16, size: 2, kind: simd::Kind::BcthwBf16 },
+            Case {
+                name: "thwc_u8",
+                layout: Layout::Thwc,
+                dtype: Dtype::U8,
+                size: 1,
+                kind: simd::Kind::ThwcU8,
+            },
+            Case {
+                name: "bcthw_u8",
+                layout: Layout::Bcthw,
+                dtype: Dtype::U8,
+                size: 1,
+                kind: simd::Kind::BcthwU8,
+            },
+            Case {
+                name: "thwc_f32",
+                layout: Layout::Thwc,
+                dtype: Dtype::F32,
+                size: 4,
+                kind: simd::Kind::ThwcF32,
+            },
+            Case {
+                name: "bcthw_f32",
+                layout: Layout::Bcthw,
+                dtype: Dtype::F32,
+                size: 4,
+                kind: simd::Kind::BcthwF32,
+            },
+            Case {
+                name: "thwc_bf16",
+                layout: Layout::Thwc,
+                dtype: Dtype::Bf16,
+                size: 2,
+                kind: simd::Kind::ThwcBf16,
+            },
+            Case {
+                name: "bcthw_bf16",
+                layout: Layout::Bcthw,
+                dtype: Dtype::Bf16,
+                size: 2,
+                kind: simd::Kind::BcthwBf16,
+            },
         ]
     }
 
@@ -1273,7 +1335,14 @@ mod bench_direct {
     }
 
     /// Scalar reference, timed with the same preallocated outputs.
-    fn scalar_into(case: &Case, d: &FrameDesc, bytes: &[u8], y: &mut [u8], u: &mut [u8], v: &mut [u8]) {
+    fn scalar_into(
+        case: &Case,
+        d: &FrameDesc,
+        bytes: &[u8],
+        y: &mut [u8],
+        u: &mut [u8],
+        v: &mut [u8],
+    ) {
         let (sy, su, sv) = match (case.layout, case.dtype) {
             (Layout::Thwc, Dtype::U8) => convert_thwc::<U8Sample>(bytes, d, W, H),
             (Layout::Bcthw, Dtype::U8) => convert_bcthw::<U8Sample>(bytes, d, W, H),
@@ -1304,7 +1373,10 @@ mod bench_direct {
             W,
             H
         );
-        println!("{:<11} {:>9} {:>9} {:>9}", "kind", "scalar", "vector", "stage");
+        println!(
+            "{:<11} {:>9} {:>9} {:>9}",
+            "kind", "scalar", "vector", "stage"
+        );
         for case in cases() {
             let bytes = build(case.size, case.dtype);
             let d = desc(&case);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! The driver-facing half of the NVENC backend.
 //!
 //! Everything here runs on a dedicated thread. That is not incidental:
@@ -244,7 +245,9 @@ impl VideoEncoder for NvencEncoder {
                     ..
                 } => bytes,
                 other => other.host_bytes().map(|b| b.to_vec()).ok_or_else(|| {
-                    EncodeError::Backend("NVENC needs host frames (device ingest is Phase 2)".into())
+                    EncodeError::Backend(
+                        "NVENC needs host frames (device ingest is Phase 2)".into(),
+                    )
                 })?,
             };
             owned.push((bytes, desc));
@@ -1028,9 +1031,7 @@ fn unit_from_bitstream(
     let raw = lock.data();
     let sample = match codec {
         // Unreachable: `open_session` rejects VP9 before this runs.
-        VideoCodec::Vp9 => {
-            return Err(EncodeError::Backend("NVENC cannot encode VP9".into()))
-        }
+        VideoCodec::Vp9 => return Err(EncodeError::Backend("NVENC cannot encode VP9".into())),
         VideoCodec::Av1 => {
             if keyframe && codec_config.is_none() {
                 *codec_config = Some(av1::av1c_from_keyframe(raw).map_err(|e| {
@@ -1088,7 +1089,9 @@ impl PitchedInput {
         let mut ptr = 0u64;
         let mut pitch = 0usize;
         // SAFETY: out-pointers are valid; the current context is the worker's.
-        let status = unsafe { sys::cuMemAllocPitch_v2(&mut ptr, &mut pitch, width as usize, rows as usize, 4) };
+        let status = unsafe {
+            sys::cuMemAllocPitch_v2(&mut ptr, &mut pitch, width as usize, rows as usize, 4)
+        };
         if status != sys::CUresult::CUDA_SUCCESS {
             return Err(EncodeError::Backend(format!(
                 "cuMemAllocPitch {width}x{rows}: {status:?}"
@@ -1365,8 +1368,23 @@ fn encode_device_batch(
     // A device frame advances by one plane in (C,T,H,W); THWC frames are whole.
     let pixels = desc.width as usize * desc.height as usize;
     let frame_step = match desc.layout {
-        blazar_core::Layout::Thwc => pixels * 3 * if matches!(desc.dtype, blazar_core::Dtype::F32) { 4 } else { 2 },
-        blazar_core::Layout::Bcthw => pixels * if matches!(desc.dtype, blazar_core::Dtype::F32) { 4 } else { 2 },
+        blazar_core::Layout::Thwc => {
+            pixels
+                * 3
+                * if matches!(desc.dtype, blazar_core::Dtype::F32) {
+                    4
+                } else {
+                    2
+                }
+        }
+        blazar_core::Layout::Bcthw => {
+            pixels
+                * if matches!(desc.dtype, blazar_core::Dtype::F32) {
+                    4
+                } else {
+                    2
+                }
+        }
     };
     let budget = (BATCH_STAGING_BUDGET / frame_bytes.max(1)).max(1);
     let max_per_chunk = POOL_CAPACITY.min(budget).max(1);
@@ -1461,7 +1479,16 @@ fn encode_device_chunk(
     stream
         .memcpy_htod(&ptrs, &mut dst_ptrs.slice_mut(0..batched))
         .map_err(|e| EncodeError::Backend(format!("upload dst pointers: {e}")))?;
-    converter.convert_batch_ptr(stream, ptr, dst_ptrs, &desc, batched as u32, total_frames, false, pitch)?;
+    converter.convert_batch_ptr(
+        stream,
+        ptr,
+        dst_ptrs,
+        &desc,
+        batched as u32,
+        total_frames,
+        false,
+        pitch,
+    )?;
     stream
         .synchronize()
         .map_err(|e| EncodeError::Backend(format!("sync before encode: {e}")))?;

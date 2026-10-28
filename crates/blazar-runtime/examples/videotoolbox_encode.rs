@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Encode a synthetic clip with Apple VideoToolbox and write an fMP4 file.
 //!
 //! ```sh
@@ -44,10 +45,15 @@ fn frame(index: u64, w: u32, h: u32) -> FrameRef {
         for col in 0..w {
             // Three moving gradients plus a checkerboard band, so there are
             // hard edges as well as smooth ones.
-            let checker = if ((col / 64) + (row / 64) + index as u32 / 8) % 2 == 0 { 0.15 } else { 0.0 };
+            let checker = if ((col / 64) + (row / 64) + index as u32 / 8) % 2 == 0 {
+                0.15
+            } else {
+                0.0
+            };
             let r = ((col as f32 / w as f32) + shift) % 1.0 * (1.0 - checker) + checker;
             let g = ((row as f32 / h as f32) + shift) % 1.0 * (1.0 - checker) + checker;
-            let b = (((col + row) as f32 / (w + h) as f32) + shift) % 1.0 * (1.0 - checker) + checker;
+            let b =
+                (((col + row) as f32 / (w + h) as f32) + shift) % 1.0 * (1.0 - checker) + checker;
             for component in [r, g, b] {
                 bytes.extend_from_slice(&component.to_le_bytes());
             }
@@ -68,7 +74,9 @@ fn frame(index: u64, w: u32, h: u32) -> FrameRef {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
-    let path = args.next().unwrap_or_else(|| "/tmp/videotoolbox.mp4".into());
+    let path = args
+        .next()
+        .unwrap_or_else(|| "/tmp/videotoolbox.mp4".into());
     let w: u32 = args.next().unwrap_or_else(|| "1920".into()).parse()?;
     let h: u32 = args.next().unwrap_or_else(|| "1080".into()).parse()?;
     let frames: u64 = args.next().unwrap_or_else(|| "120".into()).parse()?;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Bindings to libvpx for VP9 encoding.
 //!
 //! Generated at build time from the header pkg-config reports, so the struct
@@ -14,10 +15,9 @@
 #[allow(
     rustdoc::broken_intra_doc_links,
     rustdoc::invalid_html_tags,
-    rustdoc::bare_urls,
+    rustdoc::bare_urls
 )]
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 pub use generated::*;
-

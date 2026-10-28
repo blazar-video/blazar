@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Output-bitstream slot bookkeeping for the asynchronous NVENC pipeline.
 //!
 //! NVENC's output is not necessarily the slot you just submitted: with
@@ -19,7 +20,9 @@ enum SlotState {
     /// yet. A batched conversion reserves every destination before the kernel
     /// runs, but only submission order matters for draining.
     Reserved,
-    InFlight { expected_pts: u64 },
+    InFlight {
+        expected_pts: u64,
+    },
 }
 
 /// A fixed set of output slots plus the order in which they were submitted.

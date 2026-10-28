@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! `blazar-sink` — the output sink contract (architecture §6).
 //!
 //! `write` takes structured [`EncodedUnit`]s (not raw bytes) so a file muxer

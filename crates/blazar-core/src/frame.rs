@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Frame handoff contract — the shape crossing the ingest boundary.
 //!
 //! A [`FrameRef`] is a tagged union over residency (architecture §7.1): a

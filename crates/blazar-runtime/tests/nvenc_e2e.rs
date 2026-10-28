@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! End-to-end hardware smoke test: host frame → preprocess → NVENC → fMP4 file.
 //!
 //! Compiled only with `--features nvenc` and only meaningful on a machine with
