@@ -32,7 +32,7 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: manylinux_2_28_x86_64
-            args: --release --out dist --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,opus
+            args: --release --out dist --features enc-svtav1,enc-vp9,opus
             manylinux: "2_28"
           - os: ubuntu-latest
             platform: manylinux_2_28_aarch64
@@ -40,7 +40,7 @@ jobs:
             manylinux: "2_28"
           - os: macos-latest
             platform: macosx_11_0_arm64
-            args: --release --out dist --features enc-videotoolbox
+            args: --release --out dist --features enc-videotoolbox,opus
             manylinux: auto
     steps:
       - uses: actions/checkout@v4
@@ -94,17 +94,20 @@ jobs:
         with:
           python-version: "3.11"
       - run: sudo apt-get install -y libopus-dev pkg-config && pip install maturin
-      - run: cd bindings/python && maturin build --release --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,opus --out dist
+      - run: cd bindings/python && maturin build --release --features enc-svtav1,enc-vp9,opus --out dist
       - run: pip install bindings/python/dist/*.whl
       - run: |
           python - <<'PY'
           import blazar
           present = set(blazar.backends())
           print("blazar", blazar.__version__, "backends:", sorted(present))
-          missing = {"nvenc", "svtav1", "vp9"} - present
+          missing = {"svtav1", "vp9", "opus"} - present
           assert not missing, f"wheel is missing {sorted(missing)}; got {sorted(present)}"
-          # The Apache wheel must not carry copyleft codecs.
+          # The Apache wheel must not carry copyleft codecs, and NVENC is a
+          # source build: cudarc needs CUDA headers, which the manylinux image
+          # does not have.
           assert "x264" not in present and "x265" not in present, sorted(present)
+          assert "nvenc" not in present, sorted(present)
           PY
 
   publish-pypi:

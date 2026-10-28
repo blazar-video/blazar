@@ -36,7 +36,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
             manylinux: "2_28"
             setup: sudo apt-get update && sudo apt-get install -y libx264-dev libx265-dev pkg-config
-            features: nvenc,gpu-preprocess,enc-svtav1,enc-vp9,enc-x264,enc-x265,opus
+            features: enc-svtav1,enc-vp9,enc-x264,enc-x265,opus
           - os: macos-latest
             platform: macosx_11_0_arm64
             target: aarch64-apple-darwin
@@ -56,7 +56,7 @@ jobs:
           manylinux: ${{ matrix.manylinux }}
           before-script-linux: |
             if command -v apt-get >/dev/null; then
-              apt-get update && apt-get install -y libx264-dev libx265-dev libopus-dev pkg-config
+              apt-get update && apt-get install -y libx264-dev libx265-dev libopus-dev libsvtav1-dev libvpx-dev pkg-config
             fi
           args: --release --out dist --features pyo3/extension-module,${{ matrix.features }}
       - uses: actions/upload-artifact@v4
