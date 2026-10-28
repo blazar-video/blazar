@@ -26,6 +26,11 @@ jobs:
   wheels:
     name: wheel (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
+    env:
+      # audiopus_sys vendors opus 1.3, whose CMakeLists declares
+      # cmake_minimum_required(3.1) — rejected by CMake 4. This is the documented
+      # escape hatch and is only about the policy floor, not the C standard.
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
     strategy:
       fail-fast: false
       matrix:
@@ -91,6 +96,12 @@ jobs:
     # runner to be tested.
     name: smoke (backends are what we ship)
     runs-on: ubuntu-latest
+    env:
+      # audiopus_sys vendors opus 1.3, whose CMakeLists declares
+      # cmake_minimum_required(3.1) — rejected by CMake 4. This is the documented
+      # escape hatch and is only about the policy floor, not the C standard.
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
