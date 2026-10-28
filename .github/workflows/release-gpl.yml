@@ -49,6 +49,9 @@ jobs:
         with:
           python-version: "3.11"
       - run: ${{ matrix.setup }}
+      - name: macOS build dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake nasm opus svt-av1 libvpx x264 x265 pkg-config
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: packaging/gpl
@@ -56,7 +59,7 @@ jobs:
           manylinux: ${{ matrix.manylinux }}
           before-script-linux: |
             if command -v apt-get >/dev/null; then
-              apt-get update && apt-get install -y libx264-dev libx265-dev libopus-dev libsvtav1-dev libvpx-dev pkg-config
+              apt-get update && apt-get install -y cmake nasm build-essential pkg-config libopus-dev libsvtav1-dev libvpx-dev libx264-dev libx265-dev
             fi
           args: --release --out dist --features pyo3/extension-module,${{ matrix.features }}
       - uses: actions/upload-artifact@v4
@@ -74,6 +77,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: macOS build dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake nasm opus svt-av1 libvpx x264 x265 pkg-config
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: packaging/gpl
@@ -92,7 +98,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: sudo apt-get update && sudo apt-get install -y libx264-dev libx265-dev pkg-config
+      - run: sudo apt-get update && sudo apt-get install -y cmake nasm build-essential pkg-config libopus-dev libsvtav1-dev libvpx-dev libx264-dev libx265-dev
       - run: pip install maturin
       - run: cd packaging/gpl && maturin build --release --features pyo3/extension-module,enc-x264,enc-x265,enc-svtav1,enc-vp9,opus --out dist
       - run: pip install packaging/gpl/dist/*.whl
