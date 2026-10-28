@@ -36,7 +36,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
             manylinux: "2_28"
             setup: sudo apt-get update && sudo apt-get install -y libx264-dev libx265-dev pkg-config
-            features: enc-svtav1,enc-vp9,enc-x264,enc-x265,opus
+            features: nvenc,gpu-preprocess,enc-svtav1,enc-vp9,enc-x264,enc-x265,opus
           - os: macos-latest
             platform: macosx_11_0_arm64
             target: aarch64-apple-darwin
@@ -100,7 +100,7 @@ jobs:
           python-version: "3.11"
       - run: sudo apt-get update && sudo apt-get install -y cmake nasm build-essential pkg-config libopus-dev libsvtav1-dev libvpx-dev libx264-dev libx265-dev
       - run: pip install maturin
-      - run: cd packaging/gpl && maturin build --release --features pyo3/extension-module,enc-x264,enc-x265,enc-svtav1,enc-vp9,opus --out dist
+      - run: cd packaging/gpl && maturin build --release --features pyo3/extension-module,nvenc,gpu-preprocess,enc-x264,enc-x265,enc-svtav1,enc-vp9,opus --out dist
       - run: pip install packaging/gpl/dist/*.whl
       - run: |
           python - <<'PY'
