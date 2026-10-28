@@ -475,10 +475,11 @@ dependencies = [
 [[package]]
 name = "nvidia-video-codec-sdk"
 version = "0.4.0"
-source = "git+https://github.com/jgh-/nvidia-video-codec-sdk?rev=4784d06#4784d06588298f544aeefee01f12539f7a50f9de"
+source = "git+https://github.com/jgh-/nvidia-video-codec-sdk?rev=62335a5#62335a5ae7d16b6e43d028b8d61045ffd8783889"
 dependencies = [
  "cudarc",
  "lazy_static",
+ "libloading 0.8.9",
 ]
 
 [[package]]
