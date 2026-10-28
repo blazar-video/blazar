@@ -1,0 +1,68 @@
+name: Hardware
+
+# The suites that need a real encoder cannot run on a hosted runner: there is no
+# NVENC session, no VideoToolbox hardware, and no GPU at all. They run here,
+# nightly and on demand, on a self-hosted runner labelled `gpu-nvenc` or
+# `macos-videotoolbox`.
+#
+# This is deliberately separate from ci.yml so a flaky hardware box cannot block
+# a merge, and so a red hardware job is visibly a hardware problem.
+
+on:
+  schedule:
+    - cron: "0 6 * * *"   # 06:00 UTC nightly
+  workflow_dispatch:
+
+concurrency:
+  group: hardware-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  nvenc:
+    name: nvenc (${{ matrix.runner }})
+    runs-on: [self-hosted, gpu-nvenc]
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [linux]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/calibrations
+          path: calibrations
+      - name: hardware tests
+        env:
+          NVIDIA_VIDEO_CODEC_SDK_PATH: /usr/lib/wsl/lib
+          LD_LIBRARY_PATH: /usr/lib/wsl/lib:/usr/local/cuda/lib64
+          BLAZAR_CALIBRATIONS: ${{ github.workspace }}/calibrations/default
+        run: |
+          cargo test --release -p blazar-encoder --features nvenc \
+            --test nvenc_hardware --test gpu_preprocess
+          cargo test --release -p blazar-runtime --features nvenc \
+            --test nvenc_e2e -- --ignored
+      - name: binding tests that need a session
+        env:
+          NVIDIA_VIDEO_CODEC_SDK_PATH: /usr/lib/wsl/lib
+          LD_LIBRARY_PATH: /usr/lib/wsl/lib:/usr/local/cuda/lib64
+          BLAZAR_CALIBRATIONS: ${{ github.workspace }}/calibrations/default
+        run: |
+          python -m venv .venv && . .venv/bin/activate
+          pip install maturin pytest numpy
+          (cd bindings/python && maturin develop --release --features nvenc,enc-x264)
+          (cd bindings/python && python -m pytest tests/test_submit_dispatch.py \
+            tests/test_backend_selection.py tests/test_preprocess.py -q)
+
+  videotoolbox:
+    name: videotoolbox (macOS)
+    runs-on: [self-hosted, macos-videotoolbox]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/calibrations
+          path: calibrations
+      - run: cargo test --release -p blazar-encoder --features enc-videotoolbox --test videotoolbox
+      - run: cargo test --release -p blazar-runtime --features enc-videotoolbox --test videotoolbox_e2e
+        env:
+          BLAZAR_CALIBRATIONS: ${{ github.workspace }}/calibrations/default

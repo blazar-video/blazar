@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  rust:
+    # The portable surface: no NVENC, no VideoToolbox, no codec SDK headers.
+    # Everything here must pass on a machine with no GPU, because that is what a
+    # hosted runner is.
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  rust-x264:
+    # A CPU codec end to end, so the encoder seam is not only ever exercised by
+    # the mock. Linux only: the dependency is a stock apt package there.
+    name: rust (x264)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libx264-dev pkg-config
+      - run: cargo test -p blazar-encoder -p blazar-runtime --features enc-x264
+
+  python:
+    # Builds the extension and runs the tests that need no GPU. The hardware
+    # suites (NVENC, VideoToolbox) run on a self-hosted runner; see
+    # .github/workflows/hardware.yml and RELEASING.md.
+    name: python (${{ matrix.os }}, ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/calibrations
+          path: calibrations
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: bindings/python
+          args: --release --out dist
+          manylinux: auto
+      - run: pip install dist/*.whl pytest numpy
+      - name: tests that need no encoder hardware
+        env:
+          BLAZAR_CALIBRATIONS: ${{ github.workspace }}/calibrations/default
+        # test_encoder/test_memory_sink drive the mock backend. Everything else
+        # in tests/ opens a real session, which a hosted runner cannot do.
+        run: python -m pytest tests/test_encoder.py tests/test_memory_sink.py -q
+        working-directory: bindings/python
+
+  commit-hygiene:
+    name: license headers and secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: no committed artifacts
+        run: |
+          if git ls-files | grep -E '(\.DS_Store|\.pyc$|/target/|\.mp4$|\.mkv$)'; then
+            echo "::error::committed build or media artifacts"
+            exit 1
+          fi
+      - name: SPDX on every Rust source
+        run: |
+          missing=$(grep -rL "SPDX-License-Identifier" --include='*.rs' crates bindings || true)
+          if [ -n "$missing" ]; then
+            echo "::error::missing SPDX headers:"; echo "$missing"; exit 1
+          fi
