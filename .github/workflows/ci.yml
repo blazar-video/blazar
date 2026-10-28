@@ -32,9 +32,13 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - run: cargo doc --workspace --no-deps
+      # The -sys crates are FFI bindings whose build scripts require libvpx,
+      # x265 and SVT-AV1 headers. Linting them would mean installing GPL
+      # libraries on every runner for no signal; the x264 job exercises a real
+      # encoder end to end instead.
+      - run: cargo clippy --workspace --all-targets --exclude blazar-vpx-sys --exclude blazar-x265-sys --exclude blazar-svtav1-sys -- -D warnings
+      - run: cargo test --workspace --exclude blazar-vpx-sys --exclude blazar-x265-sys --exclude blazar-svtav1-sys
+      - run: cargo doc --workspace --exclude blazar-vpx-sys --exclude blazar-x265-sys --exclude blazar-svtav1-sys --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
 

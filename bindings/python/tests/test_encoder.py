@@ -22,8 +22,11 @@ import blazar
 # blazar/bindings/python/tests/test_encoder.py -> blazar-video/calibrations/default
 DEFAULT_CALIBRATIONS = Path(__file__).resolve().parents[4] / "calibrations" / "default"
 CALIBRATIONS = Path(os.environ.get("BLAZAR_CALIBRATIONS", DEFAULT_CALIBRATIONS))
-# The mock's calibration lives beside default/, not inside it.
-MOCK_CALIBRATIONS = Path(__file__).resolve().parents[4] / "calibrations" / "mock"
+# The mock's calibration lives beside default/, not inside it. Derived from
+# CALIBRATIONS rather than from the file's own path: CI checks the calibrations
+# repository out next to the project, so the directory depth differs from a
+# developer's checkout, and BLAZAR_CALIBRATIONS already points at default/.
+MOCK_CALIBRATIONS = CALIBRATIONS.parent / "mock"
 
 # Plausible AV1 config record so the mock can open a stream. Not a real av1C for
 # the synthetic payload; only the container structure is under test here.
