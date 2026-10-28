@@ -12,11 +12,19 @@ use blazar_calibration::{load_str, CalibrationIndex, Query};
 use blazar_core::{ModelIdentity, Target};
 
 fn calibrations_dir() -> PathBuf {
+    // The calibrations live in their own repository. Locally they sit beside the
+    // project; in CI they are checked out into the workspace, so the environment
+    // wins when it is set. The python tests use the same variable.
+    if let Ok(path) = std::env::var("BLAZAR_CALIBRATIONS") {
+        return PathBuf::from(path)
+            .canonicalize()
+            .expect("BLAZAR_CALIBRATIONS must point at a directory");
+    }
     // crate dir is blazar/crates/blazar-calibration; repo calibrations/ is ../../../calibrations
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../calibrations/default")
         .canonicalize()
-        .expect("calibrations/default must exist")
+        .expect("calibrations/default must exist, or set BLAZAR_CALIBRATIONS")
 }
 
 fn load_all() -> CalibrationIndex {

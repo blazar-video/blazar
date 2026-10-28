@@ -21,12 +21,19 @@ jobs:
     # hosted runner is.
     name: rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    env:
+      # The calibration tests read the shipped defaults from their own repo.
+      BLAZAR_CALIBRATIONS: ${{ github.workspace }}/calibrations/default
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/calibrations
+          path: calibrations
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
