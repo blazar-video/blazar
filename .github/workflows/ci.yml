@@ -95,6 +95,11 @@ jobs:
             echo "::error::committed build or media artifacts"
             exit 1
           fi
+      - name: versions agree, and the changelog has a section for them
+        # Four files state the version and the release workflow reads the
+        # changelog; a mismatch publishes a wheel whose name disagrees with its
+        # metadata, which is only discovered after the upload.
+        run: python3 scripts/check_versions.py
       - name: SPDX on every Rust source
         run: |
           missing=$(grep -rL "SPDX-License-Identifier" --include='*.rs' crates bindings || true)
