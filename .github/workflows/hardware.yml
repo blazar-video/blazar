@@ -8,9 +8,10 @@ name: Hardware
 # This is deliberately separate from ci.yml so a flaky hardware box cannot block
 # a merge, and so a red hardware job is visibly a hardware problem.
 
+# Disabled on a schedule until the self-hosted runners exist: a queued job with no
+# runner is noise, and a red one is worse. Run it by hand once the labels
+# `gpu-nvenc` and `macos-videotoolbox` resolve.
 on:
-  schedule:
-    - cron: "0 6 * * *"   # 06:00 UTC nightly
   workflow_dispatch:
 
 concurrency:

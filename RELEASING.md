@@ -39,16 +39,23 @@ in rather than accumulated (see the `[Feat]` commits that removed
 | Workflow | Runs on | Covers |
 |---|---|---|
 | `ci.yml` | every push and PR | fmt, clippy `-D warnings`, workspace tests, rustdoc `-D warnings`, x264 round trip, mock-backend Python tests on 3.11/3.13 × Linux/macOS, license headers, no committed artifacts |
-| `hardware.yml` | nightly + manual | NVENC and VideoToolbox suites on self-hosted runners |
+| `hardware.yml` | manual | NVENC and VideoToolbox suites on self-hosted runners |
 
 Hosted runners have no GPU, so the NVENC and VideoToolbox suites **cannot** run
 there. They are a separate workflow on purpose: a flaky hardware box must not be
 able to block a merge, and a red hardware job should be visibly a hardware
 problem rather than a code one.
 
-A release requires a green `ci.yml` on the release commit **and** a green
-`hardware.yml` within the previous 24 hours. If the hardware runner is down, the
-release waits — the alternative is shipping an encoder nobody executed.
+A release requires a green `ci.yml` on the release commit. That is only the CPU
+surface, so it is a floor, not a guarantee: nothing in it opens an NVENC or
+VideoToolbox session.
+
+**While the self-hosted runners are not yet running**, the hardware suites are
+manual (`workflow_dispatch`). A release in that state must say so in its notes —
+"validated on the CPU path only; hardware suites not run" — rather than imply
+coverage it does not have. Once the runners exist, the gate becomes: green
+`ci.yml` **and** a green `hardware.yml` within the previous 24 hours, and a
+release waits for hardware rather than shipping an encoder nobody executed.
 
 ## Cutting a release
 
