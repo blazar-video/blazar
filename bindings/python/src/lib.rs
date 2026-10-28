@@ -112,6 +112,12 @@ enum Job {
         boundary: Option<Boundary>,
         keep_alive: Option<Box<dyn std::any::Any + Send>>,
     },
+    /// Interleaved float samples, encoded on the worker's stream.
+    Audio {
+        samples: Vec<f32>,
+        sample_rate: u32,
+        reply: SyncSender<Result<(), String>>,
+    },
     Flush(SyncSender<Result<(), String>>),
     Close(SyncSender<Result<(), String>>),
 }
@@ -354,6 +360,18 @@ fn worker_main(
             Err(_) => break, // sender dropped: finalize below
         };
         match job {
+            Job::Audio {
+                samples,
+                sample_rate,
+                reply,
+            } => {
+                shared.queued.fetch_sub(1, Ordering::Relaxed);
+                let result = stream
+                    .submit_audio(&samples, sample_rate)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string());
+                let _ = reply.send(result);
+            }
             Job::Frame(job) => {
                 shared.queued.fetch_sub(1, Ordering::Relaxed);
                 publish_backend(&stream, &shared);
@@ -808,6 +826,7 @@ impl PyEncoder {
         preprocess = "auto",
         backend_pool = "any",
         layout = None,
+        audio = None,
     ))]
     fn new(
         py: Python<'_>,
@@ -824,6 +843,7 @@ impl PyEncoder {
         preprocess: &str,
         backend_pool: &str,
         layout: Option<&str>,
+        audio: Option<&str>,
     ) -> PyResult<Self> {
         // Validated here so a typo fails before a frame is submitted.
         let initial_layout = match layout {
@@ -918,10 +938,25 @@ impl PyEncoder {
             preprocess.parse().map_err(|e: blazar_runtime::preprocess_placement::PlacementError| {
                 PyValueError::new_err(e.to_string())
             })?;
-        let stream = runtime
+        #[allow(unused_mut)]
+        let mut stream = runtime
             .open_stream(request_id)
             .with_preprocess(placement)
             .with_backend_auto(backend_auto, pool);
+        match audio {
+            None | Some("none") => {}
+            #[cfg(feature = "opus")]
+            Some("opus") => {
+                stream = stream
+                    .with_opus_audio(2, 96)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            }
+            Some(other) => {
+                return Err(PyValueError::new_err(format!(
+                    "audio must be \"opus\" or \"none\" (got {other:?}); AAC is not implemented"
+                )))
+            }
+        }
 
         let (job_tx, job_rx) = mpsc::sync_channel::<Job>(queue_depth);
         let (event_tx, event_rx) = mpsc::channel::<WorkerEvent>();
@@ -1405,6 +1440,52 @@ impl PyEncoder {
             .lock()
             .map(|value| value.clone())
             .unwrap_or(None))
+    }
+
+    /// Queue interleaved float samples in `[-1, 1]` at 48 kHz.
+    ///
+    /// The encoder buffers to whole 20 ms frames, so any length is accepted; the
+    /// remainder is flushed on `close()`. Requires `Encoder(audio="opus")`.
+    #[pyo3(signature = (samples, sample_rate = 48000))]
+    fn submit_audio(
+        &mut self,
+        py: Python<'_>,
+        samples: &Bound<'_, PyAny>,
+        sample_rate: u32,
+    ) -> PyResult<()> {
+        if let Some(err) = self.error_message() {
+            return Err(PyRuntimeError::new_err(err));
+        }
+        let jobs = self
+            .jobs
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("encoder state lock poisoned"))?
+            .clone()
+            .ok_or_else(|| closed_error(&self.request_id))?;
+        // A numpy array converts through the buffer protocol; a plain sequence
+        // of floats converts directly. Either way the worker gets an owned
+        // Vec<f32> and needs no reference to caller memory.
+        let samples: Vec<f32> = if samples.hasattr("__array_interface__")? {
+            samples
+                .call_method1("__array__", ())?
+                .call_method1("astype", ("float32",))?
+                .extract::<Vec<f32>>()?
+        } else {
+            samples
+                .extract::<Vec<f32>>()
+                .map_err(|e| PyValueError::new_err(format!("samples must be floats: {e}")))?
+        };
+        let (tx, rx) = mpsc::sync_channel(1);
+        jobs.send(Job::Audio {
+            samples,
+            sample_rate,
+            reply: tx,
+        })
+        .map_err(|_| closed_error(&self.request_id))?;
+        self.shared.queued.fetch_add(1, Ordering::Relaxed);
+        rx.recv()
+            .map_err(|_| PyRuntimeError::new_err("worker went away"))?
+            .map_err(PyRuntimeError::new_err)
     }
 
     /// `"host"` or `"device"`: which path this stream takes, decided by the

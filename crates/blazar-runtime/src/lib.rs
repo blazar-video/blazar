@@ -141,6 +141,10 @@ impl<S: Sink> Encoder<S> {
             sink_open: false,
             last_desc: None,
             closed: false,
+            audio: None,
+            #[cfg(feature = "enc-opus")]
+            opus: None,
+            pending_audio: Vec::new(),
             backend_auto: false,
             backend_pool: backend_selection::BackendPool::Any,
             resolved_backend: None,
@@ -172,6 +176,14 @@ pub struct Stream<S: Sink> {
     backend_pool: backend_selection::BackendPool,
     /// The backend that actually answered, once a frame has opened the stream.
     resolved_backend: Option<VideoEncoderBackend>,
+    /// Audio track parameters, when the stream carries audio.
+    audio: Option<blazar_core::AudioTrackParams>,
+    /// Opus encoder, created when audio is configured.
+    #[cfg(feature = "enc-opus")]
+    opus: Option<blazar_encoder::opus::OpusAudioEncoder>,
+    /// Audio units encoded before the sink was open (the sink opens on the
+    /// first video keyframe, which may arrive after the first audio packet).
+    pending_audio: Vec<blazar_core::EncodedUnit>,
     /// Where the caller asked for RGB→NV12 to happen.
     preprocess: preprocess_placement::PreprocessPlacement,
     /// What `auto` resolved to, once the backend and frame location are known.
@@ -179,6 +191,71 @@ pub struct Stream<S: Sink> {
 }
 
 impl<S: Sink> Stream<S> {
+    /// Carry an Opus audio track alongside the video.
+    ///
+    /// Created here rather than per submit so a missing `libopus` is a
+    /// construction error, not a surprise halfway through a clip. The OpusHead
+    /// written to the container carries the encoder's pre-skip, which is what
+    /// keeps audio and video aligned.
+    #[cfg(feature = "enc-opus")]
+    pub fn with_opus_audio(
+        mut self,
+        channels: u8,
+        bitrate_kbps: u32,
+    ) -> Result<Self, RuntimeError> {
+        let encoder =
+            blazar_encoder::opus::OpusAudioEncoder::new(u32::from(channels) as u16, bitrate_kbps)
+                .map_err(RuntimeError::Encode)?;
+        self.audio = Some(blazar_core::AudioTrackParams {
+            codec: blazar_core::AudioCodec::Opus,
+            sample_rate: 48_000,
+            channels,
+            extradata: opus_head(channels, encoder.pre_skip()),
+        });
+        self.opus = Some(encoder);
+        Ok(self)
+    }
+
+    /// Encode interleaved float samples in `[-1, 1]`.
+    ///
+    /// 48 kHz only: that is what Opus codes natively and what fMP4 carries, so
+    /// a caller with another rate resamples once rather than us guessing.
+    #[cfg(feature = "enc-opus")]
+    pub fn submit_audio(
+        &mut self,
+        samples: &[f32],
+        sample_rate: u32,
+    ) -> Result<Vec<blazar_core::EncodedUnit>, RuntimeError> {
+        if self.audio.is_none() {
+            return Err(RuntimeError::AudioUnsupported);
+        }
+        if sample_rate != 48_000 {
+            return Err(RuntimeError::AudioUnsupported);
+        }
+        let timebase = self.enc.timebase;
+        let mut units = Vec::new();
+        {
+            let encoder = self.opus.as_mut().ok_or(RuntimeError::AudioUnsupported)?;
+            let packets = encoder.push(samples)?;
+            units.extend(packets.into_iter().map(|p| opus_unit(p, timebase)));
+        }
+        self.pending_audio.extend(units.iter().cloned());
+        self.flush_pending_audio()?;
+        Ok(units)
+    }
+
+    /// Write any audio units the sink can take now.
+    fn flush_pending_audio(&mut self) -> Result<(), RuntimeError> {
+        if !self.sink_open || self.pending_audio.is_empty() {
+            return Ok(());
+        }
+        for unit in std::mem::take(&mut self.pending_audio) {
+            self.enc.sink.write(&unit)?;
+        }
+        self.enc.sink.flush()?;
+        Ok(())
+    }
+
     /// Let the runtime pick the backend from `pool` instead of naming one.
     ///
     /// `auto` is a constraint plus a preference: hardware is tried first and
@@ -428,7 +505,7 @@ impl<S: Sink> Stream<S> {
                 fps: desc.fps,
                 extradata,
             },
-            audio: None, // video-only in Phase 1
+            audio: self.audio.clone(),
             container: self.enc.output.container,
         };
         self.enc.sink.open(params)?;
@@ -610,8 +687,14 @@ impl<S: Sink> Stream<S> {
         Ok(seq)
     }
 
-    /// Audio submit — present for API shape; unsupported in Phase 1.
-    pub fn submit_audio(&mut self) -> Result<u64, RuntimeError> {
+    /// Audio submit without the `enc-opus` feature: the API exists so callers
+    /// get a clear error rather than a missing method.
+    #[cfg(not(feature = "enc-opus"))]
+    pub fn submit_audio(
+        &mut self,
+        _samples: &[f32],
+        _sample_rate: u32,
+    ) -> Result<Vec<blazar_core::EncodedUnit>, RuntimeError> {
         Err(RuntimeError::AudioUnsupported)
     }
 
@@ -656,6 +739,17 @@ impl<S: Sink> Stream<S> {
             // before `close()` — SGLang SIGKILLs its scheduler on shutdown.
             self.enc.sink.flush()?;
         }
+        // Flush the audio tail before the sink closes: a partial frame that is
+        // never written is a clipped word at the end of every clip.
+        #[cfg(feature = "enc-opus")]
+        if let Some(encoder) = self.opus.as_mut() {
+            let tail = encoder.finish()?;
+            let timebase = self.enc.timebase;
+            for packet in tail {
+                self.pending_audio.push(opus_unit(packet, timebase));
+            }
+        }
+        self.flush_pending_audio()?;
         if self.sink_open {
             self.enc.sink.close()?;
         }
@@ -683,6 +777,44 @@ fn wrap_gpu(enc: Box<dyn VideoEncoder>) -> Result<Box<dyn VideoEncoder>, Runtime
 #[allow(dead_code)] // only called from the codec arms below
 fn wrap_gpu(enc: Box<dyn VideoEncoder>) -> Result<Box<dyn VideoEncoder>, RuntimeError> {
     Ok(enc)
+}
+
+/// The `dOps` payload: an OpusHead, which is what a decoder needs to know the
+/// channel layout and, crucially, how many samples to discard at the start.
+#[cfg(feature = "enc-opus")]
+fn opus_head(channels: u8, pre_skip: u64) -> Vec<u8> {
+    let mut head = Vec::with_capacity(19);
+    head.extend_from_slice(b"OpusHead");
+    head.push(1); // version
+    head.push(channels);
+    head.extend_from_slice(&(pre_skip.min(u64::from(u16::MAX)) as u16).to_le_bytes());
+    head.extend_from_slice(&48_000u32.to_le_bytes());
+    head.extend_from_slice(&0i16.to_le_bytes()); // output gain
+    head.push(0); // channel mapping family: mono/stereo
+    head
+}
+
+/// Timestamps are 48 kHz samples; the container runs on its own timebase.
+#[cfg(feature = "enc-opus")]
+fn opus_unit(
+    packet: blazar_encoder::opus::OpusPacket,
+    timebase: Timebase,
+) -> blazar_core::EncodedUnit {
+    // Signed because the first packets sit before zero by the pre-skip, and
+    // oxideav rejects a negative timestamp: clamp at zero and let the OpusHead
+    // pre-skip tell the decoder what to discard.
+    let scale = |samples: i64| {
+        let ticks = (i128::from(samples) * i128::from(timebase.ticks_per_second()) / 48_000) as i64;
+        ticks.max(0) as u64
+    };
+    blazar_core::EncodedUnit {
+        track_id: blazar_core::TrackId::Audio,
+        bytes: packet.data,
+        pts: blazar_core::Pts(scale(packet.pts)),
+        dts: blazar_core::Pts(scale(packet.pts)),
+        keyframe: true,
+        duration: scale(packet.duration as i64),
+    }
 }
 
 /// Calibration key for a backend. Pair-shaped (`nvenc_h264`), because a

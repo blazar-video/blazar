@@ -25,9 +25,9 @@ use crate::EncodeError;
 pub struct OpusPacket {
     /// The compressed bytes.
     pub data: Vec<u8>,
-    /// Presentation timestamp in 48 kHz samples from the start of the stream,
-    /// already shifted by the pre-skip so sample zero plays where it should.
-    pub pts: u64,
+    /// Presentation timestamp in 48 kHz samples, already shifted by the
+    /// pre-skip: negative for the packets the decoder will partly discard.
+    pub pts: i64,
     /// Always `frame_size` samples: every Opus packet here is the same length.
     pub duration: u64,
 }
@@ -150,7 +150,7 @@ impl OpusAudioEncoder {
             data: out,
             // The decoder will skip `pre_skip` samples, so the first packet is
             // presented that much earlier than the samples it carries.
-            pts: pts.wrapping_sub(self.pre_skip),
+            pts: pts as i64 - self.pre_skip as i64,
             duration: self.frame_size as u64,
         })
     }
@@ -200,7 +200,7 @@ mod tests {
         let pre_skip = enc.pre_skip();
         assert!(pre_skip > 0, "an Opus encoder always delays the signal");
         let packets = enc.push(&sine(960, 2)).expect("push encodes");
-        assert_eq!(packets[0].pts, 0u64.wrapping_sub(pre_skip));
+        assert_eq!(packets[0].pts, -(pre_skip as i64));
     }
 
     #[test]
