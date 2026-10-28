@@ -131,6 +131,7 @@ impl Scratch {
 ///
 /// # Safety
 /// The caller must have checked [`available`].
+#[allow(clippy::too_many_arguments)] // the kernel ABI, not a design choice
 #[target_feature(enable = "avx2,fma,ssse3,sse4.1")]
 pub(crate) unsafe fn convert(
     kind: Kind,
@@ -232,6 +233,7 @@ pub(crate) unsafe fn convert(
 ///
 /// # Safety
 /// `base` must cover the whole frame; the outputs hold `w` elements.
+#[allow(clippy::too_many_arguments)] // the row ABI, not a design choice
 unsafe fn row(
     kind: Kind,
     ctx: &Ctx<'_>,
