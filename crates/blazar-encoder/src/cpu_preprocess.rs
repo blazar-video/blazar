@@ -22,7 +22,7 @@ use crate::{EncodeError, VideoEncoder};
 /// is not wanted.
 ///
 /// Device tensors are not handled here — the caller that submits one has to
-/// download it first, which is what [`GpuPreprocessEncoder`] exists to avoid.
+/// download it first, which is what `GpuPreprocessEncoder` exists to avoid.
 pub struct CpuPreprocessEncoder {
     inner: Box<dyn VideoEncoder>,
     cpu: CpuPreprocess,

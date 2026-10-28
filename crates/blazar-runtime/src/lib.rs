@@ -196,7 +196,7 @@ impl<S: Sink> Stream<S> {
         self.resolved_backend
     }
 
-    /// Choose where RGB→NV12 happens. [`PreprocessPlacement::Auto`] keeps the
+    /// Choose where RGB→NV12 happens. [`preprocess_placement::PreprocessPlacement::Auto`] keeps the
     /// per-backend default, which is what callers who never set it get.
     #[must_use]
     pub fn with_preprocess(mut self, placement: preprocess_placement::PreprocessPlacement) -> Self {

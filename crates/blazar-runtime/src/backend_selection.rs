@@ -260,7 +260,7 @@ pub fn is_built(backend: VideoEncoderBackend) -> bool {
 /// Pick a backend for `codec` from `pool`.
 ///
 /// Filters, in order: codec support, pool, built, usable. The first survivor of
-/// the fixed [`ORDER`] wins. A `Hardware` pool that finds no usable hardware
+/// the fixed preference order wins. A `Hardware` pool that finds no usable hardware
 /// returns an error rather than dropping to software: that is the constraint the
 /// caller asked for.
 pub fn select(
