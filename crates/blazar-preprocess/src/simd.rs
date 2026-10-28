@@ -34,6 +34,10 @@ pub(crate) enum Kind {
 }
 
 /// Is a vector kernel available on this CPU?
+///
+/// Public to the crate so tests can skip the vector comparison on a machine
+/// without AVX2, rather than asserting a kernel that could not run.
+#[allow(dead_code)]
 pub(crate) fn available() -> bool {
     #[cfg(target_arch = "aarch64")]
     {
@@ -51,6 +55,7 @@ pub(crate) fn available() -> bool {
 
 /// Run the vector path for `kind`, or return `false` when this CPU has none.
 #[must_use]
+#[allow(clippy::too_many_arguments)] // the kernel ABI, not a design choice
 pub(crate) fn convert(
     kind: Kind,
     bytes: &[u8],

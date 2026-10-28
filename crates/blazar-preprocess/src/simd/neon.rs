@@ -91,6 +91,7 @@ impl Scratch {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // the kernel ABI, not a design choice
 pub(crate) fn convert(
     kind: Kind,
     bytes: &[u8],
@@ -196,6 +197,7 @@ pub(crate) fn convert(
 ///
 /// # Safety
 /// `base` must cover the whole frame; the outputs hold `w` elements.
+#[allow(clippy::too_many_arguments)] // the row ABI, not a design choice
 unsafe fn row(
     kind: Kind,
     ctx: &Ctx<'_>,

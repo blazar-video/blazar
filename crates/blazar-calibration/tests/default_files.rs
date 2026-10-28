@@ -47,14 +47,38 @@ const CODEC_KEYS: [&str; 9] = [
     "vp9",
 ];
 
+/// `mock` ships one file: it emits no compressed data, so a quality ladder for
+/// it would be meaningless, and the single `balanced` default is what tests and
+/// pipelines resolve against.
+const MOCK_KEY: &str = "mock";
+
 #[test]
 fn all_default_files_load() {
     let idx = load_all();
     assert_eq!(
         idx.len(),
-        CODEC_KEYS.len() * 3,
-        "expected three targets per shipped codec"
+        CODEC_KEYS.len() * 3 + 1,
+        "expected three targets per real codec and one for the mock"
     );
+}
+
+#[test]
+fn the_mock_has_a_balanced_default() {
+    // Without this, every `backend="mock"` stream fails at open with
+    // "no calibration resolved", which is how the rav1e leftover was found.
+    let idx = load_all();
+    let query = Query::new(
+        &ModelIdentity {
+            family: "wan".into(),
+            version: "2.1".into(),
+            quant: "bf16".into(),
+            size: "1.3b".into(),
+        },
+        "*",
+        MOCK_KEY,
+        Target::Balanced,
+    );
+    assert!(idx.resolve(&query).is_some(), "mock default must resolve");
 }
 
 #[test]

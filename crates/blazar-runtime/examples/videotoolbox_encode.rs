@@ -45,7 +45,7 @@ fn frame(index: u64, w: u32, h: u32) -> FrameRef {
         for col in 0..w {
             // Three moving gradients plus a checkerboard band, so there are
             // hard edges as well as smooth ones.
-            let checker = if ((col / 64) + (row / 64) + index as u32 / 8) % 2 == 0 {
+            let checker = if ((col / 64) + (row / 64) + index as u32 / 8).is_multiple_of(2) {
                 0.15
             } else {
                 0.0

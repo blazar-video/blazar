@@ -120,21 +120,6 @@ impl<S: Sink> Encoder<S> {
         }
     }
 
-    fn codec_key(&self) -> &'static str {
-        match self.output.backend {
-            VideoEncoderBackend::SvtAv1 => "svtav1",
-            VideoEncoderBackend::NvencAv1 => "nvenc_av1",
-            VideoEncoderBackend::NvencH264 => "nvenc_h264",
-            VideoEncoderBackend::NvencHevc => "nvenc_hevc",
-            VideoEncoderBackend::Mock => "mock",
-            VideoEncoderBackend::X264 => "x264",
-            VideoEncoderBackend::X265 => "x265",
-            VideoEncoderBackend::Vp9 => "vp9",
-            VideoEncoderBackend::VideoToolboxH264 => "videotoolbox_h264",
-            VideoEncoderBackend::VideoToolboxHevc => "videotoolbox_hevc",
-        }
-    }
-
     /// Bind the runtime-owned request id once and return the per-generation
     /// handle (architecture §3). Blazar does not mint the id — the runtime owns
     /// it. The sink is opened lazily on the first submit, once frame dimensions
@@ -862,6 +847,7 @@ fn build_encoder(
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
     use blazar_core::{

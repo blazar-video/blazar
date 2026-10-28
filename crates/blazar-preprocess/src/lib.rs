@@ -271,7 +271,9 @@ fn convert_simd(
         (Layout::Bcthw, Dtype::F32) => convert_bcthw::<F32Sample>(bytes, desc, w, h),
         (Layout::Thwc, Dtype::Bf16) => convert_thwc::<Bf16Sample>(bytes, desc, w, h),
         (Layout::Bcthw, Dtype::Bf16) => convert_bcthw::<Bf16Sample>(bytes, desc, w, h),
-        (_, other) => (Vec::new(), Vec::new(), Vec::new()),
+        // f16 is accepted by the type but has no kernel: the caller's dtype
+        // check rejects it before this point, so these are empty by contract.
+        (_, Dtype::F16) => (Vec::new(), Vec::new(), Vec::new()),
     }
 }
 
@@ -803,7 +805,6 @@ mod tests {
                         }
                     }
                 }
-                other => panic!("unexpected layout {other:?}"),
             }
 
             let u8_frame = FrameRef::new(
@@ -995,7 +996,7 @@ mod simd_tests {
         let bytes = frame(w, h);
         let stage = CpuPreprocess::new();
         let frame = FrameRef {
-            desc: d.clone(),
+            desc: d,
             buffer: FrameBuffer::host_owned(bytes.clone()),
         };
         let out = stage.process(&frame).expect("stage runs");
@@ -1121,7 +1122,7 @@ mod vector_kernels {
                         let bytes = build(w, h, layout, dtype, range);
                         let (sy, su, sv) = scalar(&d, &bytes, w, h);
                         let frame = FrameRef {
-                            desc: d.clone(),
+                            desc: d,
                             buffer: FrameBuffer::host_owned(bytes.clone()),
                         };
                         let out = stage.process(&frame).expect("stage runs");
@@ -1150,7 +1151,7 @@ mod vector_kernels {
         );
         let b = FrameDesc {
             range: ColorRange::FullU8,
-            ..a.clone()
+            ..a
         };
         let sa = scalar(&a, &bytes, w, h);
         let sb = scalar(&b, &bytes, w, h);
@@ -1385,7 +1386,7 @@ mod bench_direct {
             scalar_into(&case, &d, &bytes, &mut y, &mut u, &mut v);
             let used = simd::convert(case.kind, &bytes, &d, W, H, &mut y, &mut u, &mut v);
             let frame = FrameRef {
-                desc: d.clone(),
+                desc: d,
                 buffer: FrameBuffer::host_owned(bytes.clone()),
             };
             let _ = stage.process(&frame).unwrap();
@@ -1405,7 +1406,11 @@ mod bench_direct {
 
                 let t = Instant::now();
                 for _ in 0..iters {
-                    simd::convert(case.kind, &bytes, &d, W, H, &mut y, &mut u, &mut v);
+                    assert!(
+                        simd::convert(case.kind, &bytes, &d, W, H, &mut y, &mut u, &mut v),
+                        "no vector kernel for {:?} on this CPU",
+                        case.kind
+                    );
                     std::hint::black_box(&y);
                 }
                 best[1] = best[1].min(t.elapsed().as_secs_f64() * 1000.0 / iters as f64);
