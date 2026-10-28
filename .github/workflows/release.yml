@@ -2,6 +2,9 @@ name: Release
 
 # Triggered by the tag RELEASING.md describes. Publishes the wheel matrix and,
 # after PyPI, the crates. Trusted publishing: no long-lived token in the repo.
+#
+# No GPL codecs in wheels: x264 and x265 make the resulting binary GPL, and this
+# project is Apache-2.0. They stay opt-in source features; see PUBLISHING.md.
 
 on:
   push:
@@ -25,15 +28,15 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: manylinux_2_28_x86_64
-            args: --release --out dist --features nvenc,gpu-preprocess,enc-x264,enc-x265,enc-svtav1,enc-vp9
+            args: --release --out dist --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9
             manylinux: "2_28"
           - os: ubuntu-latest
             platform: manylinux_2_28_aarch64
-            args: --release --out dist --features enc-x264,enc-x265,enc-svtav1,enc-vp9
+            args: --release --out dist --features enc-svtav1,enc-vp9
             manylinux: "2_28"
           - os: macos-latest
             platform: macosx_11_0_arm64
-            args: --release --out dist --features enc-videotoolbox,enc-x264,enc-x265
+            args: --release --out dist --features enc-videotoolbox
             manylinux: auto
     steps:
       - uses: actions/checkout@v4

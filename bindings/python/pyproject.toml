@@ -5,9 +5,29 @@ build-backend = "maturin"
 [project]
 name = "blazar-video"
 version = "0.0.0"
-description = "Python bindings for the Blazar model-aware video encoder harness"
+description = "Model-aware video encoding for generated video: zero-copy GPU ingest, per-model calibrations, and one submit for host or device frames"
+readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
+keywords = ["video", "encoding", "nvenc", "av1", "h264", "hevc", "diffusion", "torch"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Video :: Conversion",
+    "Topic :: Multimedia :: Video :: Non-Linear Editor",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+]
+
+[project.urls]
+Homepage = "https://github.com/blazar-video/blazar"
+Documentation = "https://github.com/blazar-video/blazar/blob/main/docs/python-api.md"
+Changelog = "https://github.com/blazar-video/blazar/blob/main/CHANGELOG.md"
+Issues = "https://github.com/blazar-video/blazar/issues"
 
 [tool.maturin]
 # maturin copies python/ into the wheel, but only .py files; the stubs and the
