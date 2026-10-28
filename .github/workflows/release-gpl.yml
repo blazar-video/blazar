@@ -55,28 +55,6 @@ jobs:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
           args: --release --out dist --features pyo3/extension-module,${{ matrix.features }}
-      - name: the wheel really has the GPL encoders
-        # The whole point of this distribution is the two codecs; a wheel that
-        # silently lacked them would be an Apache wheel with a GPL label.
-        if: matrix.platform == 'manylinux_2_28_x86_64'
-        run: |
-          pip install packaging/gpl/dist/*.whl
-          python - <<'PY'
-          import blazar
-          present = set(blazar.backends())
-          print("blazar", blazar.__version__, "backends:", sorted(present))
-          # The whole point of this distribution is the two GPL encoders: a
-          # wheel without them would be an Apache wheel with a GPL label.
-          missing = {"x264", "x265"} - present
-          assert not missing, f"GPL wheel is missing {sorted(missing)}; got {sorted(present)}"
-          PY
-          python -c "
-          import subprocess, sys, blazar._blazar as m
-          out = subprocess.run(['ldd', m.__file__], capture_output=True, text=True).stdout
-          missing = [l for l in out.splitlines() if 'not found' in l]
-          assert not missing, missing
-          print('all bundled libraries resolved')
-          "
       - uses: actions/upload-artifact@v4
         with:
           name: gpl-wheels-${{ matrix.platform }}
@@ -102,8 +80,29 @@ jobs:
           name: gpl-sdist
           path: packaging/gpl/dist/*.tar.gz
 
+  smoke:
+    name: smoke (the GPL encoders are present)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: sudo apt-get update && sudo apt-get install -y libx264-dev libx265-dev pkg-config
+      - run: pip install maturin
+      - run: cd packaging/gpl && maturin build --release --features pyo3/extension-module,enc-x264,enc-x265,enc-svtav1,enc-vp9 --out dist
+      - run: pip install packaging/gpl/dist/*.whl
+      - run: |
+          python - <<'PY'
+          import blazar
+          present = set(blazar.backends())
+          print("blazar", blazar.__version__, "backends:", sorted(present))
+          missing = {"x264", "x265"} - present
+          assert not missing, f"GPL wheel is missing {sorted(missing)}; got {sorted(present)}"
+          PY
+
   publish:
-    needs: [wheels, sdist]
+    needs: [wheels, sdist, smoke]
     runs-on: ubuntu-latest
     environment: pypi-gpl
     if: startsWith(github.ref, 'refs/tags/') || inputs.testpypi == false

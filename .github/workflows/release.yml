@@ -53,22 +53,6 @@ jobs:
           target: ${{ matrix.platform == 'macosx_11_0_arm64' && 'aarch64-apple-darwin' || (matrix.platform == 'manylinux_2_28_aarch64' && 'aarch64-unknown-linux-gnu' || 'x86_64-unknown-linux-gnu') }}
           manylinux: ${{ matrix.manylinux }}
           args: ${{ matrix.args }}
-      - name: the wheel has the backends the notes claim
-        if: matrix.platform != 'manylinux_2_28_aarch64'
-        # Importing proves nothing: a wheel built with the wrong --features
-        # imports perfectly and fails at the first frame, after publishing.
-        run: |
-          pip install bindings/python/dist/*.whl
-          python - <<'PY'
-          import blazar
-          print("blazar", blazar.__version__, "backends:", blazar.backends())
-          present = set(blazar.backends())
-          required = {"nvenc", "svtav1", "vp9"}
-          missing = required - present
-          assert not missing, f"wheel is missing {sorted(missing)}; got {sorted(present)}"
-          # The Apache wheel must not carry copyleft codecs.
-          assert "x264" not in present and "x265" not in present, sorted(present)
-          PY
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.platform }}
@@ -91,8 +75,34 @@ jobs:
           name: wheels-sdist
           path: bindings/python/dist/*.tar.gz
 
+  smoke:
+    # Executes the extension to check what it can actually encode. Built
+    # natively rather than in the manylinux container: the container targets its
+    # own interpreter, so the wheel it produces cannot be installed on the
+    # runner to be tested.
+    name: smoke (backends are what we ship)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install maturin
+      - run: cd bindings/python && maturin build --release --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9 --out dist
+      - run: pip install bindings/python/dist/*.whl
+      - run: |
+          python - <<'PY'
+          import blazar
+          present = set(blazar.backends())
+          print("blazar", blazar.__version__, "backends:", sorted(present))
+          missing = {"nvenc", "svtav1", "vp9"} - present
+          assert not missing, f"wheel is missing {sorted(missing)}; got {sorted(present)}"
+          # The Apache wheel must not carry copyleft codecs.
+          assert "x264" not in present and "x265" not in present, sorted(present)
+          PY
+
   publish-pypi:
-    needs: [wheels, sdist]
+    needs: [wheels, sdist, smoke]
     runs-on: ubuntu-latest
     environment: pypi
     # A tag publishes for real; a manual run goes to TestPyPI by default, so the

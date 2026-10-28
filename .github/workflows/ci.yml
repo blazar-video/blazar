@@ -73,8 +73,10 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: bindings/python
+          # No manylinux container here: the point is to install and test the
+          # wheel, and inside the container maturin builds for the container's
+          # interpreter (cp39), which the runner's python cannot install.
           args: --release --out dist
-          manylinux: auto
       # maturin ran with working-directory bindings/python, so the wheel is there
       - run: pip install bindings/python/dist/*.whl pytest numpy
       - name: tests that need no encoder hardware
