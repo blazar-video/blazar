@@ -37,11 +37,11 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: manylinux_2_28_x86_64
-            args: --release --out dist --features nvenc,gpu-preprocess,opus
+            args: --release --out dist --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,opus
             manylinux: "2_28"
           - os: ubuntu-latest
             platform: manylinux_2_28_aarch64
-            args: --release --out dist --features nvenc,gpu-preprocess,opus
+            args: --release --out dist --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,opus
             manylinux: "2_28"
           - os: macos-latest
             platform: macosx_11_0_arm64
@@ -60,16 +60,22 @@ jobs:
           working-directory: bindings/python
           target: ${{ matrix.platform == 'macosx_11_0_arm64' && 'aarch64-apple-darwin' || (matrix.platform == 'manylinux_2_28_aarch64' && 'aarch64-unknown-linux-gnu' || 'x86_64-unknown-linux-gnu') }}
           manylinux: ${{ matrix.manylinux }}
-          # The container is minimal: libopus and pkg-config have to be there
-          # before cargo resolves the opus-sys build script.
-          # manylinux_2_28 is AlmaLinux, so this is dnf. The only build-time
-          # dependency left is CMake for the vendored opus; NVENC needs nothing
-          # (it is dlopened) and vpx/svt-av1 are source-build features.
+          # The container is minimal. NVENC needs nothing (dlopened), opus builds
+          # itself with CMake, and vpx/svt-av1 have to be present at link time.
           before-script-linux: |
             if command -v dnf >/dev/null; then
-              dnf install -y cmake gcc gcc-c++ make
+              dnf install -y cmake gcc gcc-c++ make git libvpx-devel || true
+              if ! pkg-config --exists SvtAv1Enc; then
+                # AlmaLinux has no svt-av1 package; build it, as the wheel needs
+                # it at link time. ~2 minutes, once per wheel.
+                git clone --depth 1 --branch v2.3.0 https://gitlab.com/AOMediaCodec/SVT-AV1.git /tmp/svt
+                cmake -S /tmp/svt -B /tmp/svt/build -DCMAKE_BUILD_TYPE=Release \
+                      -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX=/usr/local
+                cmake --build /tmp/svt/build -j"$(nproc)"
+                cmake --install /tmp/svt/build
+              fi
             elif command -v apt-get >/dev/null; then
-              apt-get update && apt-get install -y cmake build-essential
+              apt-get update && apt-get install -y cmake build-essential libvpx-dev libsvtav1-dev
             fi
           args: ${{ matrix.args }}
       - uses: actions/upload-artifact@v4
@@ -113,14 +119,14 @@ jobs:
         with:
           python-version: "3.11"
       - run: sudo apt-get install -y libopus-dev pkg-config && pip install maturin
-      - run: cd bindings/python && maturin build --release --features nvenc,gpu-preprocess,opus --out dist
+      - run: cd bindings/python && maturin build --release --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,opus --out dist
       - run: pip install bindings/python/dist/*.whl
       - run: |
           python - <<'PY'
           import blazar
           present = set(blazar.backends())
           print("blazar", blazar.__version__, "backends:", sorted(present))
-          missing = {"nvenc", "opus"} - present
+          missing = {"nvenc", "svtav1", "vp9", "opus"} - present
           assert not missing, f"wheel is missing {sorted(missing)}; got {sorted(present)}"
           # The Apache wheel must not carry copyleft codecs.
           assert "x264" not in present and "x265" not in present, sorted(present)

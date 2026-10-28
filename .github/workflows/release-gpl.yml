@@ -41,7 +41,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
             manylinux: "2_28"
             setup: sudo apt-get update && sudo apt-get install -y libx264-dev libx265-dev pkg-config
-            features: nvenc,gpu-preprocess,enc-x264,enc-x265,opus
+            features: nvenc,gpu-preprocess,enc-svtav1,enc-vp9,enc-x264,enc-x265,opus
           - os: macos-latest
             platform: macosx_11_0_arm64
             target: aarch64-apple-darwin
@@ -64,7 +64,18 @@ jobs:
           manylinux: ${{ matrix.manylinux }}
           before-script-linux: |
             if command -v dnf >/dev/null; then
-              dnf install -y cmake gcc gcc-c++ make libx264-devel libx265-devel
+              dnf install -y cmake gcc gcc-c++ make git libvpx-devel libx264-devel libx265-devel || true
+              if ! pkg-config --exists SvtAv1Enc; then
+                # AlmaLinux has no svt-av1 package; build it, as the wheel needs
+                # it at link time. ~2 minutes, once per wheel.
+                git clone --depth 1 --branch v2.3.0 https://gitlab.com/AOMediaCodec/SVT-AV1.git /tmp/svt
+                cmake -S /tmp/svt -B /tmp/svt/build -DCMAKE_BUILD_TYPE=Release \
+                      -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX=/usr/local
+                cmake --build /tmp/svt/build -j"$(nproc)"
+                cmake --install /tmp/svt/build
+              fi
+            elif command -v apt-get >/dev/null; then
+              apt-get update && apt-get install -y cmake build-essential libvpx-dev libsvtav1-dev
             fi
           args: --release --out dist --features pyo3/extension-module,${{ matrix.features }}
       - uses: actions/upload-artifact@v4
@@ -109,9 +120,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: sudo apt-get update && sudo apt-get install -y cmake build-essential libx264-dev libx265-dev
+      - run: sudo apt-get update && sudo apt-get install -y cmake build-essential libx264-dev libx265-dev libvpx-dev libsvtav1-dev
       - run: pip install maturin
-      - run: cd packaging/gpl && maturin build --release --features pyo3/extension-module,nvenc,gpu-preprocess,enc-x264,enc-x265,opus --out dist
+      - run: cd packaging/gpl && maturin build --release --features pyo3/extension-module,nvenc,gpu-preprocess,enc-svtav1,enc-vp9,enc-x264,enc-x265,opus --out dist
       - run: pip install packaging/gpl/dist/*.whl
       - run: |
           python - <<'PY'
