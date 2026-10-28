@@ -77,7 +77,6 @@ def streams(path) -> list[dict]:
     return json.loads(result.stdout)["streams"]
 
 
-@pytest.mark.xfail(reason="the audio track writes bytes but the muxed container does not yet read back; the dOps payload shape is unconfirmed", strict=False)
 def test_opus_audio_is_muxed_next_to_the_video(tmp_path) -> None:
     path = encode(tmp_path)
     found = streams(path)
@@ -88,7 +87,6 @@ def test_opus_audio_is_muxed_next_to_the_video(tmp_path) -> None:
     assert int(audio["channels"]) == 2
 
 
-@pytest.mark.xfail(reason="the audio track writes bytes but the muxed container does not yet read back; the dOps payload shape is unconfirmed", strict=False)
 def test_the_muxed_file_decodes_cleanly(tmp_path) -> None:
     path = encode(tmp_path)
     ffmpeg = os.environ.get("FFMPEG") or shutil.which("ffmpeg") or os.path.expanduser("~/.local/bin/ffmpeg")
@@ -98,7 +96,6 @@ def test_the_muxed_file_decodes_cleanly(tmp_path) -> None:
     assert result.returncode == 0, result.stderr[-400:]
 
 
-@pytest.mark.xfail(reason="the audio track writes bytes but the muxed container does not yet read back; the dOps payload shape is unconfirmed", strict=False)
 def test_the_audio_track_starts_at_zero_and_runs_a_second(tmp_path) -> None:
     """Byte-level pre-skip lives in dOps; the container timestamp starts at zero.
 

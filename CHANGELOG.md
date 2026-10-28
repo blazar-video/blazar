@@ -7,12 +7,16 @@ identical settings is always a minor bump.
 
 ## [Unreleased]
 
-## [0.1.0] - TBD
+## [0.1.0] - 2026-10-28
 
 First release. The encoder pipeline, the calibration system and the Python
 binding are in place; the API is not yet stable.
 
 ### Added
+
+- **Opus audio**: `Encoder(audio="opus")` plus `submit_audio(samples, sample_rate=48000)`.
+  The dOps pre-skip comes from the encoder's lookahead, so a decoder discards
+  exactly the samples the encoder delayed, and audio/video stay aligned.
 
 - **Encoder runtime** with a dedicated worker thread per stream, so `submit`
   returns without waiting for the codec, and ordered emission guarded by DTS.
@@ -62,6 +66,12 @@ binding are in place; the API is not yet stable.
   gained an 8-bit path (17.77 → 6.56 ms/frame at 1088p).
 
 ### Known gaps
+
+- **AAC is not implemented.** The usable encoders are non-free (`libfdk-aac`) or
+  drag in libavcodec, so 0.1 ships Opus only.
+- **Pre-skip lives in dOps, not the timeline.** oxideav rejects negative packet
+  timestamps, so audio starts at zero; the residual offset is the encoder
+  lookahead (312 samples, ~6.5 ms).
 
 - **Host `bf16` ingest is rejected**: the binding infers dtype from the buffer
   format and numpy has no bf16 dtype. Needs an explicit `dtype=` argument.

@@ -785,7 +785,10 @@ fn wrap_gpu(enc: Box<dyn VideoEncoder>) -> Result<Box<dyn VideoEncoder>, Runtime
 fn opus_head(channels: u8, pre_skip: u64) -> Vec<u8> {
     let mut head = Vec::with_capacity(19);
     head.extend_from_slice(b"OpusHead");
-    head.push(1); // version
+    // The body below the magic is a dOps, whose version is 0. An Ogg OpusHead
+    // would say 1 here and ffmpeg rejects it: "unsupported OpusSpecificBox
+    // version".
+    head.push(0);
     head.push(channels);
     head.extend_from_slice(&(pre_skip.min(u64::from(u16::MAX)) as u16).to_le_bytes());
     head.extend_from_slice(&48_000u32.to_le_bytes());

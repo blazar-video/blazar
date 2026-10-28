@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "blazar-video"
-version = "0.0.0"
+version = "0.1.0"
 description = "Model-aware video encoding for generated video: zero-copy GPU ingest, per-model calibrations, and one submit for host or device frames"
 readme = "README.md"
 requires-python = ">=3.9"

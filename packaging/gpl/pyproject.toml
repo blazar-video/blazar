@@ -14,7 +14,7 @@ build-backend = "maturin"
 
 [project]
 name = "blazar-video-gpl"
-version = "0.0.0"
+version = "0.1.0"
 description = "Blazar with the GPL encoders (x264, x265) included: model-aware video encoding with calibrations and zero-copy GPU ingest"
 readme = "../../bindings/python/README.md"
 requires-python = ">=3.9"
