@@ -1,0 +1,51 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+# The GPL distribution. Same crate, same Python package, different wheel:
+# this one is built with x264/x265 and is therefore GPL-3.0-or-later rather
+# than Apache-2.0. Kept as a separate distribution so `pip install
+# blazar-video` can never pull copyleft transitively, and so `pip show` and any
+# licence scanner see the truth instead of an Apache label on a GPL binary.
+#
+# x264 and x265 are GPL-2.0-or-later, which is what makes this legal at all:
+# the Apache-2.0 core may be combined into a GPLv3 work, but not a GPLv2-only
+# one. See PUBLISHING.md.
+
+[project]
+name = "blazar-video-gpl"
+version = "0.0.0"
+description = "Blazar with the GPL encoders (x264, x265) included: model-aware video encoding with calibrations and zero-copy GPU ingest"
+readme = "../../bindings/python/README.md"
+requires-python = ">=3.9"
+license = "GPL-3.0-or-later"
+keywords = ["video", "encoding", "nvenc", "av1", "h264", "hevc", "x264", "x265", "diffusion"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Video :: Conversion",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+]
+
+[project.urls]
+Homepage = "https://github.com/blazar-video/blazar"
+Documentation = "https://github.com/blazar-video/blazar/blob/main/PUBLISHING.md#the-gpl-distribution"
+Source = "https://github.com/blazar-video/blazar"
+Issues = "https://github.com/blazar-video/blazar/issues"
+
+[tool.maturin]
+manifest-path = "../../bindings/python/Cargo.toml"
+python-source = "../../bindings/python/python"
+module-name = "blazar._blazar"
+include = [
+    { path = "../../bindings/python/python/blazar/py.typed", format = "wheel" },
+    { path = "../../bindings/python/python/blazar/__init__.pyi", format = "wheel" },
+    # GPL requires the corresponding source to travel with the binary, or a
+    # written offer. The sdist is published alongside every wheel; this notice
+    # states what else is needed for the bundled libraries.
+    { path = "NOTICE.md", format = "wheel" },
+]
+features = ["pyo3/extension-module"]

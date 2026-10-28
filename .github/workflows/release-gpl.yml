@@ -1,0 +1,109 @@
+name: Release (GPL)
+
+# The copyleft distribution: same crate, built with x264/x265, published as
+# `blazar-video-gpl` under GPL-3.0-or-later. Separate workflow and separate
+# publisher so this can never be confused with the Apache release.
+#
+# Legal basis: x264 and x265 are GPL-2.0-or-later, so the Apache-2.0 core may be
+# combined into a GPLv3 work. See PUBLISHING.md.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (no publish on manual runs)"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  wheels:
+    name: gpl wheel (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: manylinux_2_28_x86_64
+            target: x86_64-unknown-linux-gnu
+            manylinux: "2_28"
+            setup: sudo apt-get update && sudo apt-get install -y libx264-dev libx265-dev pkg-config
+            features: nvenc,gpu-preprocess,enc-svtav1,enc-vp9,enc-x264,enc-x265
+          - os: macos-latest
+            platform: macosx_11_0_arm64
+            target: aarch64-apple-darwin
+            manylinux: auto
+            setup: brew install x264 x265 pkg-config
+            features: enc-videotoolbox,enc-x264,enc-x265
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: ${{ matrix.setup }}
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: packaging/gpl
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --out dist --features pyo3/extension-module,${{ matrix.features }}
+      - name: the wheel really has the GPL encoders
+        # The whole point of this distribution is the two codecs; a wheel that
+        # silently lacked them would be an Apache wheel with a GPL label.
+        if: matrix.platform == 'manylinux_2_28_x86_64'
+        run: |
+          pip install dist/*.whl
+          python - <<'PY'
+          import blazar
+          from blazar import _blazar  # the extension loads
+          print("blazar", blazar.__version__)
+          PY
+          python -c "
+          import subprocess, sys, blazar._blazar as m
+          out = subprocess.run(['ldd', m.__file__], capture_output=True, text=True).stdout
+          missing = [l for l in out.splitlines() if 'not found' in l]
+          assert not missing, missing
+          print('all bundled libraries resolved')
+          "
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpl-wheels-${{ matrix.platform }}
+          path: packaging/gpl/dist/*.whl
+
+  sdist:
+    # The GPL requires corresponding source. Published with the wheels, not
+    # instead of them.
+    name: gpl sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: packaging/gpl
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpl-sdist
+          path: packaging/gpl/dist/*.tar.gz
+
+  publish:
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    environment: pypi-gpl
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: gpl-*
+          merge-multiple: true
+          path: dist
+      - run: pip install twine && twine check dist/*
+      - uses: pypa/gh-action-pypi-publish@release/v1

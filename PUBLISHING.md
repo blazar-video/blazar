@@ -13,6 +13,7 @@ Wheel feature sets are therefore permissive only:
 | platform | features |
 |---|---|
 | `manylinux_2_28_x86_64` | `nvenc,gpu-preprocess,enc-svtav1,enc-vp9` |
+| `manylinux_2_28_x86_64` (**`-gpl`**) | the above plus `enc-x264,enc-x265` |
 | `manylinux_2_28_aarch64` | `enc-svtav1,enc-vp9` |
 | `macosx_11_0_arm64` | `enc-videotoolbox` |
 
@@ -58,6 +59,39 @@ project URLs. Still to do before the first upload:
 - **PEP 639** (`license = "Apache-2.0"` plus `license-files`) instead of the
   deprecated `license = { text = ... }`. Deferred because the toolchain support
   varies; do it before 1.0.
+
+## The GPL distribution
+
+`blazar-video-gpl` is a second distribution, built from the same crate with
+`enc-x264,enc-x265` added, published by `.github/workflows/release-gpl.yml`
+under the `pypi-gpl` environment.
+
+**Why this is legal:** x264 and x265 are *GPL-2.0-or-later* (verified in their
+source headers). The Apache-2.0 core can be combined into a **GPLv3** work,
+because Apache-2.0 is GPLv3-compatible. It could not be combined with a
+GPLv2-only work, which is why this axis matters and why the wheel declares
+`GPL-3.0-or-later` rather than inheriting anything from x264's GPLv2 default.
+
+**What we do differently from the precedent:** PyAV ships libx264 and libx265 in
+a wheel whose metadata says `BSD-3-Clause`. We ship the GPL wheel under its own
+name, with a GPL licence expression, an sdist published alongside, and a
+`NOTICE.md` in every wheel naming the bundled libraries and their sources. A
+scanner reading our metadata gets the truth; a scanner reading PyAV's does not.
+
+**Obligations this creates**, none of them optional:
+
+- corresponding source for the combined work — the sdist, published with each
+  wheel, plus the graph in `packaging/gpl/NOTICE.md` for the bundled libraries;
+- the licence text in the wheel;
+- no added restrictions on the code we distribute;
+- `v<version>` tags on the repository matching the published version.
+
+**What users take on** is stated in `NOTICE.md`, and it is worth repeating in any
+sales conversation: installing this pulls copyleft into their process, and
+shipping a product that includes it brings source obligations with it. The
+permissive wheel plus a commercial x264/x265 licence is the way out, and that
+route also avoids the H.264/HEVC **patent** licensing that applies regardless of
+which encoder ran.
 
 ## 4. Name and account
 

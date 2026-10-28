@@ -71,7 +71,11 @@ release waits for hardware rather than shipping an encoder nobody executed.
    reproducible.
 4. **Land it on `main`** through the normal review, wait for green `ci.yml`.
 5. **Tag**: `git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z`.
-6. **Wheels**: the tag triggers `release.yml`, which builds
+6. **Wheels**: the tag triggers **both** release workflows — `release.yml` for
+   `blazar-video` (Apache-2.0) and `release-gpl.yml` for `blazar-video-gpl`
+   (GPL-3.0-or-later). They are separate distributions with separate publishers;
+   publishing one without the other leaves the two sets of release notes
+   disagreeing about what exists. `release.yml` builds
    `manylinux_2_28_x86_64`, `manylinux_2_28_aarch64`, `macosx_11_0_arm64` and
    publishes to PyPI via trusted publishing (no long-lived token). Attach the
    same wheels to the GitHub release.
