@@ -37,11 +37,11 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: manylinux_2_28_x86_64
-            args: --release --out dist --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,opus
+            args: --release --out dist --features nvenc,gpu-preprocess,opus
             manylinux: "2_28"
           - os: ubuntu-latest
             platform: manylinux_2_28_aarch64
-            args: --release --out dist --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,opus
+            args: --release --out dist --features nvenc,gpu-preprocess,opus
             manylinux: "2_28"
           - os: macos-latest
             platform: macosx_11_0_arm64
@@ -54,7 +54,7 @@ jobs:
           python-version: "3.11"
       - name: macOS build dependencies
         if: runner.os == 'macOS'
-        run: brew install cmake nasm opus svt-av1 libvpx pkg-config
+        run: brew install cmake
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: bindings/python
@@ -62,9 +62,14 @@ jobs:
           manylinux: ${{ matrix.manylinux }}
           # The container is minimal: libopus and pkg-config have to be there
           # before cargo resolves the opus-sys build script.
+          # manylinux_2_28 is AlmaLinux, so this is dnf. The only build-time
+          # dependency left is CMake for the vendored opus; NVENC needs nothing
+          # (it is dlopened) and vpx/svt-av1 are source-build features.
           before-script-linux: |
-            if command -v apt-get >/dev/null; then
-              apt-get update && apt-get install -y cmake nasm build-essential pkg-config libopus-dev libsvtav1-dev libvpx-dev
+            if command -v dnf >/dev/null; then
+              dnf install -y cmake gcc gcc-c++ make
+            elif command -v apt-get >/dev/null; then
+              apt-get update && apt-get install -y cmake build-essential
             fi
           args: ${{ matrix.args }}
       - uses: actions/upload-artifact@v4
@@ -108,14 +113,14 @@ jobs:
         with:
           python-version: "3.11"
       - run: sudo apt-get install -y libopus-dev pkg-config && pip install maturin
-      - run: cd bindings/python && maturin build --release --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,opus --out dist
+      - run: cd bindings/python && maturin build --release --features nvenc,gpu-preprocess,opus --out dist
       - run: pip install bindings/python/dist/*.whl
       - run: |
           python - <<'PY'
           import blazar
           present = set(blazar.backends())
           print("blazar", blazar.__version__, "backends:", sorted(present))
-          missing = {"nvenc", "svtav1", "vp9", "opus"} - present
+          missing = {"nvenc", "opus"} - present
           assert not missing, f"wheel is missing {sorted(missing)}; got {sorted(present)}"
           # The Apache wheel must not carry copyleft codecs.
           assert "x264" not in present and "x265" not in present, sorted(present)
