@@ -45,6 +45,8 @@ enc-svtav1 = ["dep:blazar-svtav1-sys"]
 enc-videotoolbox = []
 # Software VP9 via libvpx (BSD). Needs libvpx at build time.
 enc-vp9 = ["dep:blazar-vpx-sys"]
+# Opus audio. BSD-3, so unlike x264/x265 this can ship in a permissive wheel.
+enc-opus = ["dep:opus"]
 # Software H.264 (x264). GPL: enabling this makes the resulting binary GPL.
 enc-x264 = ["dep:x264", "dep:x264-sys"]
 # Software HEVC (x265). GPL: enabling this makes the resulting binary GPL.
@@ -53,3 +55,7 @@ enc-x265 = ["dep:blazar-x265-sys"]
 # default build stays platform-neutral. Pinned to CUDA 13.1 through cudarc's
 # cuda-13010 feature.
 nvenc = ["dep:nvidia-video-codec-sdk", "dep:cudarc"]
+
+[dependencies.opus]
+version = "=0.3.1"
+optional = true

@@ -15,6 +15,8 @@ pub mod cpu_preprocess;
 pub mod gpu_preprocess;
 pub mod nal;
 pub mod nvenc;
+#[cfg(feature = "enc-opus")]
+pub mod opus;
 #[cfg(feature = "enc-svtav1")]
 pub mod svtav1;
 #[cfg(all(feature = "enc-videotoolbox", target_os = "macos"))]
