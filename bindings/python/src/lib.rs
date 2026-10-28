@@ -1742,11 +1742,42 @@ fn init_logging() {
     });
 }
 
+/// Encoder implementations compiled into this wheel.
+///
+/// A release smoke test asserts this rather than "the import worked": a wheel
+/// built with the wrong `--features` imports perfectly well and then fails at the
+/// first frame, which is a worse way to find out.
+#[pyfunction]
+fn backends() -> Vec<String> {
+    let mut names = Vec::new();
+    if cfg!(feature = "nvenc") {
+        names.push("nvenc".to_owned());
+    }
+    if cfg!(all(feature = "enc-videotoolbox", target_os = "macos")) {
+        names.push("videotoolbox".to_owned());
+    }
+    if cfg!(feature = "enc-svtav1") {
+        names.push("svtav1".to_owned());
+    }
+    if cfg!(feature = "enc-x264") {
+        names.push("x264".to_owned());
+    }
+    if cfg!(feature = "enc-x265") {
+        names.push("x265".to_owned());
+    }
+    if cfg!(feature = "enc-vp9") {
+        names.push("vp9".to_owned());
+    }
+    names.push("mock".to_owned());
+    names
+}
+
 #[pymodule]
 fn _blazar(module: &Bound<'_, PyModule>) -> PyResult<()> {
     init_logging();
     module.add_class::<PyCalibrations>()?;
     module.add_class::<PyEncoder>()?;
+    module.add_function(wrap_pyfunction!(backends, module)?)?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

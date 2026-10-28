@@ -97,6 +97,12 @@ release waits for hardware rather than shipping an encoder nobody executed.
 - A silent behaviour change. `backend="auto"` can pick a different encoder than a
   pinned name; anything in that family goes in the changelog under `Changed`.
 
+## Rehearsing
+
+Before the first tag of a series, run both workflows by hand. They default to
+TestPyPI (`testpypi: true`), build the real artifacts, and run the same smoke
+tests a release would. Only a tag publishes to PyPI.
+
 ## Rollback
 
 Yank the PyPI release (`twine yank`), revert the tag's changelog entry, and

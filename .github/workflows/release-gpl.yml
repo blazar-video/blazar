@@ -14,6 +14,10 @@ on:
     inputs:
       tag:
         description: "Existing tag to build (no publish on manual runs)"
+      testpypi:
+        description: "Publish to TestPyPI instead of PyPI (dry run)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -59,8 +63,12 @@ jobs:
           pip install dist/*.whl
           python - <<'PY'
           import blazar
-          from blazar import _blazar  # the extension loads
-          print("blazar", blazar.__version__)
+          present = set(blazar.backends())
+          print("blazar", blazar.__version__, "backends:", sorted(present))
+          # The whole point of this distribution is the two GPL encoders: a
+          # wheel without them would be an Apache wheel with a GPL label.
+          missing = {"x264", "x265"} - present
+          assert not missing, f"GPL wheel is missing {sorted(missing)}; got {sorted(present)}"
           PY
           python -c "
           import subprocess, sys, blazar._blazar as m
@@ -98,7 +106,7 @@ jobs:
     needs: [wheels, sdist]
     runs-on: ubuntu-latest
     environment: pypi-gpl
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || inputs.testpypi == false
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -107,3 +115,9 @@ jobs:
           path: dist
       - run: pip install twine && twine check dist/*
       - uses: pypa/gh-action-pypi-publish@release/v1
+        if: startsWith(github.ref, 'refs/tags/')
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true

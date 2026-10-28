@@ -18,7 +18,7 @@ This module is deliberately small. Audio, device tensors and non-file sinks do
 not exist yet.
 """
 
-from ._blazar import Calibrations, Encoder
+from ._blazar import Calibrations, Encoder, backends
 
-__all__ = ["Calibrations", "Encoder"]
+__all__ = ["Calibrations", "Encoder", "backends"]
 __version__ = "0.0.0"

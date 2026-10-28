@@ -101,6 +101,26 @@ which encoder ran.
   from it in a clean venv. A first upload to the real index cannot be undone
   (the version number is burned even if the files are yanked).
 
+## 4a. Rehearsing without spending a version number
+
+Both release workflows take a `testpypi` input (default **true**) on
+`workflow_dispatch`. A manual run therefore builds everything, runs the smoke
+test, and publishes to TestPyPI; only a tag publishes for real.
+
+```sh
+gh workflow run release-gpl.yml            # dry run → test.pypi.org
+gh workflow run release.yml --field testpypi=false   # → pypi.org
+```
+
+A first upload to the real index cannot be undone — the filename and version are
+spent even if the files are yanked afterwards. Rehearse on TestPyPI, and install
+from it in a clean venv before tagging.
+
+`blazar.backends()` is what the smoke test asserts: the list of encoder
+implementations compiled into the wheel. Importing the package proves nothing —
+a wheel built with the wrong `--features` imports fine and fails at the first
+frame, after publishing.
+
 ## 5. Trusted publishing
 
 No long-lived token. On PyPI: project → Publishing → add a GitHub publisher with
@@ -135,11 +155,10 @@ git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0   # release.yml takes ov
 
 ## Known limitations of the current automation
 
-- **The smoke test does not check the backend list.** `release.yml` imports the
-  wheel and touches `Encoder` but never asserts which backends were compiled in,
-  so a wheel built with the wrong features would publish. Needs a
-  `blazar.backends()` accessor (or an equivalent) exposed from the extension.
-- **No sdist.** Only wheels are published. `pip install blazar-video` on a
-  platform without a wheel fails rather than falling back to a source build,
-  which is the safer default while the crate publishes separate SDK forks, but
-  it should be a deliberate choice rather than an omission.
+- **Environment pinning.** The PyPI publisher here is configured with
+  environment name *Any*, so it is not bound to a specific workflow file. The
+  GitHub-side environment protection (`pypi`, `pypi-gpl` with required reviewers)
+  is therefore the only gate between a workflow edit and a live upload.
+- **No arm64 Linux wheel for the GPL distribution.** Only x86_64 is built there;
+  the Apache wheel has both. Deliberate for now — the manylinux aarch64 image
+  needs x264/x265 built from source.

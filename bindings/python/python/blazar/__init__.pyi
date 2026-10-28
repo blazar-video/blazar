@@ -4,7 +4,7 @@ from typing import Any, Literal, Sequence
 
 import numpy as np
 
-__all__ = ["Calibrations", "Encoder"]
+__all__ = ["Calibrations", "Encoder", "backends"]
 
 Target = Literal["low_latency", "balanced", "quality"]
 Backend = Literal["nvenc", "videotoolbox", "svtav1", "x264", "x265", "vp9", "mock", "auto"]
@@ -84,3 +84,6 @@ class Encoder:
     def __enter__(self) -> Encoder: ...
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool | None: ...
     def __repr__(self) -> str: ...
+
+def backends() -> list[str]:
+    """Encoder implementations compiled into this wheel (e.g. ``["nvenc", "x264", "mock"]``)."""
