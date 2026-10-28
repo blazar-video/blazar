@@ -32,7 +32,7 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: manylinux_2_28_x86_64
-            args: --release --out dist --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,opus,opus
+            args: --release --out dist --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,opus
             manylinux: "2_28"
           - os: ubuntu-latest
             platform: manylinux_2_28_aarch64
@@ -52,6 +52,12 @@ jobs:
           working-directory: bindings/python
           target: ${{ matrix.platform == 'macosx_11_0_arm64' && 'aarch64-apple-darwin' || (matrix.platform == 'manylinux_2_28_aarch64' && 'aarch64-unknown-linux-gnu' || 'x86_64-unknown-linux-gnu') }}
           manylinux: ${{ matrix.manylinux }}
+          # The container is minimal: libopus and pkg-config have to be there
+          # before cargo resolves the opus-sys build script.
+          before-script-linux: |
+            if command -v apt-get >/dev/null; then
+              apt-get update && apt-get install -y libopus-dev pkg-config
+            fi
           args: ${{ matrix.args }}
       - uses: actions/upload-artifact@v4
         with:
@@ -88,7 +94,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: sudo apt-get install -y libopus-dev pkg-config && pip install maturin
-      - run: cd bindings/python && maturin build --release --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,opus,opus --out dist
+      - run: cd bindings/python && maturin build --release --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,opus --out dist
       - run: pip install bindings/python/dist/*.whl
       - run: |
           python - <<'PY'

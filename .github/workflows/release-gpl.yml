@@ -36,13 +36,13 @@ jobs:
             target: x86_64-unknown-linux-gnu
             manylinux: "2_28"
             setup: sudo apt-get update && sudo apt-get install -y libx264-dev libx265-dev pkg-config
-            features: nvenc,gpu-preprocess,enc-svtav1,enc-vp9,enc-x264,enc-x265
+            features: nvenc,gpu-preprocess,enc-svtav1,enc-vp9,enc-x264,enc-x265,opus
           - os: macos-latest
             platform: macosx_11_0_arm64
             target: aarch64-apple-darwin
             manylinux: auto
             setup: brew install x264 x265 pkg-config
-            features: enc-videotoolbox,enc-x264,enc-x265
+            features: enc-videotoolbox,enc-x264,enc-x265,opus
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -54,6 +54,10 @@ jobs:
           working-directory: packaging/gpl
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
+          before-script-linux: |
+            if command -v apt-get >/dev/null; then
+              apt-get update && apt-get install -y libx264-dev libx265-dev libopus-dev pkg-config
+            fi
           args: --release --out dist --features pyo3/extension-module,${{ matrix.features }}
       - uses: actions/upload-artifact@v4
         with:
@@ -90,7 +94,7 @@ jobs:
           python-version: "3.11"
       - run: sudo apt-get update && sudo apt-get install -y libx264-dev libx265-dev pkg-config
       - run: pip install maturin
-      - run: cd packaging/gpl && maturin build --release --features pyo3/extension-module,enc-x264,enc-x265,enc-svtav1,enc-vp9 --out dist
+      - run: cd packaging/gpl && maturin build --release --features pyo3/extension-module,enc-x264,enc-x265,enc-svtav1,enc-vp9,opus --out dist
       - run: pip install packaging/gpl/dist/*.whl
       - run: |
           python - <<'PY'

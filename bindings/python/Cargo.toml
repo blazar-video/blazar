@@ -38,5 +38,7 @@ enc-x265 = ["blazar-encoder/enc-x265", "blazar-runtime/enc-x265"]
 enc-vp9 = ["blazar-encoder/enc-vp9", "blazar-runtime/enc-vp9"]
 # Opus audio (BSD-3).
 opus = ["blazar-runtime/enc-opus"]
+# Apple VideoToolbox H.264/HEVC (macOS only).
+enc-videotoolbox = ["blazar-encoder/enc-videotoolbox", "blazar-runtime/enc-videotoolbox"]
 # GPU preprocessing for CPU codecs (device tensors).
 gpu-preprocess = ["nvenc", "blazar-runtime/gpu-preprocess"]
