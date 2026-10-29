@@ -55,48 +55,59 @@ numbers should not be compared across them:
 Run-to-run variance on this box reaches 1.8× on the host paths, so treat these as
 orders of magnitude; every table says how many runs it is.
 
-### 1. Single stream, device→host copy included
+### 1. The canonical pipeline
 
-Frames start on the device as a `(1, 3, 121, H, W)` CUDA tensor, which is what a
-model hands over, and every row pays its own copy inside the clock. Median of three.
+The invariant, and the only thing that makes these rows comparable:
 
-**Steady** is the per-frame cost with the session open; **open** is what a fresh
-NVENC session costs. 121 frames is short enough that open dominates a naive
-average — it accounted for 1.7–3.4 ms of every `ms/frame` an earlier version of
-this table published.
+- the source is a `(1, 3, T, H, W)` tensor **already resident on the device**, in
+  the shape SGLang's decode stage produces, built before the clock starts;
+- **nothing in the clock uploads source frames.** There is nothing to upload: this
+  reproduces the model's output, so the pixels are already there;
+- each row pays only what its own path needs to get from that tensor to encoded
+  bytes — including its own device→host copy, if it needs one at all.
 
-| Path | Conversion | 720p steady | 720p open | 1088p steady | 1088p open |
-|---|---|---|---|---|---|
-| blazar, device tensor | device kernel, no copy | **1.38 ms** (726 fps) | 233 ms | **2.46 ms** (407 fps) | 217 ms |
-| blazar, host u8 | upload + device kernel | 2.59 ms (386 fps) | 223 ms | 5.21 ms (192 fps) | 231 ms |
-| PyAV, host u8 | swscale, then upload NV12 | 2.26 ms (442 fps) | 209 ms | 6.06 ms (165 fps) | 420 ms |
-| ffmpeg CLI, raw pipe | swscale | 5.47 ms (183 fps) | — | 10.42 ms (96 fps) | — |
+121 frames of real LTX-2.5 content, one stream, median of three, session open
+included (a fresh NVENC session is 200–400 ms, i.e. 1.7–3.3 ms per frame at this
+clip length; it is a fixed cost, so read the ordering rather than the offset).
 
-**Zero-copy is 1.6× over PyAV at 720p and 2.5× at 1088p**, and it is the only row
-that does not move the frame. The CLI is 2.4× slower than PyAV at identical
-settings, which is the pipe and the process boundary rather than the encode.
-
-### 2. Conversion site, copy excluded
-
-Same clip, one thread, sessions warmed, host arrays already in memory — this is the
-only fair way to compare conversion strategies, because PyAV has no device-side
-conversion at all.
-
-| Conversion | 720p | 1088p | bits/kpx at QP 30 |
+| Path | What it does from the device tensor | 720p | 1088p |
 |---|---|---|---|
-| Blazar `preprocess="device"` (upload + kernel) | **284.9 fps** (3.51 ms) | **204.5 fps** (4.89 ms) | 224.0 / 184.8 |
-| PyAV (CPU swscale) | 280.4 fps (3.57 ms) | 164.0 fps (6.10 ms) | 150.0 / 127.2 |
-| Blazar `preprocess="host"` (CPU SIMD) | 184.8 fps (5.41 ms) | 140.6 fps (7.11 ms) | 224.0 / 184.8 |
+| blazar, device tensor | kernel writes NV12 into the surface NVENC reads | **3.09 ms** (324 fps) | **4.15 ms** (241 fps) |
+| blazar, host path | quantise → copy to host → CPU convert → upload NV12 | 5.39 ms (186 fps) | 7.06 ms (142 fps) |
+| PyAV | quantise → copy to host → swscale → encode | 3.78 ms (265 fps) | 9.65 ms (104 fps) |
+| ffmpeg CLI | quantise → copy to host → pipe raw → swscale → encode | 6.86 ms (146 fps) | 13.46 ms (74 fps) |
 
-- **Converting on the device is level with PyAV at 720p and 1.25× ahead at 1088p**,
-  with no CPU work.
-- **Our CPU conversion is slower than libswscale**: 1.52× at 720p, 1.17× at 1088p.
-  A decades-old hand-tuned path beats ours on the host; the reason to use Blazar is
-  not host conversion speed.
+- **The device path is 1.2× PyAV at 720p and 2.3× at 1088p.** The margin grows with
+  frame size because it is the copy and the conversion that it does not pay.
+- **The host path wins at 1088p (1.4× over PyAV) and loses at 720p (0.70×).** It
+  pays the same copy PyAV does, so what is left is conversion: ours is faster than
+  swscale once the frame is big enough to amortise it, and slower when it is not.
+  Reported as measured; there is no version of this where the ordering is
+  resolution-independent.
+- **PyAV's own cost is nearly all copy**: 3.78 → 9.65 ms from 720p to 1088p (2.5×
+  for 2.27× the pixels), which is what a host-side pipeline looks like.
+
+### 2. Conversion in isolation (not a pipeline)
+
+Two questions the table above cannot answer, because it includes the copy: whose
+conversion is faster, and how much of the per-frame cost is conversion at all.
+These rows hold host arrays in memory and start the clock with the copy excluded —
+useful for comparing kernels, **not** representative of a pipeline, which is why
+they are not in the main table.
+
+| Conversion, host arrays, copy excluded | 720p | 1088p |
+|---|---|---|
+| Blazar `preprocess="device"` (upload + kernel) | 284.9 fps (3.51 ms) | 204.5 fps (4.89 ms) |
+| PyAV (swscale) | 280.4 fps (3.57 ms) | 164.0 fps (6.10 ms) |
+| Blazar `preprocess="host"` (CPU SIMD) | 184.8 fps (5.41 ms) | 140.6 fps (7.11 ms) |
+
+- **On the CPU, swscale beats our kernel**: 1.52× at 720p, 1.17× at 1088p. A
+  twenty-year-old hand-tuned path wins on the host.
+- **On the device there is no competitor**, because PyAV cannot convert there.
 - **The QP number is not a quality match between libraries.** At the same nominal
-  `ConstQP 30` Blazar spends 45–49% more bits per pixel. Matched on bitrate (PyAV
+  `ConstQP 30`, Blazar spends 45–49% more bits per pixel. Matched on bitrate (PyAV
   at QP 27 = 218.3 bits/kpx against Blazar's 224.0) PyAV runs 257.6 fps against
-  284.9 — parity, inside the noise band that also produced PyAV running *faster* at
+  284.9 — parity inside a noise band that also produced PyAV running *faster* at
   QP 28 than QP 27.
 
 ### 3. The GIL
