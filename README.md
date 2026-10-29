@@ -108,6 +108,30 @@ not session open. Best of three.
   starved the interpreter for every arm and was reported as PyAV being 13× slower
   than it is. That thread is gone, and so is the claim.
 
+### Where the time goes on the device path
+
+`stats["encode_us"]` covers the whole submit path, so it cannot say whether the
+encoder is the bottleneck. The worker now counts time inside
+`nvEncEncodePicture` itself, exposed as `blazar._blazar._nvenc_encode_micros()`
+(diagnostic, sampled before and after a run). 1088p device tensors, one stream, two
+runs:
+
+| | per frame |
+|---|---|
+| wall clock | 2.57 ms |
+| inside `nvEncEncodePicture` | 0.42 ms (**17%**) |
+| everything else | 2.15 ms (83%) |
+
+So the driver call is not where the time is. Of the remaining 2.15 ms, the RGB→NV12
+kernel measures ~1.37 ms on its own (the conversion bench in this file), which makes
+**the conversion the largest component and the encode the smallest**. That is the
+opposite of the intuition the old tables encouraged, and it says where a future
+optimisation would pay: the kernel, not the encoder settings.
+
+One caveat: `nvEncEncodePicture` queues work, so 0.42 ms is CPU time in the call,
+not necessarily GPU time encoding. The two are consistent here — the encoder engine
+saturates at ~890 fps under multiple streams while the CPU path still has headroom.
+
 ### What the GIL actually costs
 
 Throughput scaling is a proxy — it cannot separate "the encoder releases the
