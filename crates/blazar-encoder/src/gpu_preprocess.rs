@@ -33,9 +33,32 @@ pub struct GpuPreprocess {
     height: u32,
 }
 
+/// Whether a CUDA driver is loadable.
+///
+/// `cudarc` panics rather than returning an error when `libcuda` is missing, and
+/// a panic inside the encoder worker is not something a caller can handle: the
+/// session simply dies. Probe the driver first, cheaply, so a GPU-less machine
+/// gets the same kind of error as a machine without a driver gets from NVENC.
+pub fn cuda_available() -> bool {
+    const NAMES: [&str; 3] = ["libcuda.so.1", "libcuda.so", "nvcuda.dll"];
+    NAMES.iter().any(|name| {
+        // A load is not enough on its own, but it is enough to tell "no driver
+        // at all" from "driver present"; the context creation that follows
+        // produces the precise error.
+        unsafe { libloading::Library::new(name) }.is_ok()
+    })
+}
+
 impl GpuPreprocess {
     /// Create the stage on device 0. Fails if CUDA or NVRTC is unavailable.
     pub fn new() -> Result<Self, EncodeError> {
+        if !cuda_available() {
+            return Err(EncodeError::Backend(
+                "gpu preprocess needs a CUDA driver (libcuda.so.1 / nvcuda.dll), which is not \
+                 loadable on this machine; use preprocess=\"cpu\" or \"auto\""
+                    .to_owned(),
+            ));
+        }
         let ctx = CudaContext::new(0)
             .map_err(|e| EncodeError::Backend(format!("CUDA context on device 0: {e:?}")))?;
         let stream = ctx.default_stream();

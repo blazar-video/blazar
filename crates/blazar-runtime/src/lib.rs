@@ -93,6 +93,19 @@ pub enum Boundary {
 
 /// Session-stable per deployment: identity, target, output, sink, calibrations.
 /// Generic over the sink so file / WebSocket / WebRTC sinks all work.
+/// Whether GPU preprocessing can be used right now.
+///
+/// Both halves matter: the feature has to be compiled in, and the machine has to
+/// have a CUDA driver. A build with the feature on a machine without a driver
+/// used to resolve `auto` to the GPU and then panic inside the worker thread.
+fn gpu_preprocess_available() -> bool {
+    if cfg!(feature = "gpu-preprocess") {
+        blazar_encoder::gpu_preprocess::cuda_available()
+    } else {
+        false
+    }
+}
+
 pub struct Encoder<S: Sink> {
     identity: ModelIdentity,
     target: Target,
@@ -366,7 +379,7 @@ impl<S: Sink> Stream<S> {
                 self.preprocess,
                 source,
                 backend_converts_on_device(backend),
-                cfg!(feature = "gpu-preprocess"),
+                gpu_preprocess_available(),
             )
             .map_err(|e| RuntimeError::BadPlacement(e.to_string()))?;
             self.resolved_preprocess = Some(site);
@@ -444,7 +457,7 @@ impl<S: Sink> Stream<S> {
             self.preprocess,
             source,
             backend_converts_on_device(backend),
-            cfg!(feature = "gpu-preprocess"),
+            gpu_preprocess_available(),
         )
         .map_err(|e| RuntimeError::BadPlacement(e.to_string()))?;
         self.resolved_preprocess = Some(site);
@@ -595,7 +608,7 @@ impl<S: Sink> Stream<S> {
             self.preprocess,
             preprocess_placement::SourceLocation::Device,
             backend_converts_on_device(self.enc.output.backend),
-            cfg!(feature = "gpu-preprocess"),
+            gpu_preprocess_available(),
         ) == Ok(preprocess_placement::PreprocessSite::Cpu)
         {
             return Err(RuntimeError::Encode(blazar_encoder::EncodeError::Backend(

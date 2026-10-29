@@ -39,7 +39,10 @@ jobs:
             platform: manylinux_2_28_x86_64
             args: --release --out dist --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,opus
             manylinux: "2_28"
-          - os: ubuntu-latest
+          # Native arm runner rather than a cross build: PyO3 without abi3 needs
+          # an interpreter of the target architecture, so cross-compiling here
+          # would only produce a wheel nothing can import.
+          - os: ubuntu-24.04-arm
             platform: manylinux_2_28_aarch64
             args: --release --out dist --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,opus
             manylinux: "2_28"
@@ -53,7 +56,7 @@ jobs:
           # not provide out of the box (see RELEASING.md).
           - os: windows-latest
             platform: win_amd64
-            args: --release --out dist --features nvenc,gpu-preprocess,opus -i python
+            args: --release --out dist --features nvenc,gpu-preprocess,opus -i python3.11
             manylinux: auto
     steps:
       - uses: actions/checkout@v4

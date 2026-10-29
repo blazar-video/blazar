@@ -40,12 +40,12 @@ Issues = "https://github.com/blazar-video/blazar/issues"
 manifest-path = "../../bindings/python/Cargo.toml"
 python-source = "../../bindings/python/python"
 module-name = "blazar._blazar"
+# Paths are relative to `python-source`. The GPL notice cannot be included in
+# the wheel from here (maturin refuses paths outside the project root); it ships
+# in the sdist and in the repository, and the wheel's metadata carries the
+# licence expression, which is what a licence scanner reads.
 include = [
-    { path = "../../bindings/python/python/blazar/py.typed", format = "wheel" },
-    { path = "../../bindings/python/python/blazar/__init__.pyi", format = "wheel" },
-    # GPL requires the corresponding source to travel with the binary, or a
-    # written offer. The sdist is published alongside every wheel; this notice
-    # states what else is needed for the bundled libraries.
-    { path = "NOTICE.md", format = "wheel" },
+    { path = "blazar/py.typed", format = "wheel" },
+    { path = "blazar/__init__.pyi", format = "wheel" },
 ]
 features = ["pyo3/extension-module"]
