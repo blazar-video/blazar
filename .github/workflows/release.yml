@@ -81,22 +81,24 @@ jobs:
               # The distro libvpx is 1.7, and the bindings are generated from
               # 1.16 — the build script refuses anything below 1.15 rather than
               # writing past a shorter struct, so build the version we target.
-              git clone --depth 1 --branch v1.16.0 https://chromium.googlesource.com/webm/libvpx /tmp/vpx
+              # Every network step is bounded: a stalled clone previously hung
+              # this job for 20 minutes with no output to show for it.
+              timeout 180 git clone --depth 1 --branch v1.16.0 https://chromium.googlesource.com/webm/libvpx /tmp/vpx
               # Subshell: this script shares its shell with maturin, so a `cd`
               # that is not scoped here leaves maturin looking for /Cargo.toml.
               ( cd /tmp/vpx && ./configure --prefix=/usr --libdir=/usr/lib \
                   --disable-examples --disable-tools --disable-docs \
                   --disable-unit-tests --disable-install-bins \
-                && make -j"$(nproc)" && make install )
+                && timeout 900 make -j"$(nproc)" && make install )
               export PKG_CONFIG_PATH=/usr/lib/pkgconfig:$PKG_CONFIG_PATH
               if ! pkg-config --exists SvtAv1Enc; then
                 # AlmaLinux has no svt-av1 package; build it, as the wheel needs
                 # it at link time. Install to /usr so its .pc lands in the
                 # default pkg-config path rather than somewhere unsearched.
-                git clone --depth 1 --branch v2.3.0 https://gitlab.com/AOMediaCodec/SVT-AV1.git /tmp/svt
+                timeout 240 git clone --depth 1 --branch v2.3.0 https://gitlab.com/AOMediaCodec/SVT-AV1.git /tmp/svt
                 cmake -S /tmp/svt -B /tmp/svt/build -DCMAKE_BUILD_TYPE=Release \
                       -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX=/usr
-                cmake --build /tmp/svt/build -j"$(nproc)"
+                timeout 1200 cmake --build /tmp/svt/build -j"$(nproc)"
                 cmake --install /tmp/svt/build
                 export PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/lib/pkgconfig:$PKG_CONFIG_PATH
               fi
