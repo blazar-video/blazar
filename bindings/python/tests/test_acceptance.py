@@ -123,6 +123,10 @@ UNAVAILABLE = (
     "could not load",
     "no cuda driver",
     "noencode",
+    # A build without gpu-preprocess cannot honour preprocess="gpu" at all. That
+    # is an environment fact about this wheel, not a defect, and the macOS wheel
+    # is deliberately built without it.
+    "needs the gpu-preprocess feature",
 )
 
 
