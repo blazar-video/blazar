@@ -193,6 +193,7 @@ jobs:
           name: wheels-win_amd64
           path: dist
       - run: pip install dist/*.whl pytest numpy
+        shell: bash  # PowerShell does not expand the glob for native commands
       - run: |
           python - <<'PY'
           import numpy as np
@@ -225,7 +226,10 @@ jobs:
     environment: pypi
     # A tag publishes for real; a manual run goes to TestPyPI by default, so the
     # workflow can be rehearsed without spending a version number.
-    if: startsWith(github.ref, 'refs/tags/') || inputs.testpypi == false
+    # A tag publishes for real; a manual run publishes to TestPyPI, which the
+    # input controls. The real-PyPI step below is gated on the tag, so a branch
+    # can never reach it.
+    if: startsWith(github.ref, 'refs/tags/') || inputs.testpypi == true
     steps:
       - uses: actions/download-artifact@v4
         with:
