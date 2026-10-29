@@ -7,6 +7,21 @@ identical settings is always a minor bump.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-29
+
+Packaging only: `blazar-video` itself is unchanged from 0.1.1. This tag exists so
+`blazar-video-gpl` can be published, because publishing only ever happens from a
+tag and 0.1.1 had already gone out.
+
+### Fixed
+
+- **The GPL wheel is built, not rewritten.** 0.1.1's archive rewriter produced a
+  wheel PyPI refused with "ZIP archive not accepted: Trailing data". The wheel is
+  now produced by maturin from a generated project (`scripts/build_gpl.py`) that
+  contains the crate and the Python package together, so the metadata — Name,
+  `License-Expression: GPL-3.0-or-later`, the GPL classifier, `NOTICE.md` as a
+  licence file — is written by the build, not patched onto the result.
+
 ## [0.1.1] - 2026-10-29
 
 Adds the GPL distribution, and fixes what the first release shipped wrong.
