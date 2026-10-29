@@ -116,9 +116,16 @@ second thread runs a pure-Python loop (no C calls that might release the
 interpreter), and the share of its throughput that survives tells you who is
 holding the GIL. 1920×1088, 6 s window, sessions warmed.
 
+"Python loop keeps" is that share: iterations/second of the loop while an encoder
+runs beside it, divided by the same loop's iterations/second with nothing else
+running. It is measured against a baseline taken by the same script, because the
+loop body differs between scripts and the rates are not comparable across them.
+Baseline here: 69.6 M iters/s. Anything from about 94% to 106% is noise rather than
+contention.
+
 | Workload | fps while a Python thread runs | Python loop keeps |
 |---|---|---|
-| blazar, device tensor (zero copy) | **363.8** | 100% |
+| blazar, device tensor (zero copy) | **359.3** | 106% (noise) |
 | blazar, pre-staged host arrays | 83.3 | 91% |
 | pyav, pre-staged host arrays | 33.3 | 93% |
 
