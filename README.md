@@ -39,96 +39,124 @@ Create the encoder with a pointer to the [calibrations](https://github.com/blaza
 
 ## Performance
 
-Measured on mosk (WSL2), RTX 4080 SUPER, 2026-10-29. Source: 121 frames of real
-LTX-2.5 content at 24 fps, re-encoded to the target size.
+mosk (WSL2), RTX 4080 SUPER, 2026-10-29. Source: 121 frames of real LTX-2.5
+content at 24 fps. Encoder settings mirrored everywhere: `h264_nvenc`, `preset p5`,
+`ConstQP 30`, GOP 120, 2 B-frames, yuv420p (Blazar maps `crf` to `ConstQP`).
 
-Every path starts from the same `(1, 3, 121, H, W)` CUDA tensor, which is what a
-model hands over, and **every row pays its own device→host copy inside the
-clock**. Encoder settings are mirrored: `h264_nvenc`, `preset p5`, `ConstQP 30`,
-GOP 120, 2 B-frames, yuv420p (Blazar maps `crf` to `ConstQP`).
+Four measurements, on four different bases, so each table states its own and the
+numbers should not be compared across them:
 
-Two numbers per row, because one of them is not throughput: **steady** is the
-median per-frame cost over three runs once the session is open, and **open** is
-what a fresh NVENC session costs. 121 frames is short enough that session open
-dominates a naive average — it accounts for 1.7–3.4 ms of every "ms/frame" the
-previous version of this table published.
+1. **Single stream, copy included** — what a whole pipeline costs per frame.
+2. **Conversion site** — the same frames with the copy excluded, to compare
+   conversion strategies.
+3. **The GIL** — throughput and interpreter interference with other threads.
+4. **Where the time goes** — instrumented inside the encoder call.
+
+Run-to-run variance on this box reaches 1.8× on the host paths, so treat these as
+orders of magnitude; every table says how many runs it is.
+
+### 1. Single stream, device→host copy included
+
+Frames start on the device as a `(1, 3, 121, H, W)` CUDA tensor, which is what a
+model hands over, and every row pays its own copy inside the clock. Median of three.
+
+**Steady** is the per-frame cost with the session open; **open** is what a fresh
+NVENC session costs. 121 frames is short enough that open dominates a naive
+average — it accounted for 1.7–3.4 ms of every `ms/frame` an earlier version of
+this table published.
 
 | Path | Conversion | 720p steady | 720p open | 1088p steady | 1088p open |
 |---|---|---|---|---|---|
 | blazar, device tensor | device kernel, no copy | **1.38 ms** (726 fps) | 233 ms | **2.46 ms** (407 fps) | 217 ms |
-| blazar, host u8 → device kernel | upload + GPU kernel | 2.59 ms (386 fps) | 223 ms | 5.21 ms (192 fps) | 231 ms |
-| PyAV, host u8 → swscale | CPU, then upload NV12 | 2.26 ms (442 fps) | 209 ms | 6.06 ms (165 fps) | 420 ms |
+| blazar, host u8 | upload + device kernel | 2.59 ms (386 fps) | 223 ms | 5.21 ms (192 fps) | 231 ms |
+| PyAV, host u8 | swscale, then upload NV12 | 2.26 ms (442 fps) | 209 ms | 6.06 ms (165 fps) | 420 ms |
 | ffmpeg CLI, raw pipe | swscale | 5.47 ms (183 fps) | — | 10.42 ms (96 fps) | — |
 
-What this says:
+**Zero-copy is 1.6× over PyAV at 720p and 2.5× at 1088p**, and it is the only row
+that does not move the frame. The CLI is 2.4× slower than PyAV at identical
+settings, which is the pipe and the process boundary rather than the encode.
 
-- **Zero-copy is the win, and it grows with resolution**: 1.6× over PyAV at 720p,
-  2.5× at 1088p. It is the only path that does not move the frame.
-- **These are not the same work.** PyAV has no device-side conversion: `sws_scale`
-  runs on the CPU and NVENC takes the resulting NV12. Blazar's row uploads the RGB
-  frame and converts it in a kernel. The like-for-like pair is Blazar
-  `preprocess="host"` against PyAV, measured in the next section — and there PyAV
-  is faster.
-- An earlier version of this table claimed host-staged Blazar beat PyAV by 1.5×.
-  It compared a device-side conversion against a software one and called it
-  like-for-like. It does not survive measurement.
-- **The CLI is 2.4× slower than PyAV at the same settings**, from the raw pipe and
-  a separate process, not from the encode.
+### 2. Conversion site, copy excluded
 
-### Concurrency and the Python GIL
+Same clip, one thread, sessions warmed, host arrays already in memory — this is the
+only fair way to compare conversion strategies, because PyAV has no device-side
+conversion at all.
 
-1920×1088, 100 frames per thread, one encoder per thread, host `u8` arrays through
-`preprocess="auto"` (so each thread pays its own upload and device conversion —
-this is the path a numpy frame takes, not the zero-copy one). NVENC settings
-mirrored. Every session is warmed before the clock, so this measures throughput and
-not session open. Best of three.
+| Conversion | 720p | 1088p | bits/kpx at QP 30 |
+|---|---|---|---|
+| Blazar `preprocess="device"` (upload + kernel) | **284.9 fps** (3.51 ms) | **204.5 fps** (4.89 ms) | 224.0 / 184.8 |
+| PyAV (CPU swscale) | 280.4 fps (3.57 ms) | 164.0 fps (6.10 ms) | 150.0 / 127.2 |
+| Blazar `preprocess="host"` (CPU SIMD) | 184.8 fps (5.41 ms) | 140.6 fps (7.11 ms) | 224.0 / 184.8 |
 
-| Arm | 1 thread | 2 threads | 4 threads | scaling @ 4 | per-thread @ 4 |
-|---|---|---|---|---|---|
-| blazar | 210.9 fps | 350.9 fps | **563.3 fps** | 2.7× | 140.8 |
-| blazar_poll | 207.8 fps | 341.7 fps | 557.2 fps | 2.7× | 139.3 |
-| pyav | 163.5 fps | 200.6 fps | 266.0 fps | **1.6×** | 66.5 |
+- **Converting on the device is level with PyAV at 720p and 1.25× ahead at 1088p**,
+  with no CPU work.
+- **Our CPU conversion is slower than libswscale**: 1.52× at 720p, 1.17× at 1088p.
+  A decades-old hand-tuned path beats ours on the host; the reason to use Blazar is
+  not host conversion speed.
+- **The QP number is not a quality match between libraries.** At the same nominal
+  `ConstQP 30` Blazar spends 45–49% more bits per pixel. Matched on bitrate (PyAV
+  at QP 27 = 218.3 bits/kpx against Blazar's 224.0) PyAV runs 257.6 fps against
+  284.9 — parity, inside the noise band that also produced PyAV running *faster* at
+  QP 28 than QP 27.
 
-- **Blazar scales to 2.7× on four threads, PyAV to 1.6×**, and PyAV's per-thread
-  rate drops by 2.5× (163.5 → 66.5 fps) as threads are added: `from_ndarray`,
-  `reformat` and `mux` all run in the interpreter, so its threads take turns.
-  Blazar's `submit` enqueues onto that encoder's Rust worker and returns.
-- **Aggregate gap is 2.1× at four threads** (563.3 vs 266.0), against 1.3× on a
-  single stream at the same size and path.
-- **These rows use device-side conversion, not the software path.** `auto` on
-  NVENC resolves to the device, so each thread uploads its frame and the kernel
-  writes NV12 into the surface NVENC reads. At 1088p on one thread the same clip
-  gives 202.8 fps that way against **140.6 fps** with `preprocess="host"`, which
-  converts on the CPU and then uploads NV12 — 1.44× slower, converting the same
-  bytes (`184.8 bits/kpx` in both). The software path exists because CPU codecs
-  need it; it is not the faster path on NVENC.
-- **Polling after every submit costs nothing measurable** (557.2 vs 563.3, inside
-  variance). An earlier version of this table reported ~7%; it also ran a busy
-  Python thread for the whole timed region to count background iterations, which
-  starved the interpreter for every arm and was reported as PyAV being 13× slower
-  than it is. That thread is gone, and so is the claim.
+### 3. The GIL
 
-### Where the time goes on the device path
+A second thread runs a pure-Python loop (no C calls that could release the
+interpreter); the share of its throughput that survives says who is holding the
+GIL. Loop baseline: 69.6 M iters/s. **Retention above 100% is possible** — the same
+loop beside an active GPU process measured 106–108%, so an idle interpreter is not
+at its boost clock. Read the comparison between arms, not the absolute percentage.
+
+| Workload | fps beside a Python thread | Python loop keeps |
+|---|---|---|
+| blazar, device tensor | **359.3** | 106% (noise) |
+| blazar, pre-staged host arrays | 83.3 | 91% (89–92%) |
+| PyAV, pre-staged host arrays | 33.3 | 92% (90–93%) |
+
+- **Device tensors cost no interpreter time**: `submit` hands a pointer to a Rust
+  worker. Nothing else here can say that, because everything else moves pixels
+  through Python first.
+- **On identical host input Blazar does 2.5× PyAV's frame rate for the same
+  interpreter cost** (91% vs 92%, 0.1 points apart across three runs each). The
+  cost is the same because the work is the same — per-frame Python. What differs is
+  what each gets done for it.
+- **If your loop does the device→host copy per frame in Python**, that becomes the
+  bottleneck rather than the library: 186.7 fps alone against 14.7 fps under
+  contention. Hand over the tensor instead.
+
+Scaling with encoder threads, same one Python thread throughout, baseline 75.8 M
+iters/s:
+
+| Streams | blazar device | python | blazar host | python | PyAV | python |
+|---|---|---|---|---|---|---|
+| 1 | 420.1 fps | 91% | 14.6 fps | 93% | 11.4 fps | 85% |
+| 2 | 822.9 fps | 92% | 21.1 fps | 90% | 15.6 fps | 79% |
+| 4 | 885.7 fps | **86%** | 41.1 fps | 86% | 28.2 fps | **64%** |
+
+- **Like-for-like (the host columns, same per-frame Python work as PyAV), the gap
+  grows with concurrency**: 1.28× at one stream, 1.46× at four.
+- **PyAV's Python thread degrades as streams are added** (85% → 64%) because each
+  thread adds interpreter work to one GIL. Blazar's added threads cost the
+  interpreter nothing (91% → 86%, which is one thread's worth of variance).
+- **The device row is a capability PyAV does not have**, 21× the host path at four
+  streams. It is not a GIL measurement and should not be read as one.
+
+`poll()` after every submit costs nothing measurable (557.2 vs 563.3 fps, inside
+variance). An earlier table claimed ~7%; it also ran a busy Python thread inside
+the timed region, which starved every arm and was published as PyAV being 13×
+slower than it is.
+
+**Where it stops.** Eight streams reach 626–641 fps at 1088p and 1359.7 fps at
+720p, then flatten, with `nvidia-smi` reporting the NVENC engine at 69% median /
+100% peak and SM at 41%. Past four streams the hardware encoder is the limit, not
+Blazar or the GIL.
+
+### 4. Where the time goes
 
 `stats["encode_us"]` covers the whole submit path, so it cannot say whether the
-encoder is the bottleneck. The worker now counts time inside
-`nvEncEncodePicture` itself, exposed as `blazar._blazar._nvenc_encode_micros()`
-(diagnostic, sampled before and after a run). 1088p device tensors, one stream, two
-runs:
-
-| | per frame |
-|---|---|
-| wall clock | 2.57 ms |
-| inside `nvEncEncodePicture` | 0.42 ms (**17%**) |
-| everything else | 2.15 ms (83%) |
-
-So the driver call is not where the time is. Of the remaining 2.15 ms, the RGB→NV12
-kernel measures ~1.37 ms on its own (the conversion bench in this file), which makes
-**the conversion the largest component and the encode the smallest**. That is the
-opposite of the intuition the old tables encouraged, and it says where a future
-optimisation would pay: the kernel, not the encoder settings.
-
-Across thread counts the shape changes:
+encoder is the bottleneck. The worker counts time inside `nvEncEncodePicture`
+itself, exposed as `blazar._blazar._nvenc_encode_micros()` for benchmarks. 1088p
+device tensors:
 
 | Streams | aggregate fps | wall per frame | driver call | driver share |
 |---|---|---|---|---|
@@ -136,162 +164,17 @@ Across thread counts the shape changes:
 | 2 | 794.3 | 1.26 ms | 0.275 ms | 23% |
 | 4 | 883.2 | 1.13 ms | 0.243 ms | 23% |
 
-- **The driver call gets cheaper per call as streams are added** (0.42 → 0.24 ms)
-  while becoming a larger share of the wall. With one stream each call waits behind
-  that stream's conversion; with four there is always work in flight, so the call is
-  issued rather than queued behind a stall. That is an interpretation, and the
-  measurement that supports it is the share rising while the call shortens.
-- **The aggregate plateaus** (794 → 883 fps from two streams to four) at the same
-  ~890 fps ceiling the encoder-utilisation sample showed, so the remaining limit at
-  four streams is the engine, even though it is only 23% of the CPU's wall clock.
-
-One caveat: `nvEncEncodePicture` queues work, so these are CPU times in the call,
-not GPU time encoding.
-
-### What the GIL actually costs
-
-Throughput scaling is a proxy — it cannot separate "the encoder releases the
-interpreter" from "the encoder is simply faster". This measures it directly: a
-second thread runs a pure-Python loop (no C calls that might release the
-interpreter), and the share of its throughput that survives tells you who is
-holding the GIL. 1920×1088, 6 s window, sessions warmed.
-
-"Python loop keeps" is that share: iterations/second of the loop while an encoder
-runs beside it, divided by the same loop's iterations/second with nothing else
-running. It is measured against a baseline taken by the same script, because the
-loop body differs between scripts and the rates are not comparable across them.
-Baseline here: 69.6 M iters/s. Retention below 100% can also come from clocks
-rather than contention — running the same loop beside an active GPU process
-measured 106–108% on this box, so an idle interpreter is evidently not at its
-boost clock. The metric to read is the *comparison between arms*, on the same
-baseline.
-
-| Workload | fps while a Python thread runs | Python loop keeps |
-|---|---|---|
-| blazar, device tensor (zero copy) | **359.3** | 106% (noise) |
-| blazar, pre-staged host arrays | 83.3 | 91% |
-| pyav, pre-staged host arrays | 33.3 | 92% |
-
-- **Device tensors cost no interpreter time at all.** `submit` hands a pointer to
-  a Rust worker; the calling thread is free before the frame is touched. Nothing
-  else in this table can say that, because everything else has to move the pixels
-  through Python first.
-- **Host arrays keep 91% of the Python thread's throughput — and 2.5× PyAV's fps**
-  (83.3 vs 33.3) on identical input. The frame copy runs with the GIL released.
-- **The host path costs the interpreter the same as PyAV's, and that is the
-  point.** Three runs each against a 39.2 M iters/s baseline: Blazar 91%
-  (89–92%), PyAV 92% (90–93%) — 0.1 percentage points apart, spreads overlapping.
-  Both do per-frame Python work, so both pay for it. What differs is what each gets
-  done for that price: 83.3 fps against 33.3 fps.
-
-**A caveat about this box.** Repeating the host-array arm across this session gave
-83.3–150 fps for the same code and input, and the device arm 333–364 fps. Run-to-
-run variance here is up to 1.8× on the host path, so treat any single number as an
-order of magnitude, not a measurement. The `tests/test_gil.py` guard asserts a
-ratio (>60% retention), not a rate, for that reason.
-
-**If your pipeline does the device→host copy per frame in Python** — quantise,
-`.cpu()`, reshape, submit — the GIL cost is then your own loop, not the encoder's,
-and it dominates: measured 14.7 fps under contention against 186.7 fps alone. The
-fix for that is to hand over the tensor and let the encoder fetch it.
-
-### Scaling the number of encoder threads
-
-A serving process is several streams plus the work around them, so the useful
-question is what happens when encoder threads are added while one Python thread
-keeps working. 1920×1088, 6 s, one Python loop thread throughout, loop baseline
-75.8 M iters/s.
-
-Two blazar rows, because only one of them is comparable to PyAV:
-
-| Encoder threads | blazar **device** fps | python kept | blazar **host** fps | python kept | pyav fps | python kept |
-|---|---|---|---|---|---|---|
-| 1 | 420.1 | 91% | 14.6 | 93% | 11.4 | 85% |
-| 2 | 822.9 | 92% | 21.1 | 90% | 15.6 | 79% |
-| 4 | 885.7 | 86% | 41.1 | 86% | 28.2 | 64% |
-
-- **Device vs host is not a like-for-like comparison with PyAV.** The device row
-  hands over a tensor: no per-frame Python work at all. The host row quantises,
-  copies to host and submits an array — the same per-frame work PyAV does — so it
-  is the row to compare against PyAV, and it is labelled as such.
-- **Like-for-like, the gap grows with concurrency**: 1.28× at one thread, 1.35× at
-  two, 1.46× at four (41.1 vs 28.2 fps). Same frames, same conversion site, same
-  per-frame Python.
-- **The Python thread degrades with thread count for PyAV and not for Blazar**:
-  93% → 86% against 85% → 64%. Each PyAV encoder thread adds interpreter-bound
-  work to a single GIL; Blazar's added threads cost the interpreter nothing.
-- **Blazar's device path is the capability PyAV does not have**: 885.7 fps at four
-  threads, 21× the host path, because the frames never leave the device.
-
-PyAV's ratio scaling (2.47× at four threads on the host row) looks better than
-Blazar's (2.82×) in ratio terms while being an order of magnitude slower in
-absolute terms — ratios reward a low starting point, and the absolute numbers are
-what a serving path runs on.
-
-**Where the scaling stops, and why.** 2.7× on four threads is not a software
-limit. At eight threads the aggregate reaches 626–641 fps (3.0×) and flattens,
-with `nvidia-smi` reporting the **NVENC engine at 69% median / 100% peak** while SM
-utilisation peaks at 41%. At that point the hardware encoder is the bottleneck, not
-Blazar, the GIL, or the conversion. The same shape appeared at 720p (2.8× at four
-threads, saturating near 1360 fps with the encoder at 98% peak): one engine does
-roughly 1.5 ms of work per 1088p frame, so the aggregate saturates around 650 fps
-at this size.
-
-### Same clip, same frame count, two sizes
-
-The tables above use different content per test, so this one holds everything
-constant except resolution: one real clip resized to each size, 100 frames per
-thread, warmed sessions, host `u8` arrays (no device→host copy inside the clock,
-which is what makes this a pure encode+convert comparison), best of three.
-
-| Arm | Size | t | fps | Gpx/s | Mbit/s | bits/kpx |
-|---|---|---|---|---|---|---|
-| blazar | 1280×720 | 1 | 284.9 | 0.26 | 58.8 | 224.0 |
-| blazar | 1280×720 | 4 | 798.5 | 0.74 | 164.8 | 224.0 |
-| pyav | 1280×720 | 1 | 280.4 | 0.26 | 38.8 | 150.0 |
-| pyav | 1280×720 | 4 | 427.3 | 0.39 | 59.1 | 150.0 |
-| blazar | 1920×1088 | 1 | 204.5 | 0.43 | 79.0 | 184.8 |
-| blazar | 1920×1088 | 4 | 550.9 | 1.15 | 212.7 | 184.8 |
-| pyav | 1920×1088 | 1 | 164.0 | 0.34 | 43.6 | 127.2 |
-| pyav | 1920×1088 | 4 | 247.4 | 0.52 | 65.7 | 127.2 |
-
-- **Pixel throughput is not resolution-independent, and larger is better**:
-  1088p delivers 1.56× the pixels/s of 720p at four threads (1.63× at one). The
-  per-frame costs — session work, API calls, mux — do not scale with picture size,
-  so they are amortised better across 2.27× the pixels.
-- **Scaling is resolution-independent**: 2.80× at 720p and 2.69× at 1088p for
-  Blazar; 1.52× and 1.51× for PyAV. Same GIL story at both sizes.
-- **The QP number is not a quality match between libraries.** At the same nominal
-  `ConstQP 30`, Blazar spends 49% more bits per pixel at 720p and 45% more at
-  1088p. Matching bitrate means giving PyAV a lower QP: at 720p, PyAV QP 27 lands
-  at 218.3 bits/kpx against Blazar's 224.0, and runs at 257.6 fps against 284.9 —
-  **parity inside the ~10% run-to-run noise** (PyAV at QP 28 measured *faster*
-  than at QP 27, which is how large the noise is at this frame count).
-
-**Software conversion against software conversion** (same clip, no device→host
-copy, one thread, warmed):
-
-| conversion | 720p | 1088p |
-|---|---|---|
-| Blazar `preprocess="host"` (CPU SIMD) | 184.8 fps (5.41 ms) | 140.6 fps (7.11 ms) |
-| PyAV (CPU swscale) | 280.4 fps (3.57 ms) | 164.0 fps (6.10 ms) |
-| Blazar `preprocess="device"` (upload + kernel) | 284.9 fps (3.51 ms) | 204.5 fps (4.89 ms) |
-
-- **PyAV's software conversion beats ours**: 1.52× at 720p and 1.17× at 1088p for
-  identical bytes. libswscale is a decades-old hand-tuned path and our kernel is
-  not beating it on the CPU; the reason to use Blazar is not that it converts
-  faster on the host.
-- **Blazar's advantage is the conversion PyAV cannot do**: on the device. That puts
-  it level with PyAV's software path at 720p (284.9 vs 280.4) and 1.25× ahead at
-  1088p, without touching the CPU.
-
-So the honest summary is: on host conversion PyAV is faster, on device conversion
-Blazar is at parity to 1.25×, and the large multiple the old table claimed on the
-host path was a device-vs-software comparison wearing the same label.
-
-Content differs from the table above — synthetic gradients at a fixed QP encode
-slower than real footage — so the absolute rates are not comparable across the two
-tables; the scaling is.
+- **The encode call is not where the time is**: 17% of the wall clock at one
+  stream. The RGB→NV12 kernel measures ~1.37 ms of the remaining 2.15 ms, which
+  makes the conversion the largest component and the encode the smallest. If
+  single-stream throughput is the goal, the kernel is the target, not the encoder
+  settings.
+- **The call shortens per call as streams are added** (0.42 → 0.24 ms) while
+  growing as a share: with one stream each call waits behind that stream's
+  conversion, with four there is always work in flight. That is an interpretation;
+  the measurement behind it is the share rising while the call shortens.
+- These are CPU times inside the call — `nvEncEncodePicture` queues work, so this
+  is not GPU encode time.
 
 ## Build and test
 
