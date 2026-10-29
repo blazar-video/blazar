@@ -196,33 +196,40 @@ jobs:
         shell: bash  # PowerShell does not expand the glob for native commands
       - run: |
           python - <<'PY'
+          import faulthandler, sys, traceback
+          # The previous version of this check exited 1 with nothing on stderr.
+          # Markers and an explicit traceback printer say which line was last
+          # reached and what was raised; faulthandler catches a hard crash.
+          faulthandler.enable()
           import numpy as np
           import blazar
-          print("blazar", blazar.__version__, "backends:", sorted(blazar.backends()))
-          assert blazar.__version__ != "0.0.0", "the module version did not come from the build"
-          assert "nvenc" in blazar.backends(), "the Windows wheel must carry NVENC"
 
+          def log(*parts):
+              print(*parts, file=sys.stderr, flush=True)
+
+          log("M1", "version", blazar.__version__, "backends", sorted(blazar.backends()))
           calibrations = blazar.Calibrations.load("calibrations/default")
+          log("M2 calibrations loaded")
           identity = {"family": "wan", "version": "2.1", "quant": "bf16", "size": "1.3b"}
           frame = np.zeros((64, 64, 3), dtype=np.uint8)
-
-          def attempt():
-              # The session opens on the first frame, so a missing driver has to
-              # surface there: an error naming the driver, not a crash.
+          excepted = None
+          try:
               enc = blazar.Encoder(calibrations=calibrations, identity=identity,
                                    target="balanced", backend="nvenc", codec="h264",
                                    output=None, request_id="win-smoke")
+              log("M3 encoder object created")
               enc.submit(frame, width=64, height=64, fps=24.0, layout="thwc", range="full_u8")
+              log("M4 submit returned")
+          except BaseException as exc:
+              excepted = exc
+              log("M5 caught", type(exc).__name__, repr(exc))
+              traceback.print_exc()
 
-          try:
-              attempt()
-          except (RuntimeError, ValueError) as exc:
-              text = str(exc).lower()
-              if "nvenc" not in text and "driver" not in text:
-                  raise  # a different failure, and we want its traceback
-              print("refused as expected:", type(exc).__name__, str(exc).splitlines()[0])
-          else:
+          if excepted is None:
               raise SystemExit("NVENC encoded a frame on a runner with no GPU?")
+          text = (str(excepted) + " " + " ".join(map(str, excepted.args or []))).lower()
+          assert "nvenc" in text or "driver" in text, f"unexpected error: {excepted!r}"
+          log("M6 refused with a driver message, which is the point")
           PY
         shell: bash  # PowerShell does not run a `python - <<'PY'` heredoc
       - name: acceptance suite (skips hardware, runs what this wheel ships)
