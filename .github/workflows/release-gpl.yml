@@ -79,6 +79,12 @@ jobs:
           timeout 1200 cmake --build /tmp/svt/build -j"$(nproc)"
           cmake --install /tmp/svt/build
 
+          # AlmaLinux's pkg-config searches /usr/lib64/pkgconfig, not /usr/lib
+          # where these install, and an export in this step would not reach the
+          # build step — so publish it through the environment file.
+          echo "PKG_CONFIG_PATH=/usr/lib/pkgconfig:/usr/lib64/pkgconfig" >> "$GITHUB_ENV"
+          export PKG_CONFIG_PATH=/usr/lib/pkgconfig:/usr/lib64/pkgconfig
+
           echo "x264 $(pkg-config --modversion x264)" \
                "x265 $(pkg-config --modversion x265)" \
                "vpx $(pkg-config --modversion vpx)" \
