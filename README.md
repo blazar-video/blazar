@@ -43,12 +43,12 @@ mosk (WSL2), RTX 4080 SUPER, 2026-10-29. Source: 121 frames of real LTX-2.5
 content at 24 fps. Encoder settings mirrored everywhere: `h264_nvenc`, `preset p5`,
 `ConstQP 30`, GOP 120, 2 B-frames, yuv420p (Blazar maps `crf` to `ConstQP`).
 
-Four measurements, on four different bases, so each table states its own and the
-numbers should not be compared across them:
+Every table states its basis, and the numbers are not comparable across them:
 
-1. **Single stream, copy included** — what a whole pipeline costs per frame.
-2. **Conversion site** — the same frames with the copy excluded, to compare
-   conversion strategies.
+1. **The canonical pipeline** — a device-resident tensor in SGLang's shape,
+   nothing uploaded inside the clock, each path paying only its own copy.
+2. **Conversion in isolation** — the copy excluded, for comparing kernels. Not a
+   pipeline, and labelled as such.
 3. **The GIL** — throughput and interpreter interference with other threads.
 4. **Where the time goes** — instrumented inside the encoder call.
 
