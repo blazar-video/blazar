@@ -80,32 +80,20 @@ runs.
   codec init cancel in the difference. It is not a per-frame number in the same
   sense as the others and is shown for scale only.
 
+**QP is not a quality match between libraries.** At the same nominal `ConstQP 30`
+Blazar spends 45–49% more bits per pixel than PyAV, so the fps figures above are
+not quality-matched. Bitrate-matched (PyAV at QP 27 = 218.3 bits/kpx against
+Blazar's 224.0) the two are level inside noise, and that noise is large enough that
+PyAV measured *faster* at QP 28 than at QP 27. Treat the margin between the two as
+a throughput comparison at unequal quality, not as a like-for-like win.
+
 **Caveat on PyAV's 1088p row.** Across this session the identical PyAV pipeline
 measured 5.07, 6.06, 8.24 and 8.60 ms/frame with the same code, content and
 settings. That band is wider than the device-vs-PyAV margin, so treat the ratio as
 somewhere between 2.3× and 3.9× until the interleaved re-measurement lands. The
 device path is stable across every session at 2.20–2.49 ms.
 
-### 2. Conversion in isolation (not a pipeline)
-
-To compare conversion strategies the copy has to be excluded, which makes these
-rows **not representative of a pipeline** — that is why they are separate.
-
-| Host arrays, copy excluded | 720p | 1088p |
-|---|---|---|
-| Blazar `preprocess="device"` (upload + kernel) | 284.9 fps (3.51 ms) | 204.5 fps (4.89 ms) |
-| PyAV (swscale) | 280.4 fps (3.57 ms) | 164.0 fps (6.10 ms) |
-| Blazar `preprocess="host"` (CPU SIMD) | 184.8 fps (5.41 ms) | 140.6 fps (7.11 ms) |
-
-- **On the CPU, swscale beats our kernel**: 1.52× at 720p, 1.17× at 1088p. A
-  twenty-year-old hand-tuned path wins on the host.
-- **On the device there is no competitor**, because PyAV cannot convert there.
-- **QP is not a quality match between libraries.** At the same nominal `ConstQP 30`
-  Blazar spends 45–49% more bits per pixel. Matched on bitrate (PyAV at QP 27 =
-  218.3 bits/kpx against 224.0) PyAV runs 257.6 fps against 284.9 — parity, inside
-  a noise band that also produced PyAV running *faster* at QP 28 than at QP 27.
-
-### 3. The GIL
+### 2. The GIL
 
 A second thread runs a pure-Python loop (no C calls that could release the
 interpreter); the share of its throughput that survives says who is holding the
@@ -155,7 +143,7 @@ slower than it is.
 720p, then flatten, with `nvidia-smi` reporting the NVENC engine at 69% median /
 100% peak and SM at 41%. Past four streams the hardware encoder is the limit.
 
-### 4. Where the time goes
+### 3. Where the time goes
 
 `stats["encode_us"]` covers the whole submit path, so it cannot say whether the
 encoder is the bottleneck. The worker counts time inside `nvEncEncodePicture`
@@ -169,9 +157,11 @@ device tensors:
 | 4 | 883.2 | 1.13 ms | 0.243 ms | 23% |
 
 - **The encode call is not where the time is**: 17% of the wall clock at one
-  stream. The RGB→NV12 kernel measures ~1.37 ms of the remaining 2.15 ms, making
-  the conversion the largest component and the encode the smallest. If
-  single-stream throughput is the goal, the kernel is the target.
+  stream. Of the remaining 2.15 ms, a kernel-only measurement of the RGB→NV12
+  conversion came to ~1.37 ms, which puts most of the frame in the conversion
+  rather than the encode. If single-stream throughput is the goal, the kernel is
+  the target — that number is from a separate kernel benchmark, not from a table
+  here, because a pipeline cannot isolate it.
 - **The call shortens per call as streams are added** (0.42 → 0.24 ms) while
   growing as a share: with one stream each call waits behind that stream's
   conversion, with four there is always work in flight. That is an interpretation;
