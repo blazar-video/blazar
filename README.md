@@ -95,35 +95,37 @@ device path is stable across every session at 2.20–2.49 ms.
 
 ### 2. The GIL
 
-1920×1088, 6 s window, sessions warmed. A second thread runs a pure-Python loop
-(no C calls that could release the interpreter); the share of its throughput that
-survives says who is holding the GIL. Loop baseline 69.6 M iters/s. **Retention above 100% is possible** — the same
-loop beside an active GPU process measured 106–108%, so an idle interpreter is not
-at its boost clock. Read the comparison between arms, not the percentage.
+1920×1088, 6 s window, sessions warmed. **The source is the same device tensor as
+table 1** — `(1, 3, T, H, W)`, built before the clock, nothing uploaded. A second
+thread runs a pure-Python loop (no C calls that could release the interpreter);
+what survives of its throughput says who is holding the GIL. Loop baseline
+69.6 M iters/s, and retention above 100% is noise (an idle interpreter is not at
+its boost clock), so read the comparison, not the percentage.
 
-**"Pre-staged" means the numpy arrays exist in host memory before the clock**, so
-these rows time `submit()` and the encode only. They exclude the per-frame work a
-real pipeline does to produce those arrays — quantise, device→host copy, reshape —
-which is deliberate: it isolates the library's own interpreter behaviour from the
-caller's torch work. It also means these frame rates are **not** comparable with
-table 1, which includes that work. The rates here are lower despite doing less,
-because a competing Python thread is saturating the interpreter throughout.
+Each row runs that full pipeline: the host paths quantise, copy to host and convert
+inside their own clock, exactly as table 1 measures them.
 
-| Workload | fps beside a Python thread | Python loop keeps |
-|---|---|---|
-| blazar, device tensor | **359.3** | 106% (noise) |
-| blazar, pre-staged host arrays | 83.3 | 91% (89–92%) |
-| PyAV, pre-staged host arrays | 33.3 | 92% (90–93%) |
+| Workload | alone | with a Python thread | fps kept | Python kept |
+|---|---|---|---|---|
+| blazar, device tensor | 338.0 fps | **359.3 fps** | **106%** | 106% |
+| blazar, host path | 186.7 fps | 14.7 fps | **8%** | 105% |
+| PyAV | 56.8 fps | 11.4 fps | **20%** | 99% |
 
-- **Device tensors cost no interpreter time**: `submit` hands a pointer to a Rust
-  worker. Nothing else here can say that, because everything else moves pixels
-  through Python first.
-- **On identical host input Blazar does 2.5× PyAV's frame rate for the same
-  interpreter cost** (91% vs 92%, 0.1 points apart over three runs each). The cost
-  is the same because the work is the same; what differs is what each gets done.
-- **If your loop does the device→host copy per frame in Python**, that becomes the
-  bottleneck rather than the library: 186.7 fps alone against 14.7 fps under
-  contention. Hand over the tensor instead.
+- **Only the device path is unaffected.** It keeps 106% of its frame rate — noise —
+  because `submit` hands a pointer to a Rust worker and the calling thread is
+  finished before the frame is touched.
+- **Both host paths collapse under contention**: Blazar to 8% of its own throughput,
+  PyAV to 20%. Their per-frame work is interpreter work, so a second Python thread
+  takes it away. Blazar's copy now runs with the GIL released, which is why it
+  starts 3.3× faster than PyAV (186.7 vs 56.8 fps) and why it loses the same share —
+  the remaining cost is the caller's own quantise and `.cpu()` calls, not the
+  library.
+- **The Python loop keeps 99–106% everywhere.** Nothing here starves another
+  thread; what changes is how much each path can get done while sharing.
+
+The rule this produces for a caller is not subtle: if frames must pass through
+Python per frame, a competing Python thread will cost most of the throughput, no
+matter which library is underneath. Hand over the tensor.
 
 Scaling with encoder threads, same 1920×1088, one Python thread throughout,
 baseline 75.8 M iters/s:
