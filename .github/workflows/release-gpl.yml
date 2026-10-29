@@ -147,7 +147,10 @@ jobs:
           path: calibrations
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # The wheels come from the manylinux container, whose interpreter is
+          # 3.12, and they are not abi3: a cp312 wheel will not install on 3.11.
+          # See PUBLISHING.md — moving to abi3 is what would remove this.
+          python-version: "3.12"
       - uses: actions/download-artifact@v4
         with:
           pattern: gpl-wheel-*
