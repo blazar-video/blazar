@@ -58,12 +58,16 @@ pub enum PlacementError {
 impl core::fmt::Display for PlacementError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            PlacementError::GpuUnavailable { driver_missing: false } => write!(
+            PlacementError::GpuUnavailable {
+                driver_missing: false,
+            } => write!(
                 f,
                 "preprocess=\"gpu\" needs the gpu-preprocess feature; build with \
                  --features gpu-preprocess or pass preprocess=\"cpu\""
             ),
-            PlacementError::GpuUnavailable { driver_missing: true } => write!(
+            PlacementError::GpuUnavailable {
+                driver_missing: true,
+            } => write!(
                 f,
                 "preprocess=\"gpu\" needs a CUDA driver, which is not loadable on this \
                  machine; pass preprocess=\"cpu\" or \"auto\""
@@ -275,9 +279,15 @@ mod tests {
 
     #[test]
     fn the_gpu_unavailable_message_names_the_thing_that_is_missing() {
-        let compiled = PlacementError::GpuUnavailable { driver_missing: false }.to_string();
+        let compiled = PlacementError::GpuUnavailable {
+            driver_missing: false,
+        }
+        .to_string();
         assert!(compiled.contains("feature"), "{compiled}");
-        let no_driver = PlacementError::GpuUnavailable { driver_missing: true }.to_string();
+        let no_driver = PlacementError::GpuUnavailable {
+            driver_missing: true,
+        }
+        .to_string();
         assert!(no_driver.contains("CUDA driver"), "{no_driver}");
     }
 
