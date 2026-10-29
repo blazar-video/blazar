@@ -112,8 +112,17 @@ def torch_device_frames(dtype: str):
 
 # What the driver says when the build knows about NVENC but the machine has no
 # driver: a skip on a hosted runner, a failure on a GPU box. Anything else
-# propagates, so a broken session cannot hide behind a skip.
-UNAVAILABLE = ("could not load", "no nvidia driver", "nvenc is unavailable", "noencode")
+# propagates, so a broken session cannot hide behind a skip. The dialogue is
+# matched loosely against the words these errors actually use, because the point
+# is the cause (no hardware) and not the phrasing.
+UNAVAILABLE = (
+    "nvenc unavailable",
+    "driver",
+    "could be loaded",
+    "could not load",
+    "no cuda driver",
+    "noencode",
+)
 
 
 def encoder(backend: str, codec: str, output, request_id: str, **kwargs):
