@@ -21,6 +21,7 @@ are absent on a machine that has an encoder, because "we could not check" is not
 
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 import subprocess
@@ -125,13 +126,29 @@ UNAVAILABLE = (
 )
 
 
+def skip_without_hardware(test):
+    """Turn "this machine has no such encoder" into a skip, wherever it happens.
+
+    It cannot be a check around the constructor: the session is opened on the
+    first frame, so a missing driver surfaces from `submit`, not from
+    `Encoder(...)`.
+    """
+
+    @functools.wraps(test)
+    def wrapper(*args, **kwargs):
+        try:
+            return test(*args, **kwargs)
+        except RuntimeError as exc:
+            text = str(exc).lower()
+            if any(marker in text for marker in UNAVAILABLE):
+                pytest.skip(f"hardware unavailable on this machine: {str(exc).splitlines()[0]}")
+            raise
+
+    return wrapper
+
+
 def encoder(backend: str, codec: str, output, request_id: str, **kwargs):
-    try:
-        return _encoder(backend, codec, output, request_id, **kwargs)
-    except RuntimeError as exc:
-        if any(marker in str(exc).lower() for marker in UNAVAILABLE):
-            pytest.skip(f"{backend} unavailable on this machine: {exc}")
-        raise
+    return _encoder(backend, codec, output, request_id, **kwargs)
 
 
 def _encoder(backend: str, codec: str, output, request_id: str, **kwargs):
@@ -173,6 +190,7 @@ def decode_check(path: str) -> dict:
 
 
 @pytest.mark.acceptance
+@skip_without_hardware
 @pytest.mark.parametrize("dtype", HOST_DTYPES)
 @pytest.mark.parametrize("backend,codec", cases(), ids=[f"{b}-{c}" for b, c in cases()])
 def test_host_frames_decode(tmp_path, backend, codec, dtype):
@@ -190,6 +208,7 @@ def test_host_frames_decode(tmp_path, backend, codec, dtype):
 
 
 @pytest.mark.acceptance
+@skip_without_hardware
 @pytest.mark.parametrize("dtype", [pytest.param("bf16", id="bf16"), pytest.param("f32", id="f32")])
 @pytest.mark.parametrize(
     "backend,codec", [(b, c) for b, c in cases() if b == "nvenc"], ids=lambda v: str(v)
@@ -208,6 +227,7 @@ def test_device_frames_decode(tmp_path, backend, codec, dtype):
 
 
 @pytest.mark.acceptance
+@skip_without_hardware
 @pytest.mark.parametrize("placement", ["cpu", "gpu"])
 @pytest.mark.parametrize(
     "backend,codec",
@@ -237,6 +257,7 @@ def test_both_conversion_sites_decode(tmp_path, backend, codec, placement):
 
 
 @pytest.mark.acceptance
+@skip_without_hardware
 def test_cpu_placement_refuses_device_frames(tmp_path):
     """The one combination that cannot work: device frames, host conversion."""
     if "nvenc" not in available():
@@ -251,6 +272,7 @@ def test_cpu_placement_refuses_device_frames(tmp_path):
 
 
 @pytest.mark.acceptance
+@skip_without_hardware
 def test_audio_and_video_mux_read_back(tmp_path):
     """Opus + video in one MP4: both streams present, whole file decodes."""
     backend = "nvenc" if "nvenc" in available() else ("svtav1" if "svtav1" in available() else None)
@@ -284,6 +306,7 @@ def test_audio_and_video_mux_read_back(tmp_path):
 
 
 @pytest.mark.acceptance
+@skip_without_hardware
 @pytest.mark.parametrize("backend,codec", cases(), ids=[f"{b}-{c}" for b, c in cases()])
 def test_memory_sink_returns_units(backend, codec):
     """`output=None` yields encoded bytes for every backend, with no file."""
@@ -297,6 +320,7 @@ def test_memory_sink_returns_units(backend, codec):
 
 
 @pytest.mark.acceptance
+@skip_without_hardware
 def test_backends_report_what_this_wheel_builds():
     """The build's own claim. A wheel that loses an encoder fails here first."""
     present = available()
