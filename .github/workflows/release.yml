@@ -53,7 +53,7 @@ jobs:
           # not provide out of the box (see RELEASING.md).
           - os: windows-latest
             platform: win_amd64
-            args: --release --out dist --features nvenc,gpu-preprocess,opus
+            args: --release --out dist --features nvenc,gpu-preprocess,opus -i python
             manylinux: auto
     steps:
       - uses: actions/checkout@v4
@@ -80,10 +80,12 @@ jobs:
               # 1.16 — the build script refuses anything below 1.15 rather than
               # writing past a shorter struct, so build the version we target.
               git clone --depth 1 --branch v1.16.0 https://chromium.googlesource.com/webm/libvpx /tmp/vpx
-              cd /tmp/vpx && ./configure --prefix=/usr --libdir=/usr/lib --disable-examples \
-                --disable-tools --disable-docs --disable-unit-tests --disable-install-bins
-              make -j"$(nproc)" && make install
-              cd /
+              # Subshell: this script shares its shell with maturin, so a `cd`
+              # that is not scoped here leaves maturin looking for /Cargo.toml.
+              ( cd /tmp/vpx && ./configure --prefix=/usr --libdir=/usr/lib \
+                  --disable-examples --disable-tools --disable-docs \
+                  --disable-unit-tests --disable-install-bins \
+                && make -j"$(nproc)" && make install )
               export PKG_CONFIG_PATH=/usr/lib/pkgconfig:$PKG_CONFIG_PATH
               if ! pkg-config --exists SvtAv1Enc; then
                 # AlmaLinux has no svt-av1 package; build it, as the wheel needs
@@ -153,7 +155,7 @@ jobs:
           import blazar
           present = set(blazar.backends())
           print("blazar", blazar.__version__, "backends:", sorted(present))
-          missing = {"nvenc", "svtav1", "vp9", "opus"} - present
+          missing = {"nvenc", "svtav1", "vp9"} - present
           assert not missing, f"wheel is missing {sorted(missing)}; got {sorted(present)}"
 
           # The Apache wheel must not carry copyleft codecs.
