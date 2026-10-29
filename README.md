@@ -159,30 +159,34 @@ fix for that is to hand over the tensor and let the encoder fetch it.
 
 A serving process is several streams plus the work around them, so the useful
 question is what happens when encoder threads are added while one Python thread
-keeps working. 1920×1088, device tensors, 6 s, one Python loop thread throughout.
-Baseline for that loop: 75.8 M iters/s.
+keeps working. 1920×1088, 6 s, one Python loop thread throughout, loop baseline
+75.8 M iters/s.
 
-| Encoder threads | blazar fps | vs 1 | python kept | pyav fps | vs 1 | python kept |
+Two blazar rows, because only one of them is comparable to PyAV:
+
+| Encoder threads | blazar **device** fps | python kept | blazar **host** fps | python kept | pyav fps | python kept |
 |---|---|---|---|---|---|---|
-| 1 | 420.1 | 1.00× | 91% | 11.4 | 1.00× | 85% |
-| 2 | 822.9 | 1.96× | 92% | 15.6 | 1.37× | 79% |
-| 4 | 885.7 | 2.11× | **86%** | 28.2 | 2.47× | **64%** |
+| 1 | 420.1 | 91% | 14.6 | 93% | 11.4 | 85% |
+| 2 | 822.9 | 92% | 21.1 | 90% | 15.6 | 79% |
+| 4 | 885.7 | 86% | 41.1 | 86% | 28.2 | 64% |
 
-- **Blazar doubles throughput per doubling until the encoder saturates** (420 → 823
-  → 886 fps, the last step flattening at the NVENC ceiling measured earlier), and
-  the Python thread keeps 86–92% throughout.
-- **PyAV's Python thread degrades as threads are added**: 85% → 79% → 64%. Each new
-  encoder thread brings more interpreter-bound work, and they queue behind each
-  other and behind the loop.
-- **The gap widens with concurrency**: 31× at four threads (885.7 vs 28.2 fps),
-  against 37× at one. The ratio is roughly flat because PyAV is already near its
-  floor at a single stream; what changes is that Blazar keeps scaling while PyAV's
-  remaining throughput is fought over.
+- **Device vs host is not a like-for-like comparison with PyAV.** The device row
+  hands over a tensor: no per-frame Python work at all. The host row quantises,
+  copies to host and submits an array — the same per-frame work PyAV does — so it
+  is the row to compare against PyAV, and it is labelled as such.
+- **Like-for-like, the gap grows with concurrency**: 1.28× at one thread, 1.35× at
+  two, 1.46× at four (41.1 vs 28.2 fps). Same frames, same conversion site, same
+  per-frame Python.
+- **The Python thread degrades with thread count for PyAV and not for Blazar**:
+  93% → 86% against 85% → 64%. Each PyAV encoder thread adds interpreter-bound
+  work to a single GIL; Blazar's added threads cost the interpreter nothing.
+- **Blazar's device path is the capability PyAV does not have**: 885.7 fps at four
+  threads, 21× the host path, because the frames never leave the device.
 
-PyAV's own multi-thread scaling looks respectable in ratio terms (2.47× at four)
-precisely because its single-thread baseline is so low: it starts at 11.4 fps with
-a Python thread competing, so there is little to lose per thread. Absolute numbers
-are the ones that matter for a serving path.
+PyAV's ratio scaling (2.47× at four threads on the host row) looks better than
+Blazar's (2.82×) in ratio terms while being an order of magnitude slower in
+absolute terms — ratios reward a low starting point, and the absolute numbers are
+what a serving path runs on.
 
 **Where the scaling stops, and why.** 2.7× on four threads is not a software
 limit. At eight threads the aggregate reaches 626–641 fps (3.0×) and flattens,
