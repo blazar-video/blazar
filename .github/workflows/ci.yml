@@ -105,10 +105,15 @@ jobs:
           cd /tmp/vpx && ./configure --prefix=/usr --libdir=/usr/lib --disable-examples \
             --disable-tools --disable-docs --disable-unit-tests --disable-install-bins
           make -j"$(nproc)" && sudo make install
+          # The runner may already carry a distro libvpx whose .pc is found
+          # first; put the one just built ahead of it and report the version so a
+          # mismatch is visible in the log rather than as a bindgen error.
+          echo "PKG_CONFIG_PATH=/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig" >> "$GITHUB_ENV"
+          echo "vpx: $(PKG_CONFIG_PATH=/usr/lib/pkgconfig pkg-config --modversion vpx)"
       - name: macOS build dependencies
         if: runner.os == 'macOS'
         run: |
-          brew install cmake svt-av1 libvpx pkg-config
+          brew install cmake svt-av1 libvpx pkg-config ffmpeg
           {
             echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix)/opt/svt-av1/lib/pkgconfig:$(brew --prefix)/opt/libvpx/lib/pkgconfig"
           } >> "$GITHUB_ENV"
