@@ -111,39 +111,37 @@ not session open. Best of three.
 ### What the GIL actually costs
 
 Throughput scaling is a proxy — it cannot separate "the encoder releases the
-interpreter" from "the encoder is simply faster". This measures it directly.
+interpreter" from "the encoder is simply faster". This measures it directly: a
+second thread runs a pure-Python loop (no C calls that might release the
+interpreter), and the share of its throughput that survives tells you who is
+holding the GIL. 1920×1088, 6 s window, sessions warmed.
 
-The pipeline is the one a model actually leaves behind: frames start on the device
-as a `(1, 3, T, H, W)` bf16 tensor, and the clock covers, per frame, **quantise to
-u8 on the device → device→host copy → YUV conversion on the host → host→device →
-NVENC encode**. Nothing is uploaded that a pipeline would not already have up
-there. A second thread runs a pure-Python loop throughout, so the gap between
-"alone" and "with a Python thread" is the GIL and nothing else. 1920×1088, 6 s
-window, sessions warmed.
+| Workload | fps while a Python thread runs | Python loop keeps |
+|---|---|---|
+| blazar, device tensor (zero copy) | **363.8** | 100% |
+| blazar, pre-staged host arrays | 83.3 | 91% |
+| pyav, pre-staged host arrays | 33.3 | 93% |
 
-| Arm | fps alone | fps with a Python thread | Retained |
-|---|---|---|---|
-| blazar, device tensor (zero copy) | 333.0 | **360.5** | **108%** |
-| pyav (D2H + swscale + upload + NVENC) | 53.8 | 11.4 | **21%** |
-| blazar, host `u8` (same D2H path) | 35.6 | 11.3 | **32%** |
+- **Device tensors cost no interpreter time at all.** `submit` hands a pointer to
+  a Rust worker; the calling thread is free before the frame is touched. Nothing
+  else in this table can say that, because everything else has to move the pixels
+  through Python first.
+- **Host arrays keep 91% of the Python thread's throughput — and 2.5× PyAV's fps**
+  (83.3 vs 33.3) on identical input. The frame copy runs with the GIL released.
+- The Python retention percentages (91/93%) look similar; the difference is what
+  each arm gets done for it. PyAV reaches a third of the frame rate, so the thread
+  has more time to run Python and the ratio flatters it.
 
-- **The zero-copy path is unaffected by another Python thread**: 333 → 360 fps,
-  which is noise. The encode runs in a Rust worker that never holds the
-  interpreter, and `submit` hands over a pointer rather than data.
-- **PyAV keeps a fifth of its throughput** (53.8 → 11.4 fps) when another thread
-  runs Python. Its `from_ndarray`, `reformat` and `mux` calls need the interpreter.
-- **Blazar's host path collapses too** (35.6 → 11.3), which is a defect rather than
-  a property: the binding copies the caller's buffer into a `Vec` *while holding
-  the GIL*, so a host frame costs interpreter time proportional to its size. Until
-  that copy is released with the GIL, the "no GIL cost" claim holds only for
-  device tensors.
+**A caveat about this box.** Repeating the host-array arm across this session gave
+83.3–150 fps for the same code and input, and the device arm 333–364 fps. Run-to-
+run variance here is up to 1.8× on the host path, so treat any single number as an
+order of magnitude, not a measurement. The `tests/test_gil.py` guard asserts a
+ratio (>60% retention), not a rate, for that reason.
 
-**Open question.** An earlier version of this test, feeding pre-generated numpy
-arrays and letting `auto` pick the device path, measured Blazar at 202.8 → 216.7
-fps under the same competing thread (no loss). This one measures the host path at
-35.6 → 11.3. Both are reproducible, they measure different pipelines, and the
-difference is larger than the frame copy can account for. It is recorded here as
-unresolved rather than explained.
+**If your pipeline does the device→host copy per frame in Python** — quantise,
+`.cpu()`, reshape, submit — the GIL cost is then your own loop, not the encoder's,
+and it dominates: measured 14.7 fps under contention against 186.7 fps alone. The
+fix for that is to hand over the tensor and let the encoder fetch it.
 
 **Where the scaling stops, and why.** 2.7× on four threads is not a software
 limit. At eight threads the aggregate reaches 626–641 fps (3.0×) and flattens,
