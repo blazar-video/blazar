@@ -110,7 +110,22 @@ def torch_device_frames(dtype: str):
     return (tensor.to(torch.float32) / 255.0).contiguous()
 
 
+# What the driver says when the build knows about NVENC but the machine has no
+# driver: a skip on a hosted runner, a failure on a GPU box. Anything else
+# propagates, so a broken session cannot hide behind a skip.
+UNAVAILABLE = ("could not load", "no nvidia driver", "nvenc is unavailable", "noencode")
+
+
 def encoder(backend: str, codec: str, output, request_id: str, **kwargs):
+    try:
+        return _encoder(backend, codec, output, request_id, **kwargs)
+    except RuntimeError as exc:
+        if any(marker in str(exc).lower() for marker in UNAVAILABLE):
+            pytest.skip(f"{backend} unavailable on this machine: {exc}")
+        raise
+
+
+def _encoder(backend: str, codec: str, output, request_id: str, **kwargs):
     return blazar.Encoder(
         calibrations=blazar.Calibrations.load(CALIBRATIONS),
         identity=IDENTITY,
@@ -278,6 +293,7 @@ def test_backends_report_what_this_wheel_builds():
     present = available()
     expected = {
         "blazar-video": {"nvenc", "svtav1", "vp9"},
+        "blazar-video-windows": {"nvenc"},
         "blazar-video-gpl": {"nvenc", "svtav1", "vp9", "x264", "x265"},
         "dev": {"nvenc", "svtav1", "vp9", "x264"},
     }
