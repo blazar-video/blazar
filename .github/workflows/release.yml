@@ -214,6 +214,7 @@ jobs:
           else:
               raise SystemExit("NVENC encoded a frame on a runner with no GPU?")
           PY
+        shell: bash  # PowerShell does not run a `python - <<'PY'` heredoc
       - name: acceptance suite (skips hardware, runs what this wheel ships)
         env:
           BLAZAR_ACCEPTANCE_FLAVOUR: blazar-video-windows
