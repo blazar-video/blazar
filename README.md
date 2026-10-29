@@ -93,6 +93,13 @@ not session open. Best of three.
   Blazar's `submit` enqueues onto that encoder's Rust worker and returns.
 - **Aggregate gap is 2.1× at four threads** (563.3 vs 266.0), against 1.3× on a
   single stream at the same size and path.
+- **These rows use device-side conversion, not the software path.** `auto` on
+  NVENC resolves to the device, so each thread uploads its frame and the kernel
+  writes NV12 into the surface NVENC reads. At 1088p on one thread the same clip
+  gives 202.8 fps that way against **140.6 fps** with `preprocess="host"`, which
+  converts on the CPU and then uploads NV12 — 1.44× slower, converting the same
+  bytes (`184.8 bits/kpx` in both). The software path exists because CPU codecs
+  need it; it is not the faster path on NVENC.
 - **Polling after every submit costs nothing measurable** (557.2 vs 563.3, inside
   variance). An earlier version of this table reported ~7%; it also ran a busy
   Python thread for the whole timed region to count background iterations, which
