@@ -134,6 +134,11 @@ impl NvencEncoder {
         timebase: Timebase,
         codec: VideoCodec,
     ) -> Result<Self, EncodeError> {
+        // Load the driver here, on the caller's thread. Doing it in the worker
+        // means a machine without a driver gets "the worker exited" instead of
+        // "no NVIDIA driver", which is both true and useless.
+        nvidia_video_codec_sdk::safe::available()
+            .map_err(|e| EncodeError::Backend(e.to_string()))?;
         let params = NvencParams::from_encoder_config(cfg, width, height, fps)
             .map_err(|e| EncodeError::Backend(e.to_string()))?;
         let frame_duration = timebase.ticks_per_frame(fps);

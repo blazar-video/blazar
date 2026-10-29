@@ -71,7 +71,7 @@ jobs:
           manylinux: ${{ matrix.manylinux }}
           before-script-linux: |
             if command -v dnf >/dev/null; then
-              dnf install -y cmake gcc gcc-c++ make nasm git clang clang-libs libx264-devel libx265-devel || true
+              dnf install -y cmake gcc gcc-c++ make nasm git clang clang-libs opus-devel libx264-devel libx265-devel || true
               # The distro libvpx is 1.7, and the bindings are generated from
               # 1.16 — the build script refuses anything below 1.15 rather than
               # writing past a shorter struct, so build the version we target.
