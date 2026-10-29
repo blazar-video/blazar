@@ -53,7 +53,7 @@ with blazar.Encoder(calibrations=cals, identity={...}, target="balanced",
 | `flush(timeout=None)` | `None` | Encode everything queued. |
 | `close(timeout=None)` | `None` | Flush and finalise the output. Safe to call twice. |
 | `resolved_backend` | `str \| None` | Which backend actually answered. `None` until the first frame when `backend="auto"`, because the choice depends on what opens a session here. A property. |
-| `preprocess` | `str` | Where host frames are converted to NV12: `"cpu"` or `"gpu"`. A property; see [Preprocess placement](#preprocess-placement). |
+| `preprocess` | `str` | Where host frames are converted to NV12: `"host"` or `"device"`. A property; see [Preprocess placement](#preprocess-placement). |
 | `residency` | `str \| None` | `"host"` or `"device"`, fixed by the first submit. A property. |
 | `stats` | `dict` | Counters for the stream: `encoded`, `bytes`, `failed`, `max_encode_us`. A property, not a method. |
 | `error_message()` | `str \| None` | Why the stream failed, if it did. |
@@ -139,15 +139,15 @@ chooses, and `encoder.preprocess` reports what a host frame gets:
 | value | meaning |
 |---|---|
 | `"auto"` (default) | Follow the backend: NVENC converts on the device (the kernel writes straight into the surface NVENC encodes from, so the upload is the only copy); CPU codecs convert on the host, because a device conversion would have to be downloaded again. |
-| `"cpu"` | Always convert on the host. |
-| `"gpu"` | Always convert on the device. Requires a wheel built with `gpu-preprocess`; otherwise constructing the encoder raises `ValueError`. |
+| `"host"` | Always convert on the host. |
+| `"device"` | Always convert on the device. Requires a wheel built with `gpu-preprocess` *and* a loadable CUDA driver; otherwise constructing the encoder raises `ValueError` naming whichever is missing. VideoToolbox is hardware encoding but converts on the host, so `"device"` does not apply to it. |
 
 Two behaviours worth knowing:
 
 - **Placement is a cost, not a contract.** The runtime performs whatever copy a
   placement implies. You are never required to move a tensor to host before
   submitting it.
-- **Device tensors convert on the device.** `preprocess="cpu"` with
+- **Device tensors convert on the device.** `preprocess="host"` with
   `submit` with a device tensor raises rather than silently converting on the device:
   honouring it would mean downloading the tensor, which is not implemented yet.
 

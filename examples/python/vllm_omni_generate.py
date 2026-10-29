@@ -146,7 +146,7 @@ def main() -> int:
         num_frames=args.num_frames,
         num_inference_steps=args.num_inference_steps,
         guidance_scale=args.guidance_scale,
-        generator=torch.Generator(device="cpu").manual_seed(args.seed),
+        generator=torch.Generator(device="host").manual_seed(args.seed),
     )
     try:
         params = OmniDiffusionSamplingParams(**sampling, fps=args.fps, frame_rate=args.fps)

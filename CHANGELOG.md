@@ -33,7 +33,7 @@ binding are in place; the API is not yet stable.
 - **Non-file output**: `output=None` keeps encoded units in memory and returns
   them from `poll()`, bounded so a full buffer raises rather than dropping a
   frame.
-- **`preprocess="auto" | "cpu" | "gpu"`**: RGB→NV12 placement is the caller's
+- **`preprocess="auto" | "host" | "device"`**: RGB→NV12 placement is the caller's
   choice, reported back as `encoder.preprocess`.
 - **`backend="auto"` with `backend_pool="any" | "hardware" | "software"`**:
   hardware preferred, software the fallback, and `hardware` never silently

@@ -123,7 +123,7 @@ UNAVAILABLE = (
     "could not load",
     "no cuda driver",
     "noencode",
-    # A build without gpu-preprocess cannot honour preprocess="gpu" at all. That
+    # A build without gpu-preprocess cannot honour preprocess="device" at all. That
     # is an environment fact about this wheel, not a defect, and the macOS wheel
     # is deliberately built without it.
     "needs the gpu-preprocess feature",
@@ -232,7 +232,7 @@ def test_device_frames_decode(tmp_path, backend, codec, dtype):
 
 @pytest.mark.acceptance
 @skip_without_hardware
-@pytest.mark.parametrize("placement", ["cpu", "gpu"])
+@pytest.mark.parametrize("placement", ["host", "device"])
 @pytest.mark.parametrize(
     "backend,codec",
     [("nvenc", "h264"), ("nvenc", "hevc"), ("nvenc", "av1"), ("svtav1", "av1"), ("vp9", "vp9")],
@@ -241,8 +241,8 @@ def test_device_frames_decode(tmp_path, backend, codec, dtype):
 def test_both_conversion_sites_decode(tmp_path, backend, codec, placement):
     """RGB->NV12 on either side of the bus produces the same decodable class.
 
-    `gpu` is allowed everywhere the kernel exists, including software backends
-    (the NV12 comes back over the bus). What is refused is `cpu` for frames that
+    `device` is allowed wherever our kernel exists, including software backends
+    (the NV12 comes back over the bus). What is refused is `host` for frames that
     are already on the device, asserted separately below.
     """
     present = available()
@@ -269,7 +269,7 @@ def test_cpu_placement_refuses_device_frames(tmp_path):
     tensor = torch_device_frames("bf16")
     enc = encoder(
         "nvenc", "h264", str(tmp_path / "refused.mp4"), "accept-refused",
-        layout="bcthw", preprocess="cpu",
+        layout="bcthw", preprocess="host",
     )
     with pytest.raises(RuntimeError):
         enc.submit(tensor, fps=FPS)

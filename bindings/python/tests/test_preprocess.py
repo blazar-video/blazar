@@ -1,8 +1,8 @@
 """Placement of RGB->NV12 conversion is explicit, reported, and does not change
 the bitstream class.
 
-`preprocess="auto"` resolves per backend and per frame location; `"cpu"` and
-`"gpu"` are honoured or rejected, never silently substituted. These tests need a
+`preprocess="auto"` resolves per backend and per frame location; `"host"` and
+`"device"` are honoured or rejected, never silently substituted. These tests need a
 CUDA device with NVENC, so they skip when Blazar has no hardware backend.
 """
 
@@ -69,15 +69,15 @@ def needs_nvenc() -> None:
 def test_auto_resolves_to_the_device_for_a_host_frame_on_nvenc() -> None:
     needs_nvenc()
     site, units, _ = encode("auto")
-    assert site == "gpu", "NVENC encodes from the surface the kernel wrote, so the upload is the only copy"
+    assert site == "device", "NVENC encodes from the surface the kernel wrote, so the upload is the only copy"
     assert units == FRAMES
 
 
 def test_cpu_placement_is_honoured_and_produces_the_same_stream_class() -> None:
     needs_nvenc()
     auto_site, auto_units, auto_bytes = encode("auto")
-    cpu_site, cpu_units, cpu_bytes = encode("cpu")
-    assert auto_site == "gpu" and cpu_site == "cpu"
+    cpu_site, cpu_units, cpu_bytes = encode("host")
+    assert auto_site == "device" and cpu_site == "host"
     assert cpu_units == auto_units == FRAMES
     # Placement changes cost, not correctness: the two conversions agree within
     # one level, so the streams land in the same size class.
@@ -86,15 +86,15 @@ def test_cpu_placement_is_honoured_and_produces_the_same_stream_class() -> None:
 
 def test_gpu_placement_is_honoured() -> None:
     needs_nvenc()
-    site, units, _ = encode("gpu")
-    assert site == "gpu"
+    site, units, _ = encode("device")
+    assert site == "device"
     assert units == FRAMES
 
 
 def test_cpu_codec_converts_host_frames_on_the_cpu_by_default() -> None:
     needs_nvenc()
     site, units, _ = encode("auto", backend="x264", codec="h264")
-    assert site == "cpu", "a device conversion for a CPU codec would only add a download"
+    assert site == "host", "a device conversion for a CPU codec would only add a download"
     assert units == FRAMES
 
 
@@ -111,7 +111,7 @@ def test_unknown_placement_is_rejected_before_any_frame() -> None:
         )
 
 
-def test_device_tensor_with_cpu_placement_is_an_error_not_a_silent_device_convert() -> None:
+def test_device_tensor_with_host_placement_is_an_error_not_a_silent_device_convert() -> None:
     torch = pytest.importorskip("torch")
     needs_nvenc()
     encoder = blazar.Encoder(
@@ -121,7 +121,7 @@ def test_device_tensor_with_cpu_placement_is_an_error_not_a_silent_device_conver
         backend="nvenc",
         codec="h264",
         output=None,
-        preprocess="cpu",
+        preprocess="host",
     )
     tensor = torch.zeros((1, 3, 4, HEIGHT, WIDTH), dtype=torch.bfloat16, device="cuda")
     with pytest.raises(RuntimeError, match="device tensor"):

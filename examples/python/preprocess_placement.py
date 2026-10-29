@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
 
     calibrations = blazar.Calibrations.load(args.calibrations)
     results = {}
-    for placement in ("auto", "cpu", "gpu"):
+    for placement in ("auto", "host", "device"):
         try:
             site, units, total = encode(calibrations, placement, args.backend)
         except ValueError as error:

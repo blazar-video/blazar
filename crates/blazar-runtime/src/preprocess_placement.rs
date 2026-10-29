@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Where RGB→NV12 happens, and what that implies for the caller.
 //!
-//! Placement is chosen by the caller (`preprocess="auto" | "cpu" | "gpu"`) but
+//! Placement is chosen by the caller (`preprocess="auto" | "host" | "device"`) but
 //! the *transfers* are never the caller's problem: whichever site is chosen,
 //! the runtime performs whatever copy that site requires. So a placement is a
 //! cost, not a contract about where the tensor lives.
@@ -17,17 +17,17 @@ use std::str::FromStr;
 pub enum PreprocessPlacement {
     /// Pick from where the frame already is. Never moves data needlessly.
     Auto,
-    /// Always convert on the CPU, downloading a device tensor first.
-    Cpu,
-    /// Always convert on the GPU, uploading a host frame first.
-    Gpu,
+    /// Always convert on the host, downloading a device tensor first.
+    Host,
+    /// Always convert on the device, uploading a host frame first.
+    Device,
 }
 
 /// Where the conversion actually runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreprocessSite {
-    Cpu,
-    Gpu,
+    Host,
+    Device,
 }
 
 /// Where the frame already is when `submit` is called.
@@ -47,7 +47,7 @@ pub enum PlacementError {
     /// The two causes need different answers from the caller — rebuild with the
     /// feature, or use a machine with a driver — so they are distinguished
     /// rather than reported as "unavailable".
-    GpuUnavailable {
+    DeviceUnavailable {
         /// True when the feature is compiled in and the driver is what is missing.
         driver_missing: bool,
     },
@@ -58,14 +58,14 @@ pub enum PlacementError {
 impl core::fmt::Display for PlacementError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            PlacementError::GpuUnavailable {
+            PlacementError::DeviceUnavailable {
                 driver_missing: false,
             } => write!(
                 f,
                 "preprocess=\"gpu\" needs the gpu-preprocess feature; build with \
                  --features gpu-preprocess or pass preprocess=\"cpu\""
             ),
-            PlacementError::GpuUnavailable {
+            PlacementError::DeviceUnavailable {
                 driver_missing: true,
             } => write!(
                 f,
@@ -88,8 +88,8 @@ impl FromStr for PreprocessPlacement {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "auto" => Ok(Self::Auto),
-            "cpu" => Ok(Self::Cpu),
-            "gpu" => Ok(Self::Gpu),
+            "host" => Ok(Self::Host),
+            "device" => Ok(Self::Device),
             other => Err(PlacementError::Unknown(other.to_owned())),
         }
     }
@@ -101,8 +101,8 @@ impl PreprocessPlacement {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",
-            Self::Cpu => "cpu",
-            Self::Gpu => "gpu",
+            Self::Host => "host",
+            Self::Device => "device",
         }
     }
 }
@@ -111,8 +111,8 @@ impl PreprocessSite {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Cpu => "cpu",
-            Self::Gpu => "gpu",
+            Self::Host => "host",
+            Self::Device => "device",
         }
     }
 }
@@ -128,7 +128,7 @@ impl PreprocessSite {
 /// 7.98 with the round trip, and `auto` picks the cheaper one.
 ///
 /// When GPU preprocessing is unavailable, a device tensor still falls back to
-/// `Cpu`: that path needs a download, not a GPU kernel.
+/// `Host`: that path needs a download, not a device kernel.
 pub fn resolve(
     requested: PreprocessPlacement,
     source: SourceLocation,
@@ -136,19 +136,19 @@ pub fn resolve(
     gpu_available: bool,
 ) -> Result<PreprocessSite, PlacementError> {
     match requested {
-        PreprocessPlacement::Cpu => Ok(PreprocessSite::Cpu),
-        PreprocessPlacement::Gpu if !gpu_available => Err(PlacementError::GpuUnavailable {
+        PreprocessPlacement::Host => Ok(PreprocessSite::Host),
+        PreprocessPlacement::Device if !gpu_available => Err(PlacementError::DeviceUnavailable {
             // `resolve` is told whether the feature exists separately from
             // whether the driver loads; the caller passes the conjunction, so
             // ask the build which half failed.
             driver_missing: cfg!(feature = "gpu-preprocess"),
         }),
-        PreprocessPlacement::Gpu => Ok(PreprocessSite::Gpu),
+        PreprocessPlacement::Device => Ok(PreprocessSite::Device),
         PreprocessPlacement::Auto => Ok(match source {
-            _ if !gpu_available => PreprocessSite::Cpu,
-            SourceLocation::Device => PreprocessSite::Gpu,
-            SourceLocation::Host if backend_converts_on_device => PreprocessSite::Gpu,
-            SourceLocation::Host => PreprocessSite::Cpu,
+            _ if !gpu_available => PreprocessSite::Host,
+            SourceLocation::Device => PreprocessSite::Device,
+            SourceLocation::Host if backend_converts_on_device => PreprocessSite::Device,
+            SourceLocation::Host => PreprocessSite::Host,
         }),
     }
 }
@@ -160,7 +160,8 @@ pub fn resolve(
 pub fn implies_copy(site: PreprocessSite, source: SourceLocation) -> bool {
     matches!(
         (site, source),
-        (PreprocessSite::Gpu, SourceLocation::Host) | (PreprocessSite::Cpu, SourceLocation::Device)
+        (PreprocessSite::Device, SourceLocation::Host)
+            | (PreprocessSite::Host, SourceLocation::Device)
     )
 }
 
@@ -187,7 +188,7 @@ mod tests {
                     backend_converts_on_device,
                     GPU
                 ),
-                Ok(PreprocessSite::Gpu)
+                Ok(PreprocessSite::Device)
             );
         }
     }
@@ -201,7 +202,7 @@ mod tests {
                 DEVICE_CONVERT,
                 GPU
             ),
-            Ok(PreprocessSite::Gpu),
+            Ok(PreprocessSite::Device),
             "NVENC encodes from the surface the kernel wrote, so there is no download to avoid"
         );
     }
@@ -215,7 +216,7 @@ mod tests {
                 HOST_EXPECTED,
                 GPU
             ),
-            Ok(PreprocessSite::Cpu),
+            Ok(PreprocessSite::Host),
             "a device conversion for a CPU codec buys a download it cannot use"
         );
     }
@@ -231,7 +232,7 @@ mod tests {
                         backend_converts_on_device,
                         NO_GPU
                     ),
-                    Ok(PreprocessSite::Cpu)
+                    Ok(PreprocessSite::Host)
                 );
             }
         }
@@ -243,12 +244,12 @@ mod tests {
             for gpu_available in [GPU, NO_GPU] {
                 assert_eq!(
                     resolve(
-                        PreprocessPlacement::Cpu,
+                        PreprocessPlacement::Host,
                         source,
                         DEVICE_CONVERT,
                         gpu_available
                     ),
-                    Ok(PreprocessSite::Cpu),
+                    Ok(PreprocessSite::Host),
                     "cpu placement downloads a device tensor rather than refusing"
                 );
             }
@@ -259,8 +260,8 @@ mod tests {
     fn gpu_is_honoured_for_either_location() {
         for source in [SourceLocation::Host, SourceLocation::Device] {
             assert_eq!(
-                resolve(PreprocessPlacement::Gpu, source, DEVICE_CONVERT, GPU),
-                Ok(PreprocessSite::Gpu)
+                resolve(PreprocessPlacement::Device, source, DEVICE_CONVERT, GPU),
+                Ok(PreprocessSite::Device)
             );
         }
     }
@@ -269,8 +270,8 @@ mod tests {
     fn gpu_without_the_feature_is_an_error_not_a_fallback() {
         for source in [SourceLocation::Host, SourceLocation::Device] {
             assert_eq!(
-                resolve(PreprocessPlacement::Gpu, source, DEVICE_CONVERT, NO_GPU),
-                Err(PlacementError::GpuUnavailable {
+                resolve(PreprocessPlacement::Device, source, DEVICE_CONVERT, NO_GPU),
+                Err(PlacementError::DeviceUnavailable {
                     driver_missing: cfg!(feature = "gpu-preprocess"),
                 })
             );
@@ -279,12 +280,12 @@ mod tests {
 
     #[test]
     fn the_gpu_unavailable_message_names_the_thing_that_is_missing() {
-        let compiled = PlacementError::GpuUnavailable {
+        let compiled = PlacementError::DeviceUnavailable {
             driver_missing: false,
         }
         .to_string();
         assert!(compiled.contains("feature"), "{compiled}");
-        let no_driver = PlacementError::GpuUnavailable {
+        let no_driver = PlacementError::DeviceUnavailable {
             driver_missing: true,
         }
         .to_string();
@@ -293,18 +294,21 @@ mod tests {
 
     #[test]
     fn transfers_are_reported_only_when_placement_moves_data() {
-        assert!(!implies_copy(PreprocessSite::Cpu, SourceLocation::Host));
-        assert!(!implies_copy(PreprocessSite::Gpu, SourceLocation::Device));
-        assert!(implies_copy(PreprocessSite::Cpu, SourceLocation::Device));
-        assert!(implies_copy(PreprocessSite::Gpu, SourceLocation::Host));
+        assert!(!implies_copy(PreprocessSite::Host, SourceLocation::Host));
+        assert!(!implies_copy(
+            PreprocessSite::Device,
+            SourceLocation::Device
+        ));
+        assert!(implies_copy(PreprocessSite::Host, SourceLocation::Device));
+        assert!(implies_copy(PreprocessSite::Device, SourceLocation::Host));
     }
 
     #[test]
     fn placement_strings_round_trip_and_reject_typos() {
         for (text, placement) in [
             ("auto", PreprocessPlacement::Auto),
-            ("cpu", PreprocessPlacement::Cpu),
-            ("gpu", PreprocessPlacement::Gpu),
+            ("host", PreprocessPlacement::Host),
+            ("device", PreprocessPlacement::Device),
         ] {
             assert_eq!(text.parse(), Ok(placement));
             assert_eq!(placement.as_str(), text);

@@ -112,7 +112,7 @@ def run_real(args, stream) -> dict:
     except RuntimeError:
         state_bytes = None
 
-    generator = torch.Generator(device="cpu").manual_seed(args.seed)
+    generator = torch.Generator(device="host").manual_seed(args.seed)
     stats = {"state_bytes": state_bytes, "chunks": 0, "decode_s": 0.0}
     started = time.perf_counter()
     first_submit_s = None

@@ -1227,13 +1227,13 @@ impl PyEncoder {
                 self.preprocess,
                 SourceLocation::Device,
                 blazar_runtime::backend_converts_on_device(self.backend),
-                cfg!(feature = "gpu-preprocess"),
+                blazar_runtime::gpu_preprocess_available(),
             )
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-            if site == PreprocessSite::Cpu {
+            if site == PreprocessSite::Host {
                 return Err(PyRuntimeError::new_err(
-                    "preprocess=\"cpu\" cannot convert a device tensor yet: copy it to host first \
-                     (tensor.cpu()) or use preprocess=\"auto\"",
+                    "preprocess=\"host\" cannot convert a device tensor yet: copy it to host \
+                     first (tensor.cpu()) or use preprocess=\"auto\"",
                 ));
             }
         }
@@ -1500,12 +1500,12 @@ impl PyEncoder {
             .unwrap_or(None))
     }
 
-    /// Where host frames are converted to NV12: `"cpu"` or `"gpu"`.
+    /// Where host frames are converted to NV12: `"host"` or `"device"`.
     ///
     /// `preprocess="auto"` resolves against the backend: a backend that
     /// converts into the surface it encodes from does it on the device, a CPU
     /// codec does it on the host. Device tensors always convert on the device
-    /// unless `preprocess="cpu"` is rejected at submit time.
+    /// unless `preprocess="host"` is rejected at submit time.
     #[getter]
     fn preprocess(&self) -> PyResult<String> {
         use blazar_runtime::preprocess_placement::{resolve, SourceLocation};

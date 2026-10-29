@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //! CPU-side conversion stage, usable on any backend.
 //!
-//! This is the explicit `preprocess="cpu"` placement for a backend that would
+//! This is the explicit `preprocess="host"` placement for a backend that would
 //! otherwise convert on the device. Placement is the caller's decision: they
 //! may want the conversion on the CPU because the device is busy, because
 //! their build has no GPU preprocessing, or because the frames are already in
@@ -14,7 +14,7 @@ use crate::{EncodeError, VideoEncoder};
 
 /// Converts host frames on the CPU before handing them to the inner encoder.
 ///
-/// This is the explicit `preprocess="cpu"` placement for a backend that would
+/// This is the explicit `preprocess="host"` placement for a backend that would
 /// otherwise convert on the device. Placement is a caller's decision, not ours:
 /// a caller may want the conversion on the CPU because the device is busy with
 /// something else, because a GPU kernel is unavailable in their build, or

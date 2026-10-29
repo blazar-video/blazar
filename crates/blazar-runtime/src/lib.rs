@@ -98,7 +98,10 @@ pub enum Boundary {
 /// Both halves matter: the feature has to be compiled in, and the machine has to
 /// have a CUDA driver. A build with the feature on a machine without a driver
 /// used to resolve `auto` to the GPU and then panic inside the worker thread.
-fn gpu_preprocess_available() -> bool {
+///
+/// Public because the Python binding asks the same question when it rejects
+/// `preprocess="host"` for a device tensor.
+pub fn gpu_preprocess_available() -> bool {
     // `cfg!` would keep referring to a module that is not compiled in.
     #[cfg(feature = "gpu-preprocess")]
     {
@@ -388,7 +391,7 @@ impl<S: Sink> Stream<S> {
             .map_err(|e| RuntimeError::BadPlacement(e.to_string()))?;
             self.resolved_preprocess = Some(site);
             tracing::info!(request_id = %self.request_id, placement = site.as_str(), "preprocess placement");
-            self.encoder = Some(if site == preprocess_placement::PreprocessSite::Cpu {
+            self.encoder = Some(if site == preprocess_placement::PreprocessSite::Host {
                 Box::new(blazar_encoder::cpu_preprocess::CpuPreprocessEncoder::new(
                     built,
                 ))
@@ -465,13 +468,13 @@ impl<S: Sink> Stream<S> {
         )
         .map_err(|e| RuntimeError::BadPlacement(e.to_string()))?;
         self.resolved_preprocess = Some(site);
-        if site == preprocess_placement::PreprocessSite::Cpu {
-            tracing::info!(request_id = %self.request_id, placement = "cpu", "preprocess placement");
+        if site == preprocess_placement::PreprocessSite::Host {
+            tracing::info!(request_id = %self.request_id, placement = "host", "preprocess placement");
             self.encoder = Some(Box::new(
                 blazar_encoder::cpu_preprocess::CpuPreprocessEncoder::new(built),
             ));
         } else {
-            tracing::info!(request_id = %self.request_id, placement = "gpu", "preprocess placement");
+            tracing::info!(request_id = %self.request_id, placement = "device", "preprocess placement");
             self.encoder = Some(built);
         }
         self.encoder_open = true;
@@ -613,7 +616,7 @@ impl<S: Sink> Stream<S> {
             preprocess_placement::SourceLocation::Device,
             backend_converts_on_device(self.enc.output.backend),
             gpu_preprocess_available(),
-        ) == Ok(preprocess_placement::PreprocessSite::Cpu)
+        ) == Ok(preprocess_placement::PreprocessSite::Host)
         {
             return Err(RuntimeError::Encode(blazar_encoder::EncodeError::Backend(
                 "preprocess=\"cpu\" cannot convert a device tensor yet: copy it to host first                  (tensor.cpu()) or use preprocess=\"auto\""

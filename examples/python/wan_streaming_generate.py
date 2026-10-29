@@ -121,7 +121,7 @@ def main() -> int:
             num_inference_steps=args.num_inference_steps,
             guidance_scale=args.guidance_scale,
             output_type="latent",
-            generator=torch.Generator(device="cpu").manual_seed(args.seed),
+            generator=torch.Generator(device="host").manual_seed(args.seed),
         )
         latents = output.frames
         generation_s = time.perf_counter() - started

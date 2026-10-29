@@ -198,7 +198,7 @@ fn host_convert_timings() {
 
     // Warm-up: session open, kernel load and NVENC's first-frame cost are setup,
     // not steady-state throughput.
-    if std::env::var("ROW").unwrap_or_default() != "cpu" {
+    if std::env::var("ROW").unwrap_or_default() != "host" {
         let mut enc = encoder();
         let mut warm = GpuPreprocess::new().expect("gpu preprocess");
         let _ = gpu_round_trip(&src[..4], &mut warm, &mut enc);
@@ -210,7 +210,7 @@ fn host_convert_timings() {
     let mut cpu_bytes = 0;
     let only = std::env::var("ROW").unwrap_or_default();
     for _ in 0..ROUNDS {
-        if only != "cpu" {
+        if only != "host" {
             let mut enc = encoder();
             let t = Instant::now();
             let bytes = gpu_round_trip(&src, &mut gpu, &mut enc);
@@ -221,7 +221,7 @@ fn host_convert_timings() {
             }
         }
 
-        if only != "gpu" {
+        if only != "device" {
             let mut enc = encoder();
             let t = Instant::now();
             let bytes = cpu_convert(&src, &mut enc);
