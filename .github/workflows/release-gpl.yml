@@ -110,8 +110,23 @@ jobs:
             fi
       - name: mark it as the GPL distribution
         run: |
+          # The container built these as root; the conversion rewrites the file
+          # and deletes the original, which needs to be ours to delete.
+          sudo chown -R "$(id -u):$(id -g)" bindings/python/dist
           python3 scripts/gpl_wheel.py bindings/python/dist/*.whl
           ls -l bindings/python/dist
+      - name: the GPL libraries must travel inside the wheel
+        # `--auditwheel=repair` bundles them. If it silently did not, the wheel
+        # imports only on a machine that already has libx264/libx265 — which is
+        # how a "works on the build host" wheel gets published.
+        run: |
+          for lib in libx264 libx265; do
+            if ! unzip -l bindings/python/dist/*.whl | grep -q "$lib"; then
+              echo "wheel does not bundle $lib:"
+              unzip -l bindings/python/dist/*.whl
+              exit 1
+            fi
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: gpl-wheel-${{ matrix.platform }}
