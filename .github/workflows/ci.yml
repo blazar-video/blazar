@@ -93,10 +93,11 @@ jobs:
           # No manylinux container here: the point is to install and test the
           # wheel, and inside the container maturin builds for the container's
           # interpreter (cp39), which the runner's python cannot install.
-          args: --release --out dist --features opus
+          args: --release --out dist --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,opus
       # maturin ran with working-directory bindings/python, so the wheel is there
       - run: sudo apt-get install -y libopus-dev pkg-config  # Linux only
         if: runner.os == 'Linux'
+      - run: sudo apt-get install -y ffmpeg libvpx-dev && (sudo apt-get install -y libsvtav1-dev || sudo apt-get install -y libsvtav1enc-dev)
       - run: pip install bindings/python/dist/*.whl pytest numpy
       - name: tests that need no encoder hardware
         env:
@@ -104,6 +105,10 @@ jobs:
         # test_encoder/test_memory_sink drive the mock backend. Everything else
         # in tests/ opens a real session, which a hosted runner cannot do.
         run: python -m pytest tests/test_encoder.py tests/test_memory_sink.py -q
+      - name: acceptance suite
+        env:
+          BLAZAR_ACCEPTANCE_FLAVOUR: blazar-video
+        run: cd bindings/python && python -m pytest tests/test_acceptance.py -q
         working-directory: bindings/python
 
   commit-hygiene:

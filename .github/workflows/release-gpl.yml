@@ -67,12 +67,14 @@ jobs:
               dnf install -y cmake gcc gcc-c++ make git libvpx-devel libx264-devel libx265-devel || true
               if ! pkg-config --exists SvtAv1Enc; then
                 # AlmaLinux has no svt-av1 package; build it, as the wheel needs
-                # it at link time. ~2 minutes, once per wheel.
+                # it at link time. Install to /usr so its .pc lands in the
+                # default pkg-config path rather than somewhere unsearched.
                 git clone --depth 1 --branch v2.3.0 https://gitlab.com/AOMediaCodec/SVT-AV1.git /tmp/svt
                 cmake -S /tmp/svt -B /tmp/svt/build -DCMAKE_BUILD_TYPE=Release \
-                      -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX=/usr/local
+                      -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX=/usr
                 cmake --build /tmp/svt/build -j"$(nproc)"
                 cmake --install /tmp/svt/build
+                export PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/lib/pkgconfig:$PKG_CONFIG_PATH
               fi
             elif command -v apt-get >/dev/null; then
               apt-get update && apt-get install -y cmake build-essential libvpx-dev libsvtav1-dev
@@ -117,13 +119,17 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/calibrations
+          path: calibrations
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: sudo apt-get update && sudo apt-get install -y cmake build-essential libx264-dev libx265-dev libvpx-dev libsvtav1-dev
+      - run: sudo apt-get update && sudo apt-get install -y cmake build-essential ffmpeg libvpx-dev libx264-dev libx265-dev && (sudo apt-get install -y libsvtav1-dev || sudo apt-get install -y libsvtav1enc-dev)
       - run: pip install maturin
       - run: cd packaging/gpl && maturin build --release --features pyo3/extension-module,nvenc,gpu-preprocess,enc-svtav1,enc-vp9,enc-x264,enc-x265,opus --out dist
-      - run: pip install packaging/gpl/dist/*.whl
+      - run: pip install packaging/gpl/dist/*.whl pytest numpy
       - run: |
           python - <<'PY'
           import blazar
@@ -132,6 +138,11 @@ jobs:
           missing = {"x264", "x265"} - present
           assert not missing, f"GPL wheel is missing {sorted(missing)}; got {sorted(present)}"
           PY
+      - name: acceptance suite
+        env:
+          BLAZAR_ACCEPTANCE_FLAVOUR: blazar-video-gpl
+          BLAZAR_CALIBRATIONS: ${{ github.workspace }}/calibrations/default
+        run: python -m pytest bindings/python/tests/test_acceptance.py -q
 
   publish:
     needs: [wheels, sdist, smoke]
