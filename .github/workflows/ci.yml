@@ -96,8 +96,15 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential pkg-config ffmpeg libvpx-dev libopus-dev
+          sudo apt-get install -y cmake build-essential pkg-config ffmpeg libopus-dev nasm git
           sudo apt-get install -y libsvtav1-dev || sudo apt-get install -y libsvtav1enc-dev
+          # Build libvpx rather than take the distro's: 24.04 ships 1.14, whose
+          # headers our bindings do not match, and 1.16 is what the encoder is
+          # developed and benchmarked against.
+          git clone --depth 1 --branch v1.16.0 https://chromium.googlesource.com/webm/libvpx /tmp/vpx
+          cd /tmp/vpx && ./configure --prefix=/usr --libdir=/usr/lib --disable-examples \
+            --disable-tools --disable-docs --disable-unit-tests --disable-install-bins
+          make -j"$(nproc)" && sudo make install
       - name: macOS build dependencies
         if: runner.os == 'macOS'
         run: |
@@ -112,7 +119,7 @@ jobs:
           # wheel, and inside the container maturin builds for the container's
           # interpreter (cp39), which the runner's python cannot install.
           manylinux: "off"
-          args: --release --out dist --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,opus
+          args: ${{ runner.os == 'macOS' && '--release --out dist --features enc-svtav1,enc-vp9,opus' || '--release --out dist --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,opus' }}
       # maturin ran with working-directory bindings/python, so the wheel is there
       - run: pip install bindings/python/dist/*.whl pytest numpy
       - name: tests that need no encoder hardware
@@ -123,7 +130,7 @@ jobs:
         run: python -m pytest bindings/python/tests/test_encoder.py bindings/python/tests/test_memory_sink.py -q
       - name: acceptance suite
         env:
-          BLAZAR_ACCEPTANCE_FLAVOUR: blazar-video
+          BLAZAR_ACCEPTANCE_FLAVOUR: ${{ runner.os == 'macOS' && 'blazar-video-macos' || 'blazar-video' }}
           BLAZAR_CALIBRATIONS: ${{ github.workspace }}/calibrations/default
         run: python -m pytest bindings/python/tests/test_acceptance.py -q
 

@@ -294,6 +294,8 @@ def test_backends_report_what_this_wheel_builds():
     expected = {
         "blazar-video": {"nvenc", "svtav1", "vp9"},
         "blazar-video-windows": {"nvenc"},
+        # No NVENC on Apple: the codec SDK has no macOS sys module.
+        "blazar-video-macos": {"svtav1", "vp9"},
         "blazar-video-gpl": {"nvenc", "svtav1", "vp9", "x264", "x265"},
         "dev": {"nvenc", "svtav1", "vp9", "x264"},
     }
