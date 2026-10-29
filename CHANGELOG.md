@@ -7,6 +7,51 @@ identical settings is always a minor bump.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-29
+
+Adds the GPL distribution, and fixes what the first release shipped wrong.
+
+### Added
+
+- **`blazar-video-gpl`**: the same library built with x264 and x265, published
+  under `GPL-3.0-or-later`. Apache-2.0 code can be combined into a GPLv3 work, so
+  this is legal where shipping those encoders in the Apache wheel would not be.
+  The wheel bundles both libraries and every wheel carries a `NOTICE.md` naming
+  them, their licences and where their source lives.
+
+### Fixed
+
+- **`blazar.__version__` reported `0.0.0`** while the wheel metadata said `0.1.0`.
+  The module hardcoded it; it now re-exports the extension's, which is built from
+  the crate, so there is one source instead of a fifth that drifts.
+- **`__pycache__` was packaged** from the build machine's working tree, putting
+  another interpreter's bytecode inside the wheel.
+- **A wheel with NVENC on a machine with no driver panicked** inside the encoder
+  worker instead of failing the session: `cudarc`'s loader panics rather than
+  returning an error. Availability is a runtime probe now, so `preprocess="auto"`
+  selects the host path and a session opened for NVENC fails with a message that
+  names the driver.
+- **`preprocess="gpu"` reported "needs the gpu-preprocess feature"** on a machine
+  where the feature was compiled in and the driver was missing, which points the
+  reader at the wrong fix.
+
+### Changed
+
+- **`preprocess` takes `"auto"`, `"host"` or `"device"`.** `"gpu"` and `"cpu"` are
+  rejected, not aliased. VideoToolbox is hardware encoding that converts on the
+  host, so the old names were wrong for it in both directions; `host`/`device`
+  match what `Encoder.residency` already reported.
+
+### Known gaps
+
+- Wheels are not abi3: `cp311` on macOS and Windows, `cp312` on the Linux and GPL
+  wheels, depending on the interpreter each job builds against. A wheel will not
+  install on another Python minor version. `abi3-py39` would collapse them to one
+  per platform.
+- NVENC on Windows is build-verified only. There is no GPU runner, so the wheel
+  proves it imports without a driver and refuses with a driver message.
+- No AAC. Opus is the supported audio codec.
+
 ## [0.1.0] - 2026-10-28
 
 First release. The encoder pipeline, the calibration system and the Python
