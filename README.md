@@ -108,6 +108,41 @@ threads, saturating near 1360 fps with the encoder at 98% peak): one engine does
 roughly 1.5 ms of work per 1088p frame, so the aggregate saturates around 650 fps
 at this size.
 
+### Same clip, same frame count, two sizes
+
+The tables above use different content per test, so this one holds everything
+constant except resolution: one real clip resized to each size, 100 frames per
+thread, warmed sessions, host `u8` arrays (no device→host copy inside the clock,
+which is what makes this a pure encode+convert comparison), best of three.
+
+| Arm | Size | t | fps | Gpx/s | Mbit/s | bits/kpx |
+|---|---|---|---|---|---|---|
+| blazar | 1280×720 | 1 | 284.9 | 0.26 | 58.8 | 224.0 |
+| blazar | 1280×720 | 4 | 798.5 | 0.74 | 164.8 | 224.0 |
+| pyav | 1280×720 | 1 | 280.4 | 0.26 | 38.8 | 150.0 |
+| pyav | 1280×720 | 4 | 427.3 | 0.39 | 59.1 | 150.0 |
+| blazar | 1920×1088 | 1 | 204.5 | 0.43 | 79.0 | 184.8 |
+| blazar | 1920×1088 | 4 | 550.9 | 1.15 | 212.7 | 184.8 |
+| pyav | 1920×1088 | 1 | 164.0 | 0.34 | 43.6 | 127.2 |
+| pyav | 1920×1088 | 4 | 247.4 | 0.52 | 65.7 | 127.2 |
+
+- **Pixel throughput is not resolution-independent, and larger is better**:
+  1088p delivers 1.56× the pixels/s of 720p at four threads (1.63× at one). The
+  per-frame costs — session work, API calls, mux — do not scale with picture size,
+  so they are amortised better across 2.27× the pixels.
+- **Scaling is resolution-independent**: 2.80× at 720p and 2.69× at 1088p for
+  Blazar; 1.52× and 1.51× for PyAV. Same GIL story at both sizes.
+- **The QP number is not a quality match between libraries.** At the same nominal
+  `ConstQP 30`, Blazar spends 49% more bits per pixel at 720p and 45% more at
+  1088p. Matching bitrate means giving PyAV a lower QP: at 720p, PyAV QP 27 lands
+  at 218.3 bits/kpx against Blazar's 224.0, and runs at 257.6 fps against 284.9 —
+  **parity inside the ~10% run-to-run noise** (PyAV at QP 28 measured *faster*
+  than at QP 27, which is how large the noise is at this frame count).
+
+So the honest summary of the single-stream comparisons is unchanged from above:
+zero-copy is the real advantage, host-staged Blazar and PyAV are comparable, and
+any claim of a large multiple on the host path was a measurement artefact.
+
 Content differs from the table above — synthetic gradients at a fixed QP encode
 slower than real footage — so the absolute rates are not comparable across the two
 tables; the scaling is.
