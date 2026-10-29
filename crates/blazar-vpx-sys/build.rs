@@ -56,8 +56,6 @@ fn regenerate(lib: &pkg_config::Library) {
     }
     let bindings = builder.generate().expect("generate libvpx bindings");
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/pregenerated.rs");
-    bindings
-        .write_to_file(&path)
-        .expect("write bindings");
+    bindings.write_to_file(&path).expect("write bindings");
     println!("cargo:warning=rewrote {}", path.display());
 }

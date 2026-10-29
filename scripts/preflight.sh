@@ -54,13 +54,36 @@ rust_docs() {
         --exclude blazar-vpx-sys --exclude blazar-x265-sys --exclude blazar-svtav1-sys
 }
 
+# The pkg-config name each feature needs, if any. A codec whose library is not
+# installed on this machine is reported as skipped, not failed: that is an
+# environment gap, and calling it a failure teaches people to ignore the script.
+codes_need() {
+    case "$1" in
+        enc-x264) echo x264 ;;
+        enc-x265) echo x265 ;;
+        enc-svtav1) echo SvtAv1Enc ;;
+        enc-vp9) echo vpx ;;
+        *) echo "" ;;
+    esac
+}
+
 # Each optional encoder is built on its own, so a feature that only works in
 # combination with others is caught.
 feature_sets() {
-    local status=0
+    local status=0 features code need missing
     for features in "" "enc-x264" "enc-svtav1" "enc-vp9" "enc-x265" "opus" \
                     "nvenc" "gpu-preprocess" "nvenc,gpu-preprocess" \
                     "enc-svtav1,enc-vp9,enc-x264,opus"; do
+        missing=""
+        for code in ${features//,/ }; do
+            need=$(codes_need "$code")
+            [[ -z $need ]] && continue
+            pkg-config --exists "$need" 2>/dev/null || missing="$missing $need"
+        done
+        if [[ -n $missing ]]; then
+            printf -- '--- features: %s  SKIPPED (missing:%s)\n' "${features:-<default>}" "$missing"
+            continue
+        fi
         printf -- '--- features: %s\n' "${features:-<default>}"
         if ! cargo build --release -p blazar-encoder -p blazar-runtime \
             ${features:+--features "$features"} 2>&1 | tail -20; then
