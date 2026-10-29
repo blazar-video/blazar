@@ -42,8 +42,15 @@ pub enum SourceLocation {
 /// caller can act on.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PlacementError {
-    /// `gpu` was requested but the build has no GPU preprocessing.
-    GpuUnavailable,
+    /// `gpu` was requested but this build or this machine cannot do it.
+    ///
+    /// The two causes need different answers from the caller — rebuild with the
+    /// feature, or use a machine with a driver — so they are distinguished
+    /// rather than reported as "unavailable".
+    GpuUnavailable {
+        /// True when the feature is compiled in and the driver is what is missing.
+        driver_missing: bool,
+    },
     /// Not one of `auto`, `cpu`, `gpu`.
     Unknown(String),
 }
@@ -51,10 +58,15 @@ pub enum PlacementError {
 impl core::fmt::Display for PlacementError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            PlacementError::GpuUnavailable => write!(
+            PlacementError::GpuUnavailable { driver_missing: false } => write!(
                 f,
                 "preprocess=\"gpu\" needs the gpu-preprocess feature; build with \
                  --features gpu-preprocess or pass preprocess=\"cpu\""
+            ),
+            PlacementError::GpuUnavailable { driver_missing: true } => write!(
+                f,
+                "preprocess=\"gpu\" needs a CUDA driver, which is not loadable on this \
+                 machine; pass preprocess=\"cpu\" or \"auto\""
             ),
             PlacementError::Unknown(value) => write!(
                 f,
@@ -121,7 +133,12 @@ pub fn resolve(
 ) -> Result<PreprocessSite, PlacementError> {
     match requested {
         PreprocessPlacement::Cpu => Ok(PreprocessSite::Cpu),
-        PreprocessPlacement::Gpu if !gpu_available => Err(PlacementError::GpuUnavailable),
+        PreprocessPlacement::Gpu if !gpu_available => Err(PlacementError::GpuUnavailable {
+            // `resolve` is told whether the feature exists separately from
+            // whether the driver loads; the caller passes the conjunction, so
+            // ask the build which half failed.
+            driver_missing: cfg!(feature = "gpu-preprocess"),
+        }),
         PreprocessPlacement::Gpu => Ok(PreprocessSite::Gpu),
         PreprocessPlacement::Auto => Ok(match source {
             _ if !gpu_available => PreprocessSite::Cpu,
@@ -249,9 +266,19 @@ mod tests {
         for source in [SourceLocation::Host, SourceLocation::Device] {
             assert_eq!(
                 resolve(PreprocessPlacement::Gpu, source, DEVICE_CONVERT, NO_GPU),
-                Err(PlacementError::GpuUnavailable)
+                Err(PlacementError::GpuUnavailable {
+                    driver_missing: cfg!(feature = "gpu-preprocess"),
+                })
             );
         }
+    }
+
+    #[test]
+    fn the_gpu_unavailable_message_names_the_thing_that_is_missing() {
+        let compiled = PlacementError::GpuUnavailable { driver_missing: false }.to_string();
+        assert!(compiled.contains("feature"), "{compiled}");
+        let no_driver = PlacementError::GpuUnavailable { driver_missing: true }.to_string();
+        assert!(no_driver.contains("CUDA driver"), "{no_driver}");
     }
 
     #[test]
