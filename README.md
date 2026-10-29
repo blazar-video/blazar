@@ -39,27 +39,67 @@ Create the encoder with a pointer to the [calibrations](https://github.com/blaza
 
 ## Performance
 
-This comparison table was done on a Core i7 14700KF with a 4080 Super in WSL. What we are measuring here is a BF16 (or F32 in the case of the blazar F32 row) (1, 3, 121, 1088, 1920) tensor being passed into the encoder pipelines for these scenarios:
-1. Blazar device bf16 (BF16 input tensor, GPU YUV conversion, NVENC)
-2. Blazar device u8 -> CPU YUV Conversion -> NVENC
-3. PyAV device u8 -> CPU YUV Conversion -> NVENC
-4. FFmpeg device u8 -> IPC -> CPU YUV Conversion -> NVENC
+Measured on mosk (WSL2), RTX 4080 SUPER, 2026-10-29. Source: 121 frames of real
+LTX-2.5 content at 24 fps, re-encoded to the target size.
 
-| Path | Conversion | 1088p ms/frame | 1088p fps | 720p ms/frame |
-|---|---|---|---|---|
-| blazar, device tensor | device kernel, no copy | **3.88** | 258 | **2.78** |
-| blazar, host arrays | device kernel | 6.35 | 158 | 3.70 |
-| PyAV, host arrays | swscale | 9.37 | 107 | 4.29 |
-| ffmpeg CLI, raw pipe | swscale | 19.81 | 51 | 8.94 |
+Every path starts from the same `(1, 3, 121, H, W)` CUDA tensor, which is what a
+model hands over, and **every row pays its own device→host copy inside the
+clock**. Encoder settings are mirrored: `h264_nvenc`, `preset p5`, `ConstQP 30`,
+GOP 120, 2 B-frames, yuv420p (Blazar maps `crf` to `ConstQP`).
+
+Two numbers per row, because one of them is not throughput: **steady** is the
+median per-frame cost over three runs once the session is open, and **open** is
+what a fresh NVENC session costs. 121 frames is short enough that session open
+dominates a naive average — it accounts for 1.7–3.4 ms of every "ms/frame" the
+previous version of this table published.
+
+| Path | Conversion | 720p steady | 720p open | 1088p steady | 1088p open |
+|---|---|---|---|---|---|
+| blazar, device tensor | device kernel, no copy | **1.38 ms** (726 fps) | 233 ms | **2.46 ms** (407 fps) | 217 ms |
+| blazar, host arrays | device kernel | 2.59 ms (386 fps) | 223 ms | 5.21 ms (192 fps) | 231 ms |
+| PyAV, host arrays | swscale | 2.26 ms (442 fps) | 209 ms | 6.06 ms (165 fps) | 420 ms |
+| ffmpeg CLI, raw pipe | swscale | 5.47 ms (183 fps) | — | 10.42 ms (96 fps) | — |
+
+What this says:
+
+- **Zero-copy is the win, and it grows with resolution**: 1.6× over PyAV at 720p,
+  2.5× at 1088p. It is the only path that does not move the frame.
+- **Host-staged Blazar is not faster than PyAV.** At 720p it is slightly slower
+  (2.59 vs 2.26 ms); at 1088p slightly faster (5.21 vs 6.06 ms). Both pay the same
+  device→host copy, so what is left is a conversion difference of a few tenths of
+  a millisecond in either direction, inside run-to-run variance. An earlier
+  version of this table claimed 1.5×; that comparison did not pay the copy on both
+  sides and does not survive a clean measurement.
+- **The CLI is 2.4× slower than PyAV at the same settings**, from the raw pipe and
+  a separate process, not from the encode.
 
 ### Concurrency and the Python GIL
 
-This test is done on the same machine as above.
+720p, 200 frames per thread, one encoder per thread, NVENC settings mirrored, and
+every session warmed before the clock so this measures throughput rather than
+session open. Best of three.
 
-| Arm | 1 thread | 2 threads | 4 threads | scaling | per-thread at 4 |
+| Arm | 1 thread | 2 threads | 4 threads | scaling @ 4 | per-thread @ 4 |
 |---|---|---|---|---|---|
-| blazar | 155.9 fps | 383.0 | **620.8** | **4.0x** | 155.2 |
-| PyAV | 33.7 | 61.9 | 63.0 | **1.9x** | 15.7 |
+| blazar | 398.7 fps | 668.6 fps | **1111.7 fps** | 2.8× | 277.9 |
+| blazar_poll | 389.3 fps | 729.0 fps | 1084.5 fps | 2.8× | 271.1 |
+| pyav | 313.0 fps | 499.5 fps | 628.9 fps | **2.0×** | 157.2 |
+
+- **Blazar scales to 2.8× on four threads, PyAV to 2.0×**, and PyAV's per-thread
+  rate halves (313 → 157 fps) as threads are added: `VideoFrame.from_ndarray`,
+  `reformat` and `container.mux` all run in the interpreter, so its threads take
+  turns. Blazar's `submit` enqueues onto that encoder's Rust worker and returns.
+- **Aggregate gap is 1.8× at four threads** (1111.7 vs 628.9), against 1.3× on a
+  single stream at the same size.
+- **Polling after every submit is free here** (1084.5 vs 1111.7, inside variance).
+  An earlier version of this table reported ~7%; it also ran a busy Python thread
+  for the whole timed region to count background iterations, which starved the
+  interpreter for every arm and was reported as PyAV being 13× slower than it is.
+  That thread is gone, and so is the claim.
+
+Absolute rates differ from the table above because that one uses real content and
+this one uses synthetic gradients: at a fixed QP, higher entropy means more bits
+and a slower encode. The scaling is the point here, not the absolute rate.
 
 ## Build and test
 
