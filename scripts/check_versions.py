@@ -2,7 +2,10 @@
 """Check that every place carrying a version agrees.
 
 Four files state it — the cargo workspace, the binding crate, and two
-distributions — plus the changelog must have a section for it. They are edited
+distributions — plus the changelog must have a section for it. The Python module
+does not appear here on purpose: it reads `__version__` from the extension, which
+is built from the binding crate, so there is one source rather than five. (It was
+five, hardcoded, and it had already drifted to 0.0.0 while the wheel said 0.1.0.) They are edited
 by hand at release time, which is exactly when nobody wants to debug a wheel
 whose filename disagrees with its metadata.
 """
