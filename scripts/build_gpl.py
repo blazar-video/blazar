@@ -123,7 +123,10 @@ def main(argv: list[str]) -> int:
     for cache in SCRATCH.rglob("__pycache__"):
         shutil.rmtree(cache)
 
-    out = Path(args.out)
+    # Absolute, because maturin runs with cwd=SCRATCH: a relative --out would
+    # write the wheel inside the scratch directory and the cleanup would take it
+    # with it. That is exactly what the first container run did.
+    out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     command = [
         "maturin", "build", "--release",
@@ -141,6 +144,13 @@ def main(argv: list[str]) -> int:
     print("+", " ".join(command), f"(in {SCRATCH})", file=sys.stderr)
     result = subprocess.run(command, cwd=SCRATCH)
     shutil.rmtree(SCRATCH, ignore_errors=True)
+    if result.returncode == 0:
+        wheels = sorted(out.glob("*.whl"))
+        if not wheels:
+            print(f"maturin reported success but {out} has no wheel", file=sys.stderr)
+            return 1
+        for wheel in wheels:
+            print(wheel)
     return result.returncode
 
 
