@@ -13,11 +13,7 @@ on:
     inputs:
       tag:
         description: "Existing tag to build (skips publishing when set by hand)"
-      testpypi:
-        description: "Publish to TestPyPI instead of PyPI (dry run; burns nothing on the real index)"
-        type: boolean
-        default: true
-
+    
 permissions:
   contents: write     # upload release assets
   id-token: write     # PyPI trusted publishing
@@ -251,12 +247,11 @@ jobs:
     needs: [wheels, sdist, smoke]
     runs-on: ubuntu-latest
     environment: pypi
-    # A tag publishes for real; a manual run goes to TestPyPI by default, so the
-    # workflow can be rehearsed without spending a version number.
-    # A tag publishes for real; a manual run publishes to TestPyPI, which the
-    # input controls. The real-PyPI step below is gated on the tag, so a branch
-    # can never reach it.
-    if: startsWith(github.ref, 'refs/tags/') || inputs.testpypi == true
+    # A tag publishes; a manual run builds and verifies but publishes nothing.
+    # A tag publishes. Manual runs build and verify, and publish nothing: a
+    # rehearsal index only ever tested the publisher configuration, which is the
+    # one thing it cannot validate on your behalf.
+    if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -265,12 +260,6 @@ jobs:
           path: dist
       - run: pip install twine && twine check dist/*
       - uses: pypa/gh-action-pypi-publish@release/v1
-        if: startsWith(github.ref, 'refs/tags/')
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          skip-existing: true
 
   publish-crates:
     # Opt-in per repository: publishing the workspace crates is a separate

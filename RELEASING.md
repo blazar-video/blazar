@@ -99,9 +99,9 @@ release waits for hardware rather than shipping an encoder nobody executed.
 
 ## Rehearsing
 
-Before the first tag of a series, run both workflows by hand. They default to
-TestPyPI (`testpypi: true`), build the real artifacts, and run the same smoke
-tests a release would. Only a tag publishes to PyPI.
+Before the first tag of a series, run the workflow by hand. It builds the real
+artifacts and runs the same smoke and acceptance tests a release would, and
+publishes nothing. Only a tag publishes to PyPI.
 
 ## Rollback
 

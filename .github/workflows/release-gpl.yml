@@ -14,11 +14,7 @@ on:
     inputs:
       tag:
         description: "Existing tag to build (no publish on manual runs)"
-      testpypi:
-        description: "Publish to TestPyPI instead of PyPI (dry run)"
-        type: boolean
-        default: true
-
+    
 permissions:
   contents: write
   id-token: write
@@ -168,7 +164,7 @@ jobs:
     needs: [wheels, sdist, smoke]
     runs-on: ubuntu-latest
     environment: pypi-gpl
-    if: startsWith(github.ref, 'refs/tags/') || inputs.testpypi == false
+    if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -177,9 +173,3 @@ jobs:
           path: dist
       - run: pip install twine && twine check dist/*
       - uses: pypa/gh-action-pypi-publish@release/v1
-        if: startsWith(github.ref, 'refs/tags/')
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          skip-existing: true

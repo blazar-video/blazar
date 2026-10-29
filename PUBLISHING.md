@@ -97,24 +97,24 @@ which encoder ran.
 
 - `blazar-video` must be available, or the project name changes. Check at
   <https://pypi.org/project/blazar-video/>.
-- **TestPyPI first**: `twine upload --repository testpypi dist/*`, then install
+- **Install the wheel from a local build first**, then publish: `pip install dist/*.whl`, then install
   from it in a clean venv. A first upload to the real index cannot be undone
   (the version number is burned even if the files are yanked).
 
-## 4a. Rehearsing without spending a version number
+## 4a. Rehearsing
 
-Both release workflows take a `testpypi` input (default **true**) on
-`workflow_dispatch`. A manual run therefore builds everything, runs the smoke
-test, and publishes to TestPyPI; only a tag publishes for real.
+A manual run (`workflow_dispatch`) builds every artefact and runs both smoke jobs,
+and **publishes nothing**. Only a tag publishes.
 
-```sh
-gh workflow run release-gpl.yml            # dry run → test.pypi.org
-gh workflow run release.yml --field testpypi=false   # → pypi.org
-```
+There is no rehearsal index in the pipeline. A TestPyPI run only ever exercised a
+second, independent publisher configuration — it could not tell you anything about
+the one that matters, and a misconfigured rehearsal costs a round trip just like a
+misconfigured upload would. The upload itself is the one step with no local
+equivalent; the version number is the thing it costs if the publisher is wrong.
 
-A first upload to the real index cannot be undone — the filename and version are
-spent even if the files are yanked afterwards. Rehearse on TestPyPI, and install
-from it in a clean venv before tagging.
+What a rehearsal must cover instead: install the built wheel in a clean venv and
+run the acceptance suite against it. The smoke jobs do exactly that on the runner
+of each platform.
 
 `blazar.backends()` is what the smoke test asserts: the list of encoder
 implementations compiled into the wheel. Importing the package proves nothing —
@@ -131,8 +131,8 @@ why.
 Also create the `pypi` environment in the repository settings (Settings →
 Environments) — a required reviewer there is the last human gate before an upload.
 
-For TestPyPI, a second publisher pointing at the same workflow with environment
-`testpypi`, and a `--repository testpypi` job gated on `workflow_dispatch`.
+The GPL distribution needs its own publisher: project `blazar-video-gpl`,
+environment `pypi-gpl`.
 
 ## 6. What must be green
 
