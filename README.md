@@ -155,6 +155,35 @@ ratio (>60% retention), not a rate, for that reason.
 and it dominates: measured 14.7 fps under contention against 186.7 fps alone. The
 fix for that is to hand over the tensor and let the encoder fetch it.
 
+### Scaling the number of encoder threads
+
+A serving process is several streams plus the work around them, so the useful
+question is what happens when encoder threads are added while one Python thread
+keeps working. 1920×1088, device tensors, 6 s, one Python loop thread throughout.
+Baseline for that loop: 75.8 M iters/s.
+
+| Encoder threads | blazar fps | vs 1 | python kept | pyav fps | vs 1 | python kept |
+|---|---|---|---|---|---|---|
+| 1 | 420.1 | 1.00× | 91% | 11.4 | 1.00× | 85% |
+| 2 | 822.9 | 1.96× | 92% | 15.6 | 1.37× | 79% |
+| 4 | 885.7 | 2.11× | **86%** | 28.2 | 2.47× | **64%** |
+
+- **Blazar doubles throughput per doubling until the encoder saturates** (420 → 823
+  → 886 fps, the last step flattening at the NVENC ceiling measured earlier), and
+  the Python thread keeps 86–92% throughout.
+- **PyAV's Python thread degrades as threads are added**: 85% → 79% → 64%. Each new
+  encoder thread brings more interpreter-bound work, and they queue behind each
+  other and behind the loop.
+- **The gap widens with concurrency**: 31× at four threads (885.7 vs 28.2 fps),
+  against 37× at one. The ratio is roughly flat because PyAV is already near its
+  floor at a single stream; what changes is that Blazar keeps scaling while PyAV's
+  remaining throughput is fought over.
+
+PyAV's own multi-thread scaling looks respectable in ratio terms (2.47× at four)
+precisely because its single-thread baseline is so low: it starts at 11.4 fps with
+a Python thread competing, so there is little to lose per thread. Absolute numbers
+are the ones that matter for a serving path.
+
 **Where the scaling stops, and why.** 2.7× on four threads is not a software
 limit. At eight threads the aggregate reaches 626–641 fps (3.0×) and flattens,
 with `nvidia-smi` reporting the **NVENC engine at 69% median / 100% peak** while SM
