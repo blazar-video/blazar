@@ -38,6 +38,12 @@ Issues = "https://github.com/blazar-video/blazar/issues"
 
 [tool.maturin]
 manifest-path = "../../bindings/python/Cargo.toml"
+# BLOCKED: maturin copies `python-source` only when the Cargo manifest lives in
+# the same project, and rejects `..` in the path. This project points at
+# bindings/python's manifest, so the wheel it produces contains the extension and
+# no `blazar/__init__.py` — importable only by accident. Publishing it would be
+# worse than not publishing it, so the workflow that builds it is disabled until
+# the packaging is restructured (see PUBLISHING.md, "GPL distribution").
 python-source = "../../bindings/python/python"
 module-name = "blazar._blazar"
 # Paths are relative to `python-source`. The GPL notice cannot be included in

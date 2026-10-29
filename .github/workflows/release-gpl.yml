@@ -23,8 +23,15 @@ permissions:
   contents: write
   id-token: write
 
+# Disabled on purpose: the GPL wheel currently builds an extension with no
+# `blazar` package around it, because maturin will not copy a `python-source`
+# that lives outside the project (it rejects `..` paths). Shipping that wheel
+# would give users an importable-looking package that fails on first use. Re-enable
+# once packaging/gpl has its own manifest next to the Python package; see
+# PUBLISHING.md, "GPL distribution".
 jobs:
   wheels:
+    if: ${{ false }}
     name: gpl wheel (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
     env:
@@ -121,6 +128,7 @@ jobs:
           path: packaging/gpl/dist/*.tar.gz
 
   smoke:
+    if: ${{ false }}
     name: smoke (the GPL encoders are present)
     runs-on: ubuntu-latest
     env:

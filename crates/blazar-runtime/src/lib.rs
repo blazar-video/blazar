@@ -782,9 +782,16 @@ impl<S: Sink> Stream<S> {
 /// only when the `nvenc` feature is enabled; otherwise the deployment gets an
 /// explicit error rather than a silent mock.
 /// Wrap a CPU encoder so device tensors are converted on the GPU.
+///
+/// Wrapping is a runtime decision, not a build-time one: a wheel built with the
+/// feature and installed on a machine with no CUDA driver must still encode host
+/// frames on the CPU rather than failing every stream.
 #[cfg(feature = "gpu-preprocess")]
 #[allow(dead_code)] // only called from the codec arms below
 fn wrap_gpu(enc: Box<dyn VideoEncoder>) -> Result<Box<dyn VideoEncoder>, RuntimeError> {
+    if !gpu_preprocess_available() {
+        return Ok(enc);
+    }
     Ok(Box::new(
         blazar_encoder::gpu_preprocess::GpuPreprocessEncoder::new(enc)?,
     ))

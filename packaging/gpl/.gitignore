@@ -1,0 +1,4 @@
+# The GPL distribution ships the same Python package as the Apache one. maturin
+# requires the package to live inside the project root, and refuses both symlinks
+# and paths containing `..`, so the build copies it here first (see PUBLISHING.md).
+blazar/
