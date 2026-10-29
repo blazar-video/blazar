@@ -101,6 +101,22 @@ Absolute rates differ from the table above because that one uses real content an
 this one uses synthetic gradients: at a fixed QP, higher entropy means more bits
 and a slower encode. The scaling is the point here, not the absolute rate.
 
+**Where the scaling stops, and why.** 2.8× on four threads is not a software
+limit. Pushing further, aggregate keeps rising but flattens:
+
+| threads | aggregate | per-thread | scaling |
+|---|---|---|---|
+| 4 | 1102.5 fps | 275.6 | 2.8× |
+| 6 | 1250.6 fps | 208.4 | 3.1× |
+| 8 | 1359.7 fps | 170.0 | 3.4× |
+
+Sampled with `nvidia-smi` during the eight-thread run, the **NVENC engine sits at
+74% median / 98% peak** while SM utilisation peaks at 36%: at that point the
+hardware encoder is the bottleneck, not Blazar, the GIL, or the conversion. One
+encoder session on this GPU tops out near 400 fps at 720p, and the aggregate
+saturates around 1350–1400 fps.
+
+
 ## Build and test
 
 ```sh
