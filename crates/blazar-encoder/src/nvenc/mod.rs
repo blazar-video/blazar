@@ -21,4 +21,4 @@ pub mod cuda;
 mod worker;
 
 #[cfg(feature = "nvenc")]
-pub use worker::NvencEncoder;
+pub use worker::{encode_time_totals, NvencEncoder};

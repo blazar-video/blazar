@@ -1765,6 +1765,17 @@ fn copy_buffer(
     Ok(bytes)
 }
 
+/// `(microseconds inside nvEncEncodePicture, number of calls)`, process-wide.
+///
+/// Diagnostic, not API: the runtime's `stats["encode_us"]` covers the whole
+/// submit path, so it cannot say how much of the wall clock the encoder itself
+/// consumed. Sample this before and after a run and take the difference.
+#[cfg(feature = "nvenc")]
+#[pyfunction]
+fn _nvenc_encode_micros() -> (u64, u64) {
+    blazar_encoder::nvenc::encode_time_totals()
+}
+
 fn closed_error(request_id: &str) -> PyErr {
     PyRuntimeError::new_err(format!("stream {request_id:?} is closed"))
 }
@@ -1914,5 +1925,7 @@ fn _blazar(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyEncoder>()?;
     module.add_function(wrap_pyfunction!(backends, module)?)?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    #[cfg(feature = "nvenc")]
+    module.add_function(wrap_pyfunction!(_nvenc_encode_micros, m)?)?;
     Ok(())
 }

@@ -964,7 +964,14 @@ fn encode_with_retry(
             encode_pic_flags: flags,
             ..Default::default()
         };
-        match session.encode_picture(input, output, params) {
+        let started = std::time::Instant::now();
+        let result = session.encode_picture(input, output, params);
+        ENCODE_MICROS.fetch_add(
+            started.elapsed().as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        ENCODE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        match result {
             Ok(()) => return Ok(EncodeCall::Emitted),
             Err(e) if e.kind() == ErrorKind::NeedMoreInput => return Ok(EncodeCall::NeedMoreInput),
             Err(e) if e.kind() == ErrorKind::EncoderBusy => thread::sleep(BUSY_SLEEP),
@@ -1529,4 +1536,26 @@ fn encode_device_chunk(
         )?;
     }
     Ok(batched)
+}
+
+/// Time spent inside `nvEncEncodePicture`, process-wide.
+///
+/// The runtime's `stats.encode_us` covers the whole submit path — queueing,
+/// conversion, encode and demux — so it cannot answer "is the encoder the
+/// bottleneck". These counters measure only the driver call. They are cumulative
+/// and never reset, so a caller samples them before and after a run and takes the
+/// difference.
+static ENCODE_MICROS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static ENCODE_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `(total microseconds inside the driver, number of driver calls)`.
+///
+/// Diagnostic only: read it around a benchmark to see how much of the wall clock
+/// is the encoder rather than the code around it.
+#[must_use]
+pub fn encode_time_totals() -> (u64, u64) {
+    (
+        ENCODE_MICROS.load(std::sync::atomic::Ordering::Relaxed),
+        ENCODE_CALLS.load(std::sync::atomic::Ordering::Relaxed),
+    )
 }
