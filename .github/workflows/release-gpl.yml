@@ -102,8 +102,12 @@ jobs:
         env:
           PYO3_PYTHON: /opt/python/cp312-cp312/bin/python3
         run: |
+          # The image has no Rust toolchain on PATH for a non-interactive shell.
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
           /opt/python/cp312-cp312/bin/pip install --quiet maturin
-          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          export PATH=/root/.cargo/bin:/opt/python/cp312-cp312/bin:$PATH
+          cargo --version && python3 --version
           python3 scripts/build_gpl.py --out dist --repair
           ls -l dist
       - name: the GPL libraries must travel inside the wheel
