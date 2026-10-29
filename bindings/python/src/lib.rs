@@ -1926,6 +1926,6 @@ fn _blazar(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(backends, module)?)?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     #[cfg(feature = "nvenc")]
-    module.add_function(wrap_pyfunction!(_nvenc_encode_micros, m)?)?;
+    module.add_function(wrap_pyfunction!(_nvenc_encode_micros, module)?)?;
     Ok(())
 }
