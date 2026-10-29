@@ -108,6 +108,35 @@ not session open. Best of three.
   starved the interpreter for every arm and was reported as PyAV being 13× slower
   than it is. That thread is gone, and so is the claim.
 
+### What the GIL actually costs
+
+Throughput scaling is a proxy — it cannot separate "the encoder releases the
+interpreter" from "the encoder is simply faster". This measures it directly: a
+thread running a pure-Python loop (no C calls that might release the GIL) with an
+encoder running beside it in another thread, both real workloads, 6 s window,
+1920×1088, host `u8` arrays, sessions warmed first.
+
+| Arm | Encoder fps alone | Encoder fps with a Python thread | Retained | Python loop retained |
+|---|---|---|---|---|
+| blazar | 202.8 | **216.7** | **107%** | 83% |
+| pyav | 164.0 | **33.3** | **20%** | 89% |
+
+- **PyAV keeps one fifth of its throughput when another thread is doing Python
+  work** (164.0 → 33.3 fps). Its per-frame `from_ndarray`, `reformat` and `mux`
+  calls need the interpreter, so it takes turns with the other thread.
+- **Blazar keeps all of it** (202.8 → 216.7 fps, which is noise, not a gain). The
+  encode runs in a Rust worker that does not hold the interpreter, so the two
+  threads run concurrently.
+- The Python thread keeps 83–89% of its baseline in both cases, which is the
+  honest reading: Blazar does not make Python *faster*, it stops the encoder from
+  taking Python's time. PyAV's high retention of 89% looks better than Blazar's
+  83% only because PyAV has already given up 80% of its own work — the two threads
+  are splitting a much smaller pie.
+
+That is the impact worth claiming: a serving process that encodes and does
+anything else in Python loses ~80% of its encode throughput with PyAV and none
+with Blazar.
+
 **Where the scaling stops, and why.** 2.7× on four threads is not a software
 limit. At eight threads the aggregate reaches 626–641 fps (3.0×) and flattens,
 with `nvidia-smi` reporting the **NVENC engine at 69% median / 100% peak** while SM
