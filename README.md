@@ -56,20 +56,22 @@ previous version of this table published.
 | Path | Conversion | 720p steady | 720p open | 1088p steady | 1088p open |
 |---|---|---|---|---|---|
 | blazar, device tensor | device kernel, no copy | **1.38 ms** (726 fps) | 233 ms | **2.46 ms** (407 fps) | 217 ms |
-| blazar, host arrays | device kernel | 2.59 ms (386 fps) | 223 ms | 5.21 ms (192 fps) | 231 ms |
-| PyAV, host arrays | swscale | 2.26 ms (442 fps) | 209 ms | 6.06 ms (165 fps) | 420 ms |
+| blazar, host u8 → device kernel | upload + GPU kernel | 2.59 ms (386 fps) | 223 ms | 5.21 ms (192 fps) | 231 ms |
+| PyAV, host u8 → swscale | CPU, then upload NV12 | 2.26 ms (442 fps) | 209 ms | 6.06 ms (165 fps) | 420 ms |
 | ffmpeg CLI, raw pipe | swscale | 5.47 ms (183 fps) | — | 10.42 ms (96 fps) | — |
 
 What this says:
 
 - **Zero-copy is the win, and it grows with resolution**: 1.6× over PyAV at 720p,
   2.5× at 1088p. It is the only path that does not move the frame.
-- **Host-staged Blazar is not faster than PyAV.** At 720p it is slightly slower
-  (2.59 vs 2.26 ms); at 1088p slightly faster (5.21 vs 6.06 ms). Both pay the same
-  device→host copy, so what is left is a conversion difference of a few tenths of
-  a millisecond in either direction, inside run-to-run variance. An earlier
-  version of this table claimed 1.5×; that comparison did not pay the copy on both
-  sides and does not survive a clean measurement.
+- **These are not the same work.** PyAV has no device-side conversion: `sws_scale`
+  runs on the CPU and NVENC takes the resulting NV12. Blazar's row uploads the RGB
+  frame and converts it in a kernel. The like-for-like pair is Blazar
+  `preprocess="host"` against PyAV, measured in the next section — and there PyAV
+  is faster.
+- An earlier version of this table claimed host-staged Blazar beat PyAV by 1.5×.
+  It compared a device-side conversion against a software one and called it
+  like-for-like. It does not survive measurement.
 - **The CLI is 2.4× slower than PyAV at the same settings**, from the raw pipe and
   a separate process, not from the encode.
 
@@ -146,9 +148,26 @@ which is what makes this a pure encode+convert comparison), best of three.
   **parity inside the ~10% run-to-run noise** (PyAV at QP 28 measured *faster*
   than at QP 27, which is how large the noise is at this frame count).
 
-So the honest summary of the single-stream comparisons is unchanged from above:
-zero-copy is the real advantage, host-staged Blazar and PyAV are comparable, and
-any claim of a large multiple on the host path was a measurement artefact.
+**Software conversion against software conversion** (same clip, no device→host
+copy, one thread, warmed):
+
+| conversion | 720p | 1088p |
+|---|---|---|
+| Blazar `preprocess="host"` (CPU SIMD) | 184.8 fps (5.41 ms) | 140.6 fps (7.11 ms) |
+| PyAV (CPU swscale) | 280.4 fps (3.57 ms) | 164.0 fps (6.10 ms) |
+| Blazar `preprocess="device"` (upload + kernel) | 284.9 fps (3.51 ms) | 204.5 fps (4.89 ms) |
+
+- **PyAV's software conversion beats ours**: 1.52× at 720p and 1.17× at 1088p for
+  identical bytes. libswscale is a decades-old hand-tuned path and our kernel is
+  not beating it on the CPU; the reason to use Blazar is not that it converts
+  faster on the host.
+- **Blazar's advantage is the conversion PyAV cannot do**: on the device. That puts
+  it level with PyAV's software path at 720p (284.9 vs 280.4) and 1.25× ahead at
+  1088p, without touching the CPU.
+
+So the honest summary is: on host conversion PyAV is faster, on device conversion
+Blazar is at parity to 1.25×, and the large multiple the old table claimed on the
+host path was a device-vs-software comparison wearing the same label.
 
 Content differs from the table above — synthetic gradients at a fixed QP encode
 slower than real footage — so the absolute rates are not comparable across the two
