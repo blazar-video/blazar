@@ -111,32 +111,39 @@ not session open. Best of three.
 ### What the GIL actually costs
 
 Throughput scaling is a proxy — it cannot separate "the encoder releases the
-interpreter" from "the encoder is simply faster". This measures it directly: a
-thread running a pure-Python loop (no C calls that might release the GIL) with an
-encoder running beside it in another thread, both real workloads, 6 s window,
-1920×1088, host `u8` arrays, sessions warmed first.
+interpreter" from "the encoder is simply faster". This measures it directly.
 
-| Arm | Conversion | fps alone | fps with a Python thread | Retained | Python loop retained |
-|---|---|---|---|---|---|
-| blazar `auto` → device | upload + GPU kernel | 202.8 | **216.7** | **107%** | 83% |
-| blazar `host` | CPU SIMD | 140.6 | **150.0** | **107%** | 78% |
-| pyav | CPU swscale | 164.0 | **33.3** | **20%** | 89% |
+The pipeline is the one a model actually leaves behind: frames start on the device
+as a `(1, 3, T, H, W)` bf16 tensor, and the clock covers, per frame, **quantise to
+u8 on the device → device→host copy → YUV conversion on the host → host→device →
+NVENC encode**. Nothing is uploaded that a pipeline would not already have up
+there. A second thread runs a pure-Python loop throughout, so the gap between
+"alone" and "with a Python thread" is the GIL and nothing else. 1920×1088, 6 s
+window, sessions warmed.
 
-- **PyAV keeps one fifth of its throughput when another thread is doing Python
-  work** (164.0 → 33.3 fps). Its per-frame `from_ndarray`, `reformat` and `mux`
-  calls need the interpreter, so it takes turns with the other thread.
-- **Blazar keeps all of it** (202.8 → 216.7 fps, which is noise, not a gain). The
-  encode runs in a Rust worker that does not hold the interpreter, so the two
-  threads run concurrently.
-- The Python thread keeps 83–89% of its baseline in both cases, which is the
-  honest reading: Blazar does not make Python *faster*, it stops the encoder from
-  taking Python's time. PyAV's high retention of 89% looks better than Blazar's
-  83% only because PyAV has already given up 80% of its own work — the two threads
-  are splitting a much smaller pie.
+| Arm | fps alone | fps with a Python thread | Retained |
+|---|---|---|---|
+| blazar, device tensor (zero copy) | 333.0 | **360.5** | **108%** |
+| pyav (D2H + swscale + upload + NVENC) | 53.8 | 11.4 | **21%** |
+| blazar, host `u8` (same D2H path) | 35.6 | 11.3 | **32%** |
 
-That is the impact worth claiming: a serving process that encodes and does
-anything else in Python loses ~80% of its encode throughput with PyAV and none
-with Blazar.
+- **The zero-copy path is unaffected by another Python thread**: 333 → 360 fps,
+  which is noise. The encode runs in a Rust worker that never holds the
+  interpreter, and `submit` hands over a pointer rather than data.
+- **PyAV keeps a fifth of its throughput** (53.8 → 11.4 fps) when another thread
+  runs Python. Its `from_ndarray`, `reformat` and `mux` calls need the interpreter.
+- **Blazar's host path collapses too** (35.6 → 11.3), which is a defect rather than
+  a property: the binding copies the caller's buffer into a `Vec` *while holding
+  the GIL*, so a host frame costs interpreter time proportional to its size. Until
+  that copy is released with the GIL, the "no GIL cost" claim holds only for
+  device tensors.
+
+**Open question.** An earlier version of this test, feeding pre-generated numpy
+arrays and letting `auto` pick the device path, measured Blazar at 202.8 → 216.7
+fps under the same competing thread (no loss). This one measures the host path at
+35.6 → 11.3. Both are reproducible, they measure different pipelines, and the
+difference is larger than the frame copy can account for. It is recorded here as
+unresolved rather than explained.
 
 **Where the scaling stops, and why.** 2.7× on four threads is not a software
 limit. At eight threads the aggregate reaches 626–641 fps (3.0×) and flattens,
