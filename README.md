@@ -128,9 +128,25 @@ kernel measures ~1.37 ms on its own (the conversion bench in this file), which m
 opposite of the intuition the old tables encouraged, and it says where a future
 optimisation would pay: the kernel, not the encoder settings.
 
-One caveat: `nvEncEncodePicture` queues work, so 0.42 ms is CPU time in the call,
-not necessarily GPU time encoding. The two are consistent here — the encoder engine
-saturates at ~890 fps under multiple streams while the CPU path still has headroom.
+Across thread counts the shape changes:
+
+| Streams | aggregate fps | wall per frame | driver call | driver share |
+|---|---|---|---|---|
+| 1 | 389.0 | 2.57 ms | 0.422 ms | 17% |
+| 2 | 794.3 | 1.26 ms | 0.275 ms | 23% |
+| 4 | 883.2 | 1.13 ms | 0.243 ms | 23% |
+
+- **The driver call gets cheaper per call as streams are added** (0.42 → 0.24 ms)
+  while becoming a larger share of the wall. With one stream each call waits behind
+  that stream's conversion; with four there is always work in flight, so the call is
+  issued rather than queued behind a stall. That is an interpretation, and the
+  measurement that supports it is the share rising while the call shortens.
+- **The aggregate plateaus** (794 → 883 fps from two streams to four) at the same
+  ~890 fps ceiling the encoder-utilisation sample showed, so the remaining limit at
+  four streams is the engine, even though it is only 23% of the CPU's wall clock.
+
+One caveat: `nvEncEncodePicture` queues work, so these are CPU times in the call,
+not GPU time encoding.
 
 ### What the GIL actually costs
 
