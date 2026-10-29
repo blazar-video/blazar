@@ -12,9 +12,17 @@
 //! commit them when the target libvpx version changes on purpose.
 
 fn main() {
+    // The checked-in bindings were generated from 1.16 headers, and fields have
+    // been appended to `vpx_codec_enc_cfg` since 1.14 — linking an older library
+    // against them would write past the struct the library allocated. Refuse
+    // rather than corrupt.
     let lib = pkg_config::Config::new()
+        .atleast_version("1.15.0")
         .probe("vpx")
-        .expect("libvpx development files (pkg-config vpx) are required");
+        .expect(
+            "libvpx >= 1.15 is required (pkg-config vpx). Ubuntu 24.04 ships 1.14: \
+             build 1.16 from source or point PKG_CONFIG_PATH at a newer install.",
+        );
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=BLAZAR_REGENERATE_VPX");
 
