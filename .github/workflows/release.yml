@@ -72,13 +72,12 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           working-directory: bindings/python
-          target: ${{ matrix.platform == 'macosx_11_0_arm64' && 'aarch64-apple-darwin' || (matrix.platform == 'manylinux_2_28_aarch64' && 'aarch64-unknown-linux-gnu' || 'x86_64-unknown-linux-gnu') }}
           manylinux: ${{ matrix.manylinux }}
           # The container is minimal. NVENC needs nothing (dlopened), opus builds
           # itself with CMake, and vpx/svt-av1 have to be present at link time.
           before-script-linux: |
             if command -v dnf >/dev/null; then
-              dnf install -y cmake gcc gcc-c++ make nasm git || true
+              dnf install -y cmake gcc gcc-c++ make nasm git clang clang-libs || true
               # The distro libvpx is 1.7, and the bindings are generated from
               # 1.16 — the build script refuses anything below 1.15 rather than
               # writing past a shorter struct, so build the version we target.
