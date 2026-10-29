@@ -257,9 +257,14 @@ jobs:
           skip-existing: true
 
   publish-crates:
+    # Opt-in per repository: publishing the workspace crates is a separate
+    # commitment from shipping a wheel, and 0.1 does not make it. Set the
+    # repository variable PUBLISH_CRATES=true when the crate API is what you are
+    # releasing.
+
     needs: publish-pypi
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') && vars.PUBLISH_CRATES == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -276,7 +281,7 @@ jobs:
   release-notes:
     needs: publish-pypi
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') && vars.PUBLISH_CRATES == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
