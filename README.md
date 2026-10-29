@@ -75,47 +75,42 @@ What this says:
 
 ### Concurrency and the Python GIL
 
-720p, 200 frames per thread, one encoder per thread, NVENC settings mirrored, and
-every session warmed before the clock so this measures throughput rather than
-session open. Best of three.
+1920×1088, 100 frames per thread, one encoder per thread, host `u8` arrays through
+`preprocess="auto"` (so each thread pays its own upload and device conversion —
+this is the path a numpy frame takes, not the zero-copy one). NVENC settings
+mirrored. Every session is warmed before the clock, so this measures throughput and
+not session open. Best of three.
 
 | Arm | 1 thread | 2 threads | 4 threads | scaling @ 4 | per-thread @ 4 |
 |---|---|---|---|---|---|
-| blazar | 398.7 fps | 668.6 fps | **1111.7 fps** | 2.8× | 277.9 |
-| blazar_poll | 389.3 fps | 729.0 fps | 1084.5 fps | 2.8× | 271.1 |
-| pyav | 313.0 fps | 499.5 fps | 628.9 fps | **2.0×** | 157.2 |
+| blazar | 210.9 fps | 350.9 fps | **563.3 fps** | 2.7× | 140.8 |
+| blazar_poll | 207.8 fps | 341.7 fps | 557.2 fps | 2.7× | 139.3 |
+| pyav | 163.5 fps | 200.6 fps | 266.0 fps | **1.6×** | 66.5 |
 
-- **Blazar scales to 2.8× on four threads, PyAV to 2.0×**, and PyAV's per-thread
-  rate halves (313 → 157 fps) as threads are added: `VideoFrame.from_ndarray`,
-  `reformat` and `container.mux` all run in the interpreter, so its threads take
-  turns. Blazar's `submit` enqueues onto that encoder's Rust worker and returns.
-- **Aggregate gap is 1.8× at four threads** (1111.7 vs 628.9), against 1.3× on a
-  single stream at the same size.
-- **Polling after every submit is free here** (1084.5 vs 1111.7, inside variance).
-  An earlier version of this table reported ~7%; it also ran a busy Python thread
-  for the whole timed region to count background iterations, which starved the
-  interpreter for every arm and was reported as PyAV being 13× slower than it is.
-  That thread is gone, and so is the claim.
+- **Blazar scales to 2.7× on four threads, PyAV to 1.6×**, and PyAV's per-thread
+  rate drops by 2.5× (163.5 → 66.5 fps) as threads are added: `from_ndarray`,
+  `reformat` and `mux` all run in the interpreter, so its threads take turns.
+  Blazar's `submit` enqueues onto that encoder's Rust worker and returns.
+- **Aggregate gap is 2.1× at four threads** (563.3 vs 266.0), against 1.3× on a
+  single stream at the same size and path.
+- **Polling after every submit costs nothing measurable** (557.2 vs 563.3, inside
+  variance). An earlier version of this table reported ~7%; it also ran a busy
+  Python thread for the whole timed region to count background iterations, which
+  starved the interpreter for every arm and was reported as PyAV being 13× slower
+  than it is. That thread is gone, and so is the claim.
 
-Absolute rates differ from the table above because that one uses real content and
-this one uses synthetic gradients: at a fixed QP, higher entropy means more bits
-and a slower encode. The scaling is the point here, not the absolute rate.
+**Where the scaling stops, and why.** 2.7× on four threads is not a software
+limit. At eight threads the aggregate reaches 626–641 fps (3.0×) and flattens,
+with `nvidia-smi` reporting the **NVENC engine at 69% median / 100% peak** while SM
+utilisation peaks at 41%. At that point the hardware encoder is the bottleneck, not
+Blazar, the GIL, or the conversion. The same shape appeared at 720p (2.8× at four
+threads, saturating near 1360 fps with the encoder at 98% peak): one engine does
+roughly 1.5 ms of work per 1088p frame, so the aggregate saturates around 650 fps
+at this size.
 
-**Where the scaling stops, and why.** 2.8× on four threads is not a software
-limit. Pushing further, aggregate keeps rising but flattens:
-
-| threads | aggregate | per-thread | scaling |
-|---|---|---|---|
-| 4 | 1102.5 fps | 275.6 | 2.8× |
-| 6 | 1250.6 fps | 208.4 | 3.1× |
-| 8 | 1359.7 fps | 170.0 | 3.4× |
-
-Sampled with `nvidia-smi` during the eight-thread run, the **NVENC engine sits at
-74% median / 98% peak** while SM utilisation peaks at 36%: at that point the
-hardware encoder is the bottleneck, not Blazar, the GIL, or the conversion. One
-encoder session on this GPU tops out near 400 fps at 720p, and the aggregate
-saturates around 1350–1400 fps.
-
+Content differs from the table above — synthetic gradients at a fixed QP encode
+slower than real footage — so the absolute rates are not comparable across the two
+tables; the scaling is.
 
 ## Build and test
 
