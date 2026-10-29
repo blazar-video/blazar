@@ -66,6 +66,27 @@ project URLs. Still to do before the first upload:
 `enc-x264,enc-x265` added, published by `.github/workflows/release-gpl.yml`
 under the `pypi-gpl` environment.
 
+**How it is built.** maturin cannot build it from `packaging/gpl`: its
+`python-source` handling copies the Python package only when the crate being
+built lives inside the project, and that project has to point `manifest-path` at
+`bindings/python`. Every layout tried — a copy of the package, a symlinked
+directory, a symlinked crate — produced an extension with no
+`blazar/__init__.py`, which imports only by accident.
+
+So the wheel is built once, from `bindings/python`, with the GPL features on and
+`--auditwheel=repair` so x264/x265 travel inside it, and
+`scripts/gpl_wheel.py` rewrites exactly what makes it a different distribution:
+the filename, the `.dist-info` directory, `Name`, the licence expression and
+classifier, the `NOTICE.md`, and a recomputed `RECORD`. One crate, one Python
+package, no second tree to drift.
+
+**Source builds** need none of that:
+
+```sh
+MATURIN_PEP517_ARGS="--features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,enc-x264,enc-x265,opus" \
+  pip install ./bindings/python
+```
+
 **Why this is legal:** x264 and x265 are *GPL-2.0-or-later* (verified in their
 source headers). The Apache-2.0 core can be combined into a **GPLv3** work,
 because Apache-2.0 is GPLv3-compatible. It could not be combined with a
@@ -74,14 +95,15 @@ GPLv2-only work, which is why this axis matters and why the wheel declares
 
 **What we do differently from the precedent:** PyAV ships libx264 and libx265 in
 a wheel whose metadata says `BSD-3-Clause`. We ship the GPL wheel under its own
-name, with a GPL licence expression, an sdist published alongside, and a
-`NOTICE.md` in every wheel naming the bundled libraries and their sources. A
-scanner reading our metadata gets the truth; a scanner reading PyAV's does not.
+name, with a GPL licence expression and a `NOTICE.md` in every wheel naming the
+bundled libraries and their sources. A scanner reading our metadata gets the
+truth; a scanner reading PyAV's does not.
 
 **Obligations this creates**, none of them optional:
 
-- corresponding source for the combined work — the sdist, published with each
-  wheel, plus the graph in `packaging/gpl/NOTICE.md` for the bundled libraries;
+- corresponding source for the combined work — the `v<version>` tag, which is the
+  same source the `blazar-video` sdist is built from, plus the links in
+  `packaging/gpl/NOTICE.md` for the bundled libraries;
 - the licence text in the wheel;
 - no added restrictions on the code we distribute;
 - `v<version>` tags on the repository matching the published version.

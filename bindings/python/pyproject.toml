@@ -36,6 +36,11 @@ include = [
     { path = "python/blazar/py.typed", format = "wheel" },
     { path = "python/blazar/__init__.pyi", format = "wheel" },
 ]
+# A local build picks up whatever is in the working tree, and `__pycache__`
+# holds .pyc files for whichever interpreter ran last — 3.12 bytecode inside a
+# cp311 wheel. They are harmless (Python ignores a mismatched magic number) and
+# still wrong to ship.
+exclude = ["python/blazar/__pycache__/**"]
 features = ["pyo3/extension-module"]
 module-name = "blazar._blazar"
 python-source = "python"

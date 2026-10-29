@@ -5,15 +5,22 @@ under the GPL because it is linked with the GPL encoders x264 and x265.
 
 ## Our source
 
-The complete corresponding source of Blazar is the sdist published with this
-release (`blazar_video_gpl-<version>.tar.gz`) and the repository at
-<https://github.com/blazar-video/blazar>, tag `v<version>`. Building it with the
-same features reproduces this wheel:
+The complete corresponding source of Blazar is the repository at
+<https://github.com/blazar-video/blazar>, tag `v<version>` — the same source the
+`blazar-video` sdist of that version is built from. This distribution differs
+only in which encoders the extension is compiled against, so building that
+source with the GPL features reproduces this wheel:
 
 ```sh
-MATURIN_PEP517_ARGS="--features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,enc-x264,enc-x265" \
-  pip install --no-binary blazar-video-gpl blazar-video-gpl
+git clone --branch v<version> https://github.com/blazar-video/blazar
+MATURIN_PEP517_ARGS="--features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,enc-x264,enc-x265,opus" \
+  pip install ./blazar/bindings/python
 ```
+
+There is no separate `blazar-video-gpl` sdist, because there is no separate
+source: a copy would be a second tree that could drift from the one that built
+the wheel. Naming the tag is a stronger statement of what this binary was built
+from than a tarball with the same contents.
 
 The GPL components themselves are unmodified upstream releases, linked
 dynamically and bundled by `auditwheel`:
