@@ -95,9 +95,9 @@ device path is stable across every session at 2.20–2.49 ms.
 
 ### 2. The GIL
 
-A second thread runs a pure-Python loop (no C calls that could release the
-interpreter); the share of its throughput that survives says who is holding the
-GIL. Loop baseline 69.6 M iters/s. **Retention above 100% is possible** — the same
+1920×1088, 6 s window, sessions warmed. A second thread runs a pure-Python loop
+(no C calls that could release the interpreter); the share of its throughput that
+survives says who is holding the GIL. Loop baseline 69.6 M iters/s. **Retention above 100% is possible** — the same
 loop beside an active GPU process measured 106–108%, so an idle interpreter is not
 at its boost clock. Read the comparison between arms, not the percentage.
 
@@ -117,8 +117,8 @@ at its boost clock. Read the comparison between arms, not the percentage.
   bottleneck rather than the library: 186.7 fps alone against 14.7 fps under
   contention. Hand over the tensor instead.
 
-Scaling with encoder threads, one Python thread throughout, baseline 75.8 M
-iters/s:
+Scaling with encoder threads, same 1920×1088, one Python thread throughout,
+baseline 75.8 M iters/s:
 
 | Streams | blazar device | python | blazar host | python | PyAV | python |
 |---|---|---|---|---|---|---|
