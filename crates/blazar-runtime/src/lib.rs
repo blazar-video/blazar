@@ -99,9 +99,13 @@ pub enum Boundary {
 /// have a CUDA driver. A build with the feature on a machine without a driver
 /// used to resolve `auto` to the GPU and then panic inside the worker thread.
 fn gpu_preprocess_available() -> bool {
-    if cfg!(feature = "gpu-preprocess") {
+    // `cfg!` would keep referring to a module that is not compiled in.
+    #[cfg(feature = "gpu-preprocess")]
+    {
         blazar_encoder::gpu_preprocess::cuda_available()
-    } else {
+    }
+    #[cfg(not(feature = "gpu-preprocess"))]
+    {
         false
     }
 }
