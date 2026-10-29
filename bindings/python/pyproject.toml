@@ -43,4 +43,7 @@ python-source = "python"
 [tool.pytest.ini_options]
 # Tests that need a real encoder. Hosted CI deselects them; the hardware workflow
 # selects them on a self-hosted runner.
-markers = ["hardware: needs a real encoder session (NVENC or VideoToolbox)"]
+markers = [
+    "hardware: needs a real encoder session (NVENC or VideoToolbox)",
+    "acceptance: the release gate; every backend, dtype and frame location",
+]
