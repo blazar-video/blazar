@@ -103,9 +103,11 @@ def torch_device_frames(dtype: str):
     base = np.stack([frame for frame in host_frames("u8")], axis=0)
     batch = np.transpose(base, (3, 0, 1, 2))[None]  # (1,3,T,H,W)
     tensor = torch.from_numpy(batch).cuda()
+    # Contiguous is a documented requirement of submit(), and a transposed view
+    # is exactly what a model that hands over a batch produces.
     if dtype == "bf16":
-        return tensor.to(torch.bfloat16) / torch.tensor(255.0, dtype=torch.bfloat16)
-    return tensor.to(torch.float32) / 255.0
+        return (tensor.to(torch.bfloat16) / torch.tensor(255.0, dtype=torch.bfloat16)).contiguous()
+    return (tensor.to(torch.float32) / 255.0).contiguous()
 
 
 def encoder(backend: str, codec: str, output, request_id: str, **kwargs):
