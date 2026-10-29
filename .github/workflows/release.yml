@@ -286,7 +286,9 @@ jobs:
   release-notes:
     needs: publish-pypi
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/') && vars.PUBLISH_CRATES == 'true'
+    # The GitHub release is part of publishing the wheel, not of publishing the
+    # crates; the crates gate belongs to publish-crates only.
+    if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
