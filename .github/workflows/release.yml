@@ -197,9 +197,8 @@ jobs:
       - run: |
           python - <<'PY'
           import faulthandler, sys, traceback
-          # The previous version of this check exited 1 with nothing on stderr.
-          # Markers and an explicit traceback printer say which line was last
-          # reached and what was raised; faulthandler catches a hard crash.
+          # Markers and an explicit traceback printer: the earlier version of this
+          # check exited 1 with nothing on stderr, which said nothing about why.
           faulthandler.enable()
           import numpy as np
           import blazar
@@ -209,26 +208,34 @@ jobs:
 
           log("M1", "version", blazar.__version__, "backends", sorted(blazar.backends()))
           calibrations = blazar.Calibrations.load("calibrations/default")
-          log("M2 calibrations loaded")
           identity = {"family": "wan", "version": "2.1", "quant": "bf16", "size": "1.3b"}
           frame = np.zeros((64, 64, 3), dtype=np.uint8)
-          excepted = None
+
+          # submit queues work; the driver failure surfaces when the session is
+          # finished. Both places are checked, and what happened is printed,
+          # because "no exception" from an asynchronous call proves nothing.
+          raised = None
+          pts = None
           try:
               enc = blazar.Encoder(calibrations=calibrations, identity=identity,
                                    target="balanced", backend="nvenc", codec="h264",
                                    output=None, request_id="win-smoke")
-              log("M3 encoder object created")
-              enc.submit(frame, width=64, height=64, fps=24.0, layout="thwc", range="full_u8")
-              log("M4 submit returned")
+              pts = enc.submit(frame, width=64, height=64, fps=24.0, layout="thwc",
+                               range="full_u8")
+              log("M3 submit returned pts=", pts)
+              enc.close()
+              log("M4 close returned")
           except BaseException as exc:
-              excepted = exc
+              raised = exc
               log("M5 caught", type(exc).__name__, repr(exc))
               traceback.print_exc()
 
-          if excepted is None:
-              raise SystemExit("NVENC encoded a frame on a runner with no GPU?")
-          text = (str(excepted) + " " + " ".join(map(str, excepted.args or []))).lower()
-          assert "nvenc" in text or "driver" in text, f"unexpected error: {excepted!r}"
+          if raised is None:
+              log("no error, but this machine has no NVIDIA driver")
+              raise SystemExit("NVENC accepted a frame on a runner with no GPU")
+
+          text = " ".join([str(raised)] + [str(a) for a in getattr(raised, "args", ())]).lower()
+          assert "nvenc" in text or "driver" in text, f"unexpected error: {raised!r}"
           log("M6 refused with a driver message, which is the point")
           PY
         shell: bash  # PowerShell does not run a `python - <<'PY'` heredoc
