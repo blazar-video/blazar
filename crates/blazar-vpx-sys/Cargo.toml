@@ -4,8 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Bindings to libvpx (VP8/VP9), generated from the system header"
+description = "Bindings to libvpx (VP8/VP9) for the VP9 encoder"
+
+[features]
+# Regenerate `src/pregenerated.rs` from the headers pkg-config resolves. Off by
+# default: the checked-in bindings make the build deterministic and independent
+# of clang and of the local vpx version.
+regenerate = []
 
 [build-dependencies]
-bindgen = "=0.69.5"
 pkg-config = "0.3"
+bindgen = { version = "=0.69.5", optional = true }

@@ -17,7 +17,13 @@
     rustdoc::invalid_html_tags,
     rustdoc::bare_urls
 )]
+#[cfg(not(feature = "regenerate"))]
 mod generated {
-    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+    include!("pregenerated.rs");
+}
+
+#[cfg(feature = "regenerate")]
+mod generated {
+    include!("pregenerated.rs");
 }
 pub use generated::*;
