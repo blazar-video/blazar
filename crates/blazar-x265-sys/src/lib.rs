@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Raw bindings to `libx265`.
 //!
-//! Generated from the system header at build time. Bindgen is not optional
-//! here: `x265.h` resolves `x265_encoder_open` and friends through macros to
-//! build-specific symbols (`x265_encoder_open_216` on the 4.1 library), so a
-//! hand-written declaration would link against a symbol that does not exist.
+//! The types are checked in (`src/pregenerated.rs`), generated from libx265 4.2
+//! headers: generating them per build depended on the local clang, and clang 19
+//! with bindgen 0.69 produced an opaque `x265_param`.
+//!
+//! The `x265_encoder_open` symbol is different — `x265.h` resolves it through a
+//! macro to a build-specific name — so the build script reads it from the header
+//! that is actually linked and emits the alias.
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
@@ -18,13 +21,10 @@
     rustdoc::bare_urls
 )]
 mod generated {
-    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+    include!("pregenerated.rs");
+    include!(concat!(env!("OUT_DIR"), "/encoder_open.rs"));
 }
 pub use generated::*;
-
-// `x265_encoder_open` is a macro to a build-specific symbol in the header; the
-// build script resolves the generated name so callers can use the plain one.
-include!(concat!(env!("OUT_DIR"), "/encoder_open.rs"));
 
 /// Rate-control methods (`X265_RC_METHODS` in the header).
 ///

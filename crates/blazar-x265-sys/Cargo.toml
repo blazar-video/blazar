@@ -4,8 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Bindings to libx265 (HEVC), generated from the system header"
+description = "Bindings to libx265 (HEVC) for the HEVC encoder"
 links = "x265"
+
+[features]
+# Regenerate `src/pregenerated.rs` from the headers pkg-config resolves.
+regenerate = []
 
 [build-dependencies]
 bindgen = "=0.69.5"
