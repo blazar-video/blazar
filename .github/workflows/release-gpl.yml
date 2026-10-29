@@ -30,107 +30,87 @@ env:
 
 jobs:
   wheels:
-    name: gpl wheel (${{ matrix.platform }})
+    # An explicit container rather than maturin-action: the build is driven by
+    # scripts/build_gpl.py, which calls maturin itself, and the action can only
+    # run `maturin <subcommand>` with fixed arguments.
+    #
+    # x86_64 only. The aarch64 image needs an arm runner (or qemu) and the action
+    # was doing that for us; bring it back when there is an arm runner to run on.
+    name: gpl wheel (manylinux_2_28_x86_64)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: manylinux_2_28_x86_64
-            manylinux: "2_28"
-          - platform: manylinux_2_28_aarch64
-            manylinux: "2_28"
+    container: quay.io/pypa/manylinux_2_28_x86_64
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: build the wheel
-        uses: PyO3/maturin-action@v1
-        with:
-          working-directory: bindings/python
-          manylinux: ${{ matrix.manylinux }}
-          # `repair` bundles libx264/libx265 into the wheel. Without it the
-          # import fails on any machine that has not installed the same
-          # libraries, and a wheel that only works on the build host is not a
-          # wheel.
-          args: --release --out dist --auditwheel=repair
-                --features nvenc,gpu-preprocess,enc-svtav1,enc-vp9,enc-x264,enc-x265,opus
-          before-script-linux: |
-            if command -v dnf >/dev/null; then
-              # AlmaLinux has no libx264/libx265 packages; build them. Every
-              # network and build step is bounded, because a stalled clone once
-              # hung this job for twenty minutes with nothing to show for it.
-              dnf install -y cmake gcc gcc-c++ make nasm git clang clang-libs opus-devel || true
-
-              timeout 180 git clone --depth 1 --branch stable \
-                https://code.videolan.org/videolan/x264.git /tmp/x264
-              ( cd /tmp/x264 && ./configure --prefix=/usr --libdir=/usr/lib \
-                  --enable-shared --disable-cli \
-                && timeout 600 make -j"$(nproc)" && make install )
-
-              # x265 4.2 exactly: `blazar-x265-sys` pins the struct layouts that
-              # bindgen produced from 4.2 headers, because bindgen 0.69 with
-              # clang 19 writes opaque structs. Linking a different libx265
-              # would read and write the wrong offsets.
-              timeout 240 git clone --depth 1 --branch 4.2 \
-                https://bitbucket.org/multicoreware/x265_git /tmp/x265
-              cmake -S /tmp/x265/source -B /tmp/x265/build -DCMAKE_BUILD_TYPE=Release \
-                    -DENABLE_SHARED=ON -DENABLE_CLI=OFF -DCMAKE_INSTALL_PREFIX=/usr
-              timeout 1200 cmake --build /tmp/x265/build -j"$(nproc)"
-              cmake --install /tmp/x265/build
-
-              # libvpx: the distro ships 1.7 and the bindings come from 1.16.
-              timeout 180 git clone --depth 1 --branch v1.16.0 \
-                https://chromium.googlesource.com/webm/libvpx /tmp/vpx
-              ( cd /tmp/vpx && ./configure --prefix=/usr --libdir=/usr/lib \
-                  --disable-examples --disable-tools --disable-docs \
-                  --disable-unit-tests --disable-install-bins \
-                && timeout 900 make -j"$(nproc)" && make install )
-
-              export PKG_CONFIG_PATH=/usr/lib/pkgconfig:/usr/lib64/pkgconfig:$PKG_CONFIG_PATH
-
-              if ! pkg-config --exists SvtAv1Enc; then
-                timeout 240 git clone --depth 1 --branch v2.3.0 \
-                  https://gitlab.com/AOMediaCodec/SVT-AV1.git /tmp/svt
-                cmake -S /tmp/svt -B /tmp/svt/build -DCMAKE_BUILD_TYPE=Release \
-                      -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX=/usr
-                timeout 1200 cmake --build /tmp/svt/build -j"$(nproc)"
-                cmake --install /tmp/svt/build
-              fi
-
-              echo "x264 $(pkg-config --modversion x264 2>/dev/null || echo MISSING)"
-              echo "x265 $(pkg-config --modversion x265 2>/dev/null || echo MISSING)"
-              echo "vpx $(pkg-config --modversion vpx 2>/dev/null || echo MISSING)"
-              echo "svt $(pkg-config --modversion SvtAv1Enc 2>/dev/null || echo MISSING)"
-              case "$(pkg-config --modversion x265 2>/dev/null)" in
-                4.2*) ;;
-                *) echo "libx265 must be 4.2: the sys crate pins its struct layouts"; exit 1 ;;
-              esac
-            fi
-      - name: mark it as the GPL distribution
+      - name: codec libraries
         run: |
-          # The container built these as root; the conversion rewrites the file
-          # and deletes the original, which needs to be ours to delete.
-          sudo chown -R "$(id -u):$(id -g)" bindings/python/dist
-          python3 scripts/gpl_wheel.py bindings/python/dist/*.whl
-          ls -l bindings/python/dist
+          set -eux
+          dnf install -y cmake gcc gcc-c++ make nasm git clang clang-libs opus-devel
+
+          # AlmaLinux has no libx264/libx265 packages, and its libvpx is 1.7
+          # where the bindings were generated from 1.16. Every step is bounded:
+          # a stalled clone once hung this job for twenty minutes.
+          timeout 180 git clone --depth 1 --branch stable \
+            https://code.videolan.org/videolan/x264.git /tmp/x264
+          ( cd /tmp/x264 && ./configure --prefix=/usr --libdir=/usr/lib \
+              --enable-shared --disable-cli \
+            && timeout 600 make -j"$(nproc)" && make install )
+
+          # x265 4.2 exactly: blazar-x265-sys pins the struct layouts bindgen
+          # produced from 4.2 headers (clang 19 writes opaque ones), so another
+          # version would read and write the wrong offsets.
+          timeout 240 git clone --depth 1 --branch 4.2 \
+            https://bitbucket.org/multicoreware/x265_git /tmp/x265
+          cmake -S /tmp/x265/source -B /tmp/x265/build -DCMAKE_BUILD_TYPE=Release \
+                -DENABLE_SHARED=ON -DENABLE_CLI=OFF -DCMAKE_INSTALL_PREFIX=/usr
+          timeout 1200 cmake --build /tmp/x265/build -j"$(nproc)"
+          cmake --install /tmp/x265/build
+
+          timeout 180 git clone --depth 1 --branch v1.16.0 \
+            https://chromium.googlesource.com/webm/libvpx /tmp/vpx
+          ( cd /tmp/vpx && ./configure --prefix=/usr --libdir=/usr/lib \
+              --disable-examples --disable-tools --disable-docs \
+              --disable-unit-tests --disable-install-bins \
+            && timeout 900 make -j"$(nproc)" && make install )
+
+          timeout 240 git clone --depth 1 --branch v2.3.0 \
+            https://gitlab.com/AOMediaCodec/SVT-AV1.git /tmp/svt
+          cmake -S /tmp/svt -B /tmp/svt/build -DCMAKE_BUILD_TYPE=Release \
+                -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX=/usr
+          timeout 1200 cmake --build /tmp/svt/build -j"$(nproc)"
+          cmake --install /tmp/svt/build
+
+          echo "x264 $(pkg-config --modversion x264)" \
+               "x265 $(pkg-config --modversion x265)" \
+               "vpx $(pkg-config --modversion vpx)" \
+               "svt $(pkg-config --modversion SvtAv1Enc)"
+          case "$(pkg-config --modversion x265)" in
+            4.2*) ;;
+            *) echo "libx265 must be 4.2: the sys crate pins its struct layouts"; exit 1 ;;
+          esac
+      - name: build the GPL wheel
+        # scripts/build_gpl.py assembles a project maturin will build: this crate
+        # and its Python package copied into one scratch directory, made
+        # standalone, with the GPL name and licence written into its pyproject.
+        # Building is then maturin's own job, so nothing rewrites the archive —
+        # a rewritten wheel was rejected by PyPI with "Trailing data".
+        env:
+          PYO3_PYTHON: /opt/python/cp312-cp312/bin/python3
+        run: |
+          /opt/python/cp312-cp312/bin/pip install --quiet maturin
+          export PATH=/opt/python/cp312-cp312/bin:$PATH
+          python3 scripts/build_gpl.py --out dist --repair
+          ls -l dist
       - name: the GPL libraries must travel inside the wheel
-        # `--auditwheel=repair` bundles them. If it silently did not, the wheel
-        # imports only on a machine that already has libx264/libx265 — which is
-        # how a "works on the build host" wheel gets published.
+        # `--auditwheel=repair` bundles them. A repair that silently did nothing
+        # would publish a wheel that only imports where it was built.
         run: |
           for lib in libx264 libx265; do
-            if ! unzip -l bindings/python/dist/*.whl | grep -q "$lib"; then
-              echo "wheel does not bundle $lib:"
-              unzip -l bindings/python/dist/*.whl
-              exit 1
-            fi
+            unzip -l dist/*.whl | grep -q "$lib" || { unzip -l dist/*.whl; exit 1; }
           done
       - uses: actions/upload-artifact@v4
         with:
-          name: gpl-wheel-${{ matrix.platform }}
-          path: bindings/python/dist/*.whl
+          name: gpl-wheel-manylinux_2_28_x86_64
+          path: dist/*.whl
 
   smoke:
     # Installing the wheel and asking what it can encode is the check that
