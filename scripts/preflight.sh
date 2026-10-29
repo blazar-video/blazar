@@ -71,9 +71,9 @@ codes_need() {
 # combination with others is caught.
 feature_sets() {
     local status=0 features code need missing
-    for features in "" "enc-x264" "enc-svtav1" "enc-vp9" "enc-x265" "opus" \
+    for features in "" "enc-x264" "enc-svtav1" "enc-vp9" "enc-x265" "enc-opus" \
                     "nvenc" "gpu-preprocess" "nvenc,gpu-preprocess" \
-                    "enc-svtav1,enc-vp9,enc-x264,opus"; do
+                    "enc-svtav1,enc-vp9,enc-x264,enc-opus"; do
         missing=""
         for code in ${features//,/ }; do
             need=$(codes_need "$code")
