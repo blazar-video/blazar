@@ -193,21 +193,15 @@ def test_device_frames_decode(tmp_path, backend, codec, dtype):
 def test_both_conversion_sites_decode(tmp_path, backend, codec, placement):
     """RGB->NV12 on either side of the bus produces the same decodable class.
 
-    `gpu` on a software backend must raise rather than fall back, which is the
-    other half of this contract and is asserted here rather than in a separate
-    test so the two statements stay together.
+    `gpu` is allowed everywhere the kernel exists, including software backends
+    (the NV12 comes back over the bus). What is refused is `cpu` for frames that
+    are already on the device, asserted separately below.
     """
     present = available()
     if backend not in present:
         pytest.skip(f"{backend} not built")
 
     path = tmp_path / f"{backend}-{codec}-{placement}.mp4"
-    hardware = backend in {"nvenc", "videotoolbox"}
-    if placement == "gpu" and not hardware:
-        with pytest.raises(RuntimeError):
-            encoder(backend, codec, str(path), f"accept-{backend}-gpu", preprocess="gpu")
-        return
-
     enc = encoder(backend, codec, str(path), f"accept-{backend}-{codec}-{placement}", preprocess=placement)
     for frame in host_frames("u8"):
         enc.submit(frame, width=WIDTH, height=HEIGHT, fps=FPS, layout="thwc", range="full_u8")
@@ -216,6 +210,20 @@ def test_both_conversion_sites_decode(tmp_path, backend, codec, placement):
     assert enc.preprocess == placement, enc.preprocess
     fields = decode_check(str(path))
     assert int(fields["nb_read_frames"]) == FRAMES, fields
+
+
+@pytest.mark.acceptance
+def test_cpu_placement_refuses_device_frames(tmp_path):
+    """The one combination that cannot work: device frames, host conversion."""
+    if "nvenc" not in available():
+        pytest.skip("nvenc not built")
+    tensor = torch_device_frames("bf16")
+    enc = encoder(
+        "nvenc", "h264", str(tmp_path / "refused.mp4"), "accept-refused",
+        layout="bcthw", preprocess="cpu",
+    )
+    with pytest.raises(RuntimeError):
+        enc.submit(tensor, fps=FPS)
 
 
 @pytest.mark.acceptance
