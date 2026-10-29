@@ -101,6 +101,14 @@ survives says who is holding the GIL. Loop baseline 69.6 M iters/s. **Retention 
 loop beside an active GPU process measured 106–108%, so an idle interpreter is not
 at its boost clock. Read the comparison between arms, not the percentage.
 
+**"Pre-staged" means the numpy arrays exist in host memory before the clock**, so
+these rows time `submit()` and the encode only. They exclude the per-frame work a
+real pipeline does to produce those arrays — quantise, device→host copy, reshape —
+which is deliberate: it isolates the library's own interpreter behaviour from the
+caller's torch work. It also means these frame rates are **not** comparable with
+table 1, which includes that work. The rates here are lower despite doing less,
+because a competing Python thread is saturating the interpreter throughout.
+
 | Workload | fps beside a Python thread | Python loop keeps |
 |---|---|---|
 | blazar, device tensor | **359.3** | 106% (noise) |
