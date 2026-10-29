@@ -120,14 +120,17 @@ holding the GIL. 1920×1088, 6 s window, sessions warmed.
 runs beside it, divided by the same loop's iterations/second with nothing else
 running. It is measured against a baseline taken by the same script, because the
 loop body differs between scripts and the rates are not comparable across them.
-Baseline here: 69.6 M iters/s. Anything from about 94% to 106% is noise rather than
-contention.
+Baseline here: 69.6 M iters/s. Retention below 100% can also come from clocks
+rather than contention — running the same loop beside an active GPU process
+measured 106–108% on this box, so an idle interpreter is evidently not at its
+boost clock. The metric to read is the *comparison between arms*, on the same
+baseline.
 
 | Workload | fps while a Python thread runs | Python loop keeps |
 |---|---|---|
 | blazar, device tensor (zero copy) | **359.3** | 106% (noise) |
 | blazar, pre-staged host arrays | 83.3 | 91% |
-| pyav, pre-staged host arrays | 33.3 | 93% |
+| pyav, pre-staged host arrays | 33.3 | 92% |
 
 - **Device tensors cost no interpreter time at all.** `submit` hands a pointer to
   a Rust worker; the calling thread is free before the frame is touched. Nothing
@@ -135,9 +138,11 @@ contention.
   through Python first.
 - **Host arrays keep 91% of the Python thread's throughput — and 2.5× PyAV's fps**
   (83.3 vs 33.3) on identical input. The frame copy runs with the GIL released.
-- The Python retention percentages (91/93%) look similar; the difference is what
-  each arm gets done for it. PyAV reaches a third of the frame rate, so the thread
-  has more time to run Python and the ratio flatters it.
+- **The host path costs the interpreter the same as PyAV's, and that is the
+  point.** Three runs each against a 39.2 M iters/s baseline: Blazar 91%
+  (89–92%), PyAV 92% (90–93%) — 0.1 percentage points apart, spreads overlapping.
+  Both do per-frame Python work, so both pay for it. What differs is what each gets
+  done for that price: 83.3 fps against 33.3 fps.
 
 **A caveat about this box.** Repeating the host-array arm across this session gave
 83.3–150 fps for the same code and input, and the device arm 333–364 fps. Run-to-
