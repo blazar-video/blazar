@@ -101,6 +101,11 @@ jobs:
         # a rewritten wheel was rejected by PyPI with "Trailing data".
         env:
           PYO3_PYTHON: /opt/python/cp312-cp312/bin/python3
+          # rustup refuses to run when $HOME is not the euid's home, and in a
+          # container job GitHub sets HOME=/github/home. Point it at the real one.
+          HOME: /root
+          RUSTUP_HOME: /root/.rustup
+          CARGO_HOME: /root/.cargo
         run: |
           # The image has no Rust toolchain on PATH for a non-interactive shell.
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
