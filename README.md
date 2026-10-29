@@ -116,10 +116,11 @@ thread running a pure-Python loop (no C calls that might release the GIL) with a
 encoder running beside it in another thread, both real workloads, 6 s window,
 1920×1088, host `u8` arrays, sessions warmed first.
 
-| Arm | Encoder fps alone | Encoder fps with a Python thread | Retained | Python loop retained |
-|---|---|---|---|---|
-| blazar | 202.8 | **216.7** | **107%** | 83% |
-| pyav | 164.0 | **33.3** | **20%** | 89% |
+| Arm | Conversion | fps alone | fps with a Python thread | Retained | Python loop retained |
+|---|---|---|---|---|---|
+| blazar `auto` → device | upload + GPU kernel | 202.8 | **216.7** | **107%** | 83% |
+| blazar `host` | CPU SIMD | 140.6 | **150.0** | **107%** | 78% |
+| pyav | CPU swscale | 164.0 | **33.3** | **20%** | 89% |
 
 - **PyAV keeps one fifth of its throughput when another thread is doing Python
   work** (164.0 → 33.3 fps). Its per-frame `from_ndarray`, `reformat` and `mux`
