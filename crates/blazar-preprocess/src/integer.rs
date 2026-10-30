@@ -316,6 +316,26 @@ unsafe fn convert_thwc_u8_avx2(
     (y_plane, u_plane, v_plane)
 }
 
+/// The AVX2 conversion, or `None` where it is not available.
+///
+/// Exposed for the differential check in `examples/avx2_diff.rs`; the encoder goes
+/// through [`convert`].
+#[cfg(target_arch = "x86_64")]
+#[must_use]
+pub fn convert_avx2(
+    bytes: &[u8],
+    desc: &FrameDesc,
+    w: usize,
+    h: usize,
+) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    if std::is_x86_feature_detected!("avx2") {
+        // SAFETY: guarded by the runtime feature check.
+        Some(unsafe { convert_thwc_u8_avx2(bytes, desc, w, h) })
+    } else {
+        None
+    }
+}
+
 /// Dispatch: the scalar reference.
 ///
 /// The AVX2 version above is **not wired in**, for two measured reasons:
