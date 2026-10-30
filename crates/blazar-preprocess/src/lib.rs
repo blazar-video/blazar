@@ -61,6 +61,8 @@ pub enum PreprocessError {
 
 /// The preprocess stage trait. The CPU and (future) CUDA stages both implement
 /// it so the pipeline is residency-agnostic above this seam.
+pub mod integer;
+
 pub trait PreprocessStage {
     fn process(&self, frame: &FrameRef) -> Result<PreprocessedFrame, PreprocessError>;
 }
