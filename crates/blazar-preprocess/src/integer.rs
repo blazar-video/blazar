@@ -229,8 +229,10 @@ unsafe fn convert_thwc_u8_avx2(
 
         let cb = _mm256_mullo_epi32(_mm256_sub_epi32(_mm256_slli_epi32(b, 8), y16), cb_c);
         let cr = _mm256_mullo_epi32(_mm256_sub_epi32(_mm256_slli_epi32(r, 8), y16), cr_c);
-        _mm256_storeu_si256(out_cb.as_mut_ptr().add(sx).cast(), cb);
-        _mm256_storeu_si256(out_cr.as_mut_ptr().add(sx).cast(), cr);
+        // Staging is eight elements for this iteration only; the caller reduces it
+        // straight away. Indexing it by `sx` would run past its end.
+        _mm256_storeu_si256(out_cb.as_mut_ptr().cast(), cb);
+        _mm256_storeu_si256(out_cr.as_mut_ptr().cast(), cr);
     }
 
     let k = (offsets, mask, half, kr, kg, kb, cb_c, cr_c);
