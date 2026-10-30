@@ -45,6 +45,7 @@ impl VideoEncoder for CpuPreprocessEncoder {
     }
 
     fn encode_frame(&mut self, frame: FrameRef) -> Result<Vec<EncodedUnit>, EncodeError> {
+        let _convert = blazar_trace::span(blazar_trace::Stage::Convert);
         let converted = self
             .cpu
             .process(&frame)

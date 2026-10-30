@@ -114,15 +114,19 @@ impl GpuPreprocess {
                 self.staging.len()
             )));
         }
+        let upload = blazar_trace::global().span(blazar_trace::Stage::Upload);
+        blazar_trace::add_counter(blazar_trace::Counter::BytesHostToDevice, bytes.len() as u64);
         self.stream
             .memcpy_htod(bytes, &mut self.staging.slice_mut(0..bytes.len()))
             .map_err(|e| EncodeError::Backend(format!("upload frame: {e}")))?;
+        upload.finish();
 
         let (ptr, guard) = self.device.device_ptr(&self.stream);
         drop(guard);
         self.stream
             .memcpy_htod(&[ptr], &mut self.dst_ptrs.slice_mut(0..1))
             .map_err(|e| EncodeError::Backend(format!("upload dst pointer: {e}")))?;
+        let _convert = blazar_trace::span(blazar_trace::Stage::Convert);
         self.converter.convert_batch(
             &self.stream,
             &self.staging,
