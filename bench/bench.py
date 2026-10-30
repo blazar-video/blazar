@@ -53,6 +53,9 @@ def run_row(row: dict, cfg: dict) -> dict:
     import torch
     import blazar
 
+    # Without this the record's trace is empty and nothing can be attributed.
+    blazar.enable_tracing()
+
     w, h = int(row["width"]), int(row["height"])
     n = int(cfg["corpus"]["frames"])
     dev = (torch.rand((1, 3, n, h, w), device="cuda", dtype=torch.float32) * 2 - 1).bfloat16()
