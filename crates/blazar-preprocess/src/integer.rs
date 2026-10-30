@@ -262,15 +262,22 @@ unsafe fn convert_thwc_u8_avx2(
     (y_plane, u_plane, v_plane)
 }
 
-/// Dispatch: AVX2 where available, the scalar reference everywhere else.
+/// Dispatch: the scalar reference.
+///
+/// The AVX2 version above is **not wired in**, for two measured reasons:
+///
+/// 1. It fails the ±1 gate (`U differs by 2` at 131×67). It rounds each pixel's
+///    chroma before the 2×2 average, while the float path averages the unrounded
+///    values and rounds once; per-pixel rounding becomes ±2 after the division. The
+///    fix is to store `(b<<8 − y16)·coef` unrounded and reduce those, which the
+///    scalar version already does.
+/// 2. It is slower: 2.92 ms against 1.83 ms for the float SIMD path at 720p on
+///    mosk, because it allocates two full-frame `i32` planes (16.8 MB at 1088p) per
+///    call and walks the frame a second time for the reduction.
+///
+/// Both are fixable — unrounded staging in `i16` and an inline row-pair reduction —
+/// but until they are, this is the only path that runs.
 #[must_use]
 pub fn convert(bytes: &[u8], desc: &FrameDesc, w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::is_x86_feature_detected!("avx2") {
-            // SAFETY: guarded by the runtime feature check above.
-            return unsafe { convert_thwc_u8_avx2(bytes, desc, w, h) };
-        }
-    }
     convert_thwc_u8(bytes, desc, w, h)
 }
