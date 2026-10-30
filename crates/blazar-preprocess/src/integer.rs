@@ -298,7 +298,19 @@ pub fn convert_avx2(
     }
 }
 
-/// Dispatch: the scalar reference.
+/// Dispatch: AVX2 on x86_64, the scalar reference elsewhere.
+///
+/// Correct — it matches the scalar path exactly on every shape the gate covers — but
+/// measured slower than the float SIMD path where it matters: min-of-3 on mosk is
+/// 2.98 ms against 1.56 ms at 1088p, while it wins 1.32 against 1.70 at 720p. The
+/// 720p float figure is itself anomalous (it measures slower than its own 1088p
+/// row), so treat only the 1088p result as a finding.
+///
+/// The cause is almost certainly `_mm256_i32gather_epi32`, which is microcoded on
+/// this part. The usual remedy is to drop the gather and deinterleave two 32-byte
+/// loads with `pshufb`, the way libyuv does. Nothing in the encoder calls this yet —
+/// `CpuPreprocess` still runs the float path — so this is a bench-only path until
+/// that changes.
 ///
 /// The AVX2 version above is **not wired in**, for two measured reasons:
 ///
