@@ -167,9 +167,8 @@ unsafe fn convert_thwc_u8_avx2(
     let cw = w.div_ceil(2);
     let ch = h.div_ceil(2);
     let mut y_plane = vec![0u8; w * h];
-    // Per-pixel chroma at 8.8, before the 2×2 average.
-    let mut cb_px = vec![0i32; w * h];
-    let mut cr_px = vec![0i32; w * h];
+    let mut u_plane = vec![0u8; cw * ch];
+    let mut v_plane = vec![0u8; cw * ch];
 
     let offsets = _mm256_setr_epi32(0, 3, 6, 9, 12, 15, 18, 21);
     let mask = _mm256_set1_epi32(0xFF);
@@ -179,84 +178,116 @@ unsafe fn convert_thwc_u8_avx2(
     let kb = _mm256_set1_epi32(c.kb);
     let cb_c = _mm256_set1_epi32(c.cb);
     let cr_c = _mm256_set1_epi32(c.cr);
-    let rnd = _mm256_set1_epi32(1 << 15);
     let zero = _mm256_setzero_si256();
     let max = _mm256_set1_epi32(255);
 
-    for sy in 0..h {
-        let row = sy * w;
-        let mut sx = 0usize;
-        // One pixel of headroom: the gather's last dword runs one byte long.
-        while sx + 8 < w {
-            let base = unsafe { bytes.as_ptr().add((row + sx) * 3) } as *const i32;
-            let g = unsafe { _mm256_i32gather_epi32(base, offsets, 1) };
-            let r = _mm256_and_si256(g, mask);
-            let gr = _mm256_and_si256(_mm256_srli_epi32(g, 8), mask);
-            let b = _mm256_and_si256(_mm256_srli_epi32(g, 16), mask);
+    // One row: luma into `y_out`, scaled-but-unshifted chroma into `cb_out`/`cr_out`.
+    // The shift happens once, after the 2×2 sum, so this rounds exactly where the
+    // scalar path rounds.
+    #[inline(always)]
+    unsafe fn row(
+        bytes: &[u8],
+        row: usize,
+        sx: usize,
+        count: usize,
+        out_y: &mut [u8],
+        out_cb: &mut [i32],
+        out_cr: &mut [i32],
+        k: (
+            __m256i,
+            __m256i,
+            __m256i,
+            __m256i,
+            __m256i,
+            __m256i,
+            __m256i,
+            __m256i,
+        ),
+    ) {
+        let (offsets, mask, half, kr, kg, kb) = (k.0, k.1, k.2, k.3, k.4, k.5);
+        let (cb_c, cr_c) = (k.6, k.7);
+        let base = bytes.as_ptr().add((row + sx) * 3) as *const i32;
+        let g = _mm256_i32gather_epi32(base, offsets, 1);
+        let r = _mm256_and_si256(g, mask);
+        let gr = _mm256_and_si256(_mm256_srli_epi32(g, 8), mask);
+        let b = _mm256_and_si256(_mm256_srli_epi32(g, 16), mask);
 
-            // y16 in 8.8 fixed point; exact in i32, so no saturation anywhere.
-            let y16 = _mm256_add_epi32(
-                _mm256_add_epi32(_mm256_mullo_epi32(kr, r), _mm256_mullo_epi32(kg, gr)),
-                _mm256_mullo_epi32(kb, b),
-            );
-
-            let y = _mm256_min_epi32(
-                _mm256_max_epi32(_mm256_srai_epi32(_mm256_add_epi32(y16, half), 8), zero),
-                max,
-            );
-            let mut buf = [0i32; 8];
-            unsafe { _mm256_storeu_si256(buf.as_mut_ptr().cast(), y) };
-            for (k, v) in buf.iter().enumerate() {
-                y_plane[row + sx + k] = *v as u8;
-            }
-
-            // Chroma uses the *unrounded* luma, as the float path does.
-            let b8 = _mm256_slli_epi32(b, 8);
-            let r8 = _mm256_slli_epi32(r, 8);
-            let cb = _mm256_srai_epi32(
-                _mm256_add_epi32(_mm256_mullo_epi32(_mm256_sub_epi32(b8, y16), cb_c), rnd),
-                16,
-            );
-            let cr = _mm256_srai_epi32(
-                _mm256_add_epi32(_mm256_mullo_epi32(_mm256_sub_epi32(r8, y16), cr_c), rnd),
-                16,
-            );
-            unsafe {
-                _mm256_storeu_si256(cb_px.as_mut_ptr().add(row + sx).cast(), cb);
-                _mm256_storeu_si256(cr_px.as_mut_ptr().add(row + sx).cast(), cr);
-            }
-            sx += 8;
+        let y16 = _mm256_add_epi32(
+            _mm256_add_epi32(_mm256_mullo_epi32(kr, r), _mm256_mullo_epi32(kg, gr)),
+            _mm256_mullo_epi32(kb, b),
+        );
+        let y = _mm256_min_epi32(
+            _mm256_max_epi32(_mm256_srai_epi32(_mm256_add_epi32(y16, half), 8), zero),
+            max,
+        );
+        let mut buf = [0i32; 8];
+        _mm256_storeu_si256(buf.as_mut_ptr().cast(), y);
+        for i in 0..count {
+            out_y[sx + i] = buf[i] as u8;
         }
-        for sx in sx..w {
-            let px = (row + sx) * 3;
-            let r = i32::from(bytes[px]);
-            let g = i32::from(bytes[px + 1]);
-            let b = i32::from(bytes[px + 2]);
-            let y16 = c.kr * r + c.kg * g + c.kb * b;
-            y_plane[row + sx] = clamp_u8((y16 + 128) >> 8);
-            cb_px[row + sx] = (((b << 8) - y16) * c.cb + (1 << 15)) >> 16;
-            cr_px[row + sx] = (((r << 8) - y16) * c.cr + (1 << 15)) >> 16;
-        }
+
+        let cb = _mm256_mullo_epi32(_mm256_sub_epi32(_mm256_slli_epi32(b, 8), y16), cb_c);
+        let cr = _mm256_mullo_epi32(_mm256_sub_epi32(_mm256_slli_epi32(r, 8), y16), cr_c);
+        _mm256_storeu_si256(out_cb.as_mut_ptr().add(sx).cast(), cb);
+        _mm256_storeu_si256(out_cr.as_mut_ptr().add(sx).cast(), cr);
     }
 
-    // 2×2 reduction, scalar: cheap next to the multiplies and correct at edges.
-    let mut u_plane = vec![0u8; cw * ch];
-    let mut v_plane = vec![0u8; cw * ch];
+    let k = (offsets, mask, half, kr, kg, kb, cb_c, cr_c);
+    let mut cb_a = [0i32; 8];
+    let mut cr_a = [0i32; 8];
+    let mut cb_b = [0i32; 8];
+    let mut cr_b = [0i32; 8];
+
     for cy in 0..ch {
-        let rows = if cy * 2 + 1 < h { 2 } else { 1 };
-        for cx in 0..cw {
+        let sy = cy * 2;
+        let has_b = sy + 1 < h;
+        let mut cx = 0usize;
+        // Four chroma cells per iteration, i.e. eight luma pixels. Stop one pixel
+        // short so the gather's trailing dword stays inside the buffer.
+        while cx + 4 <= cw && cx * 2 + 8 < w {
+            let sx = cx * 2;
+            unsafe {
+                row(bytes, sy, sx, 8, &mut y_plane, &mut cb_a, &mut cr_a, k);
+                if has_b {
+                    row(bytes, sy + 1, sx, 8, &mut y_plane, &mut cb_b, &mut cr_b, k);
+                }
+            }
+            let rows = if has_b { 2 } else { 1 } as i32;
+            for cell in 0..4 {
+                let (i0, i1) = (cell * 2, cell * 2 + 1);
+                let mut cbs = cb_a[i0] + cb_a[i1];
+                let mut crs = cr_a[i0] + cr_a[i1];
+                if has_b {
+                    cbs += cb_b[i0] + cb_b[i1];
+                    crs += cr_b[i0] + cr_b[i1];
+                }
+                let n = rows * 2;
+                u_plane[cy * cw + cx + cell] = clamp_u8(((cbs / n + (1 << 15)) >> 16) + 128);
+                v_plane[cy * cw + cx + cell] = clamp_u8(((crs / n + (1 << 15)) >> 16) + 128);
+            }
+            cx += 4;
+        }
+        // Tail: fewer than eight pixels left in this row, or fewer than four cells.
+        for cx in cx..cw {
             let cols = if cx * 2 + 1 < w { 2 } else { 1 };
-            let (mut cb, mut cr) = (0i32, 0i32);
-            for row in 0..rows {
+            let rows = if has_b { 2 } else { 1 };
+            let (mut cbs, mut crs) = (0i32, 0i32);
+            for r in 0..rows {
                 for col in 0..cols {
-                    let p = (cy * 2 + row) * w + cx * 2 + col;
-                    cb += cb_px[p];
-                    cr += cr_px[p];
+                    let sx = cx * 2 + col;
+                    let px = ((sy + r) * w + sx) * 3;
+                    let ri = i32::from(bytes[px]);
+                    let gi = i32::from(bytes[px + 1]);
+                    let bi = i32::from(bytes[px + 2]);
+                    let y16 = c.kr * ri + c.kg * gi + c.kb * bi;
+                    y_plane[(sy + r) * w + sx] = clamp_u8((y16 + 128) >> 8);
+                    cbs += ((bi << 8) - y16) * c.cb;
+                    crs += ((ri << 8) - y16) * c.cr;
                 }
             }
             let n = (rows * cols) as i32;
-            u_plane[cy * cw + cx] = clamp_u8(cb / n + 128);
-            v_plane[cy * cw + cx] = clamp_u8(cr / n + 128);
+            u_plane[cy * cw + cx] = clamp_u8(((cbs / n + (1 << 15)) >> 16) + 128);
+            v_plane[cy * cw + cx] = clamp_u8(((crs / n + (1 << 15)) >> 16) + 128);
         }
     }
     (y_plane, u_plane, v_plane)
@@ -279,5 +310,12 @@ unsafe fn convert_thwc_u8_avx2(
 /// but until they are, this is the only path that runs.
 #[must_use]
 pub fn convert(bytes: &[u8], desc: &FrameDesc, w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::is_x86_feature_detected!("avx2") {
+            // SAFETY: guarded by the runtime feature check above.
+            return unsafe { convert_thwc_u8_avx2(bytes, desc, w, h) };
+        }
+    }
     convert_thwc_u8(bytes, desc, w, h)
 }
