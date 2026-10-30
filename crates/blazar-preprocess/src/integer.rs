@@ -178,66 +178,48 @@ unsafe fn convert_thwc_u8_avx2(
     let kb = _mm256_set1_epi32(c.kb);
     let cb_c = _mm256_set1_epi32(c.cb);
     let cr_c = _mm256_set1_epi32(c.cr);
-    // One row: luma into `y_out`, scaled-but-unshifted chroma into `cb_out`/`cr_out`.
-    // The shift happens once, after the 2×2 sum, so this rounds exactly where the
-    // scalar path rounds.
-    #[inline(always)]
-    unsafe fn row(
-        bytes: &[u8],
-        row: usize,
-        sx: usize,
-        count: usize,
-        out_y: &mut [u8], // this row only: the caller slices it
-        out_cb: &mut [i32],
-        out_cr: &mut [i32],
-        k: (
-            __m256i,
-            __m256i,
-            __m256i,
-            __m256i,
-            __m256i,
-            __m256i,
-            __m256i,
-            __m256i,
-        ),
-    ) {
-        let (offsets, mask, half, kr, kg, kb) = (k.0, k.1, k.2, k.3, k.4, k.5);
-        let (cb_c, cr_c) = (k.6, k.7);
-        // Built here rather than captured: a nested `fn` item cannot close over the
-        // caller's scope.
-        let zero = _mm256_setzero_si256();
-        let max = _mm256_set1_epi32(255);
-        let base = bytes.as_ptr().add((row + sx) * 3) as *const i32;
-        let g = _mm256_i32gather_epi32(base, offsets, 1);
-        let r = _mm256_and_si256(g, mask);
-        let gr = _mm256_and_si256(_mm256_srli_epi32(g, 8), mask);
-        let b = _mm256_and_si256(_mm256_srli_epi32(g, 16), mask);
+    let zero = _mm256_setzero_si256();
+    let max = _mm256_set1_epi32(255);
 
-        let y16 = _mm256_add_epi32(
-            _mm256_add_epi32(_mm256_mullo_epi32(kr, r), _mm256_mullo_epi32(kg, gr)),
-            _mm256_mullo_epi32(kb, b),
-        );
-        let y = _mm256_min_epi32(
-            _mm256_max_epi32(_mm256_srai_epi32(_mm256_add_epi32(y16, half), 8), zero),
-            max,
-        );
-        let mut buf = [0i32; 8];
-        _mm256_storeu_si256(buf.as_mut_ptr().cast(), y);
-        for i in 0..count {
-            out_y[sx + i] = buf[i] as u8;
-        }
-        // `out_y` is the current row, not the plane: indexing the plane here wrote
-        // every row pair over row 0.
+    // Eight pixels of one row: luma straight into the plane, chroma staged
+    // unshifted so the caller can average before rounding.
+    //
+    // A macro, not a nested function: the intrinsics need the enclosing
+    // `target_feature` context, and a nested item is a separate function with its
+    // own codegen. The first attempt used one and every row past the first came back
+    // as a constant.
+    macro_rules! eight_pixels {
+        ($sy:expr, $sx:expr, $out_cb:expr, $out_cr:expr) => {{
+            let (sy, sx) = ($sy, $sx);
+            let base = bytes.as_ptr().add((sy * w + sx) * 3) as *const i32;
+            let g = _mm256_i32gather_epi32(base, offsets, 1);
+            let r = _mm256_and_si256(g, mask);
+            let gr = _mm256_and_si256(_mm256_srli_epi32(g, 8), mask);
+            let b = _mm256_and_si256(_mm256_srli_epi32(g, 16), mask);
 
-        let cb = _mm256_mullo_epi32(_mm256_sub_epi32(_mm256_slli_epi32(b, 8), y16), cb_c);
-        let cr = _mm256_mullo_epi32(_mm256_sub_epi32(_mm256_slli_epi32(r, 8), y16), cr_c);
-        // Staging is eight elements for this iteration only; the caller reduces it
-        // straight away. Indexing it by `sx` would run past its end.
-        _mm256_storeu_si256(out_cb.as_mut_ptr().cast(), cb);
-        _mm256_storeu_si256(out_cr.as_mut_ptr().cast(), cr);
+            // y16 is 8.8 fixed point and exact in i32: no saturation, anywhere.
+            let y16 = _mm256_add_epi32(
+                _mm256_add_epi32(_mm256_mullo_epi32(kr, r), _mm256_mullo_epi32(kg, gr)),
+                _mm256_mullo_epi32(kb, b),
+            );
+            let y = _mm256_min_epi32(
+                _mm256_max_epi32(_mm256_srai_epi32(_mm256_add_epi32(y16, half), 8), zero),
+                max,
+            );
+            let mut buf = [0i32; 8];
+            _mm256_storeu_si256(buf.as_mut_ptr().cast(), y);
+            for i in 0..8 {
+                y_plane[sy * w + sx + i] = buf[i] as u8;
+            }
+
+            // Chroma from the *unrounded* luma, as the float path does.
+            let cb = _mm256_mullo_epi32(_mm256_sub_epi32(_mm256_slli_epi32(b, 8), y16), cb_c);
+            let cr = _mm256_mullo_epi32(_mm256_sub_epi32(_mm256_slli_epi32(r, 8), y16), cr_c);
+            _mm256_storeu_si256($out_cb.as_mut_ptr().cast(), cb);
+            _mm256_storeu_si256($out_cr.as_mut_ptr().cast(), cr);
+        }};
     }
 
-    let k = (offsets, mask, half, kr, kg, kb, cb_c, cr_c);
     let mut cb_a = [0i32; 8];
     let mut cr_a = [0i32; 8];
     let mut cb_b = [0i32; 8];
@@ -247,35 +229,15 @@ unsafe fn convert_thwc_u8_avx2(
         let sy = cy * 2;
         let has_b = sy + 1 < h;
         let mut cx = 0usize;
-        // Four chroma cells per iteration, i.e. eight luma pixels. Stop one pixel
-        // short so the gather's trailing dword stays inside the buffer.
+        // Four chroma cells, i.e. eight luma pixels. Stops one pixel short of the
+        // row end because the gather's last dword runs a byte long.
         while cx + 4 <= cw && cx * 2 + 8 < w {
             let sx = cx * 2;
-            unsafe {
-                row(
-                    bytes,
-                    sy,
-                    sx,
-                    8,
-                    &mut y_plane[sy * w..(sy + 1) * w],
-                    &mut cb_a,
-                    &mut cr_a,
-                    k,
-                );
-                if has_b {
-                    row(
-                        bytes,
-                        sy + 1,
-                        sx,
-                        8,
-                        &mut y_plane[(sy + 1) * w..(sy + 2) * w],
-                        &mut cb_b,
-                        &mut cr_b,
-                        k,
-                    );
-                }
+            eight_pixels!(sy, sx, &mut cb_a, &mut cr_a);
+            if has_b {
+                eight_pixels!(sy + 1, sx, &mut cb_b, &mut cr_b);
             }
-            let rows = if has_b { 2 } else { 1 } as i32;
+            let n: i32 = if has_b { 4 } else { 2 };
             for cell in 0..4 {
                 let (i0, i1) = (cell * 2, cell * 2 + 1);
                 let mut cbs = cb_a[i0] + cb_a[i1];
@@ -284,13 +246,13 @@ unsafe fn convert_thwc_u8_avx2(
                     cbs += cb_b[i0] + cb_b[i1];
                     crs += cr_b[i0] + cr_b[i1];
                 }
-                let n = rows * 2;
+                // One shift after the sum, matching where the scalar path rounds.
                 u_plane[cy * cw + cx + cell] = clamp_u8(((cbs / n + (1 << 15)) >> 16) + 128);
                 v_plane[cy * cw + cx + cell] = clamp_u8(((crs / n + (1 << 15)) >> 16) + 128);
             }
             cx += 4;
         }
-        // Tail: fewer than eight pixels left in this row, or fewer than four cells.
+        // Tail: the last cells of an odd width, computed the scalar way.
         for cx in cx..cw {
             let cols = if cx * 2 + 1 < w { 2 } else { 1 };
             let rows = if has_b { 2 } else { 1 };

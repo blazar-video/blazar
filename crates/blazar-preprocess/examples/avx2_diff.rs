@@ -8,7 +8,7 @@ use blazar_core::{ColorRange, ColorSpace, Dtype, FrameDesc, Layout, Pts};
 use blazar_preprocess::integer;
 
 fn main() {
-    for (w, h) in [(16usize, 2usize), (18, 2), (131, 67), (1920, 1088)] {
+    for (w, h) in [(16usize, 8usize), (16, 2), (18, 2), (131, 67), (1920, 1088)] {
         let d = FrameDesc {
             width: w as u32,
             height: h as u32,
