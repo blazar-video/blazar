@@ -178,9 +178,6 @@ unsafe fn convert_thwc_u8_avx2(
     let kb = _mm256_set1_epi32(c.kb);
     let cb_c = _mm256_set1_epi32(c.cb);
     let cr_c = _mm256_set1_epi32(c.cr);
-    let zero = _mm256_setzero_si256();
-    let max = _mm256_set1_epi32(255);
-
     // One row: luma into `y_out`, scaled-but-unshifted chroma into `cb_out`/`cr_out`.
     // The shift happens once, after the 2×2 sum, so this rounds exactly where the
     // scalar path rounds.
@@ -206,6 +203,10 @@ unsafe fn convert_thwc_u8_avx2(
     ) {
         let (offsets, mask, half, kr, kg, kb) = (k.0, k.1, k.2, k.3, k.4, k.5);
         let (cb_c, cr_c) = (k.6, k.7);
+        // Built here rather than captured: a nested `fn` item cannot close over the
+        // caller's scope.
+        let zero = _mm256_setzero_si256();
+        let max = _mm256_set1_epi32(255);
         let base = bytes.as_ptr().add((row + sx) * 3) as *const i32;
         let g = _mm256_i32gather_epi32(base, offsets, 1);
         let r = _mm256_and_si256(g, mask);
