@@ -5,7 +5,7 @@
 [corpus]
 # Identity only; the runner resolves the actual frames.
 name = "ltx-2.5"
-frames = 121
+frames = 48
 
 [[rows]]
 label = "device-720p"
