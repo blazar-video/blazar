@@ -71,12 +71,27 @@ def run_row(row: dict, cfg: dict) -> dict:
         return dev[:, :, i:i + 1].contiguous()
 
     done = 0
+    failed = False
 
-    def drain_until(total: int) -> None:
-        """Wait until `total` encoded units have arrived."""
-        nonlocal done
+    def drain_until(total: int, timeout_s: float = 120.0) -> bool:
+        """Wait until `total` encoded units have arrived, or give up.
+
+        Never unbounded. A number of encoded units does not always equal the number
+        of submitted frames -- B-frames hold some back, and the memory sink emits
+        only units that carry data -- so waiting for an exact target can spin
+        forever. The first version of this function did, and hung the run.
+        """
+        nonlocal done, failed
+        deadline = time.monotonic() + timeout_s
         while done < total:
-            done += sum(1 for u in enc.poll() if u["kind"] == "encoded" and u["data"])
+            units = enc.poll()
+            done += sum(1 for u in units if u["kind"] == "encoded" and u["data"])
+            if enc.stats.get("failed"):
+                failed = True
+                return False
+            if time.monotonic() > deadline:
+                return False
+        return True
 
     # Warm-up is outside the measurement, and so is session open.
     enc.submit(payload(0), width=w, height=h, fps=24.0, layout="thwc", range="full_u8")
@@ -84,10 +99,12 @@ def run_row(row: dict, cfg: dict) -> dict:
 
     # Latency: one frame at a time, drained to completion. n samples.
     latency = []
+    incomplete = 0
     for i in range(1, n):
         t0 = time.perf_counter()
         enc.submit(payload(i), width=w, height=h, fps=24.0, layout="thwc", range="full_u8")
-        drain_until(done + 1)
+        if not drain_until(done + 1):
+            incomplete += 1
         latency.append((time.perf_counter() - t0) * 1e3)
 
     # Throughput: the whole clip submitted, then drained. One figure, because the
@@ -96,7 +113,7 @@ def run_row(row: dict, cfg: dict) -> dict:
     t0 = time.perf_counter()
     for i in range(1, n):
         enc.submit(payload(i), width=w, height=h, fps=24.0, layout="thwc", range="full_u8")
-    drain_until(done + frames)
+    complete = drain_until(done + frames, timeout_s=300.0)
     throughput_ms = (time.perf_counter() - t0) * 1e3 / frames
 
     trace = enc.stats.get("trace", {})
@@ -109,6 +126,8 @@ def run_row(row: dict, cfg: dict) -> dict:
         "source": {"dtype": "bf16", "layout": "bcthw", "resident": "device"},
         "basis": "latency: submit then drain each frame; throughput: whole clip",
         **stats(latency),
+        "throughput_complete": complete and not failed and incomplete == 0,
+        "incomplete_frames": incomplete,
         "throughput_ms": round(throughput_ms, 3),
         "throughput_fps": round(1000.0 / throughput_ms, 1),
         "trace": trace,
