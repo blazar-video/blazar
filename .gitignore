@@ -10,3 +10,6 @@ __pycache__/
 .venv/
 # macOS
 .DS_Store
+
+# Benchmark output. Baselines are committed; raw runs are not.
+bench/results/

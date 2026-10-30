@@ -163,6 +163,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "blazar-trace"
+version = "0.1.2"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "blazar-vpx-sys"
 version = "0.1.2"
 dependencies = [
