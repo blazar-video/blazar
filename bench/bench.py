@@ -60,7 +60,7 @@ def run_row(row: dict, cfg: dict) -> dict:
     enc = blazar.Encoder(
         calibrations=blazar.Calibrations.load(cfg["calibrations"]),
         identity={"family": "wan", "version": "2.1", "quant": "u8", "size": f"{h}p"},
-        target="balanced", backend=row["backend"], codec=row["codec"],
+        target=row.get("target", "balanced"), backend=row["backend"], codec=row["codec"],
         output=None, request_id=row["label"], preprocess=row["preprocess"],
     )
     def payload(i: int):
@@ -123,7 +123,7 @@ def run_row(row: dict, cfg: dict) -> dict:
 
     return {
         "row": row["label"],
-        "backend": row["backend"], "codec": row["codec"],
+        "backend": row["backend"], "codec": row["codec"], "target": row.get("target", "balanced"),
         "preprocess": row["preprocess"], "width": w, "height": h,
         "source": {"dtype": "bf16", "layout": "bcthw", "resident": "device"},
         "basis": "latency: submit then drain each frame; throughput: whole clip",

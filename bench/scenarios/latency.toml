@@ -1,0 +1,29 @@
+# Does the calibration named "low_latency" actually lower latency?
+#
+# Latency can only be measured per frame when the encoder emits per frame, so these
+# rows ask for it explicitly: with bframes = 2 the unit for frame N does not exist
+# until N+2 has been submitted, and the drain waits out its deadline.
+
+[corpus]
+name = "ltx-2.5"
+frames = 48
+
+[[rows]]
+label = "balanced-1088p"
+backend = "nvenc"
+codec = "h264"
+target = "balanced"
+preprocess = "device"
+latency = true
+width = 1920
+height = 1088
+
+[[rows]]
+label = "low_latency-1088p"
+backend = "nvenc"
+codec = "h264"
+target = "low_latency"
+preprocess = "device"
+latency = true
+width = 1920
+height = 1088
