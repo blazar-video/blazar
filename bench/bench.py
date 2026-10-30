@@ -97,13 +97,15 @@ def run_row(row: dict, cfg: dict) -> dict:
     enc.submit(payload(0), width=w, height=h, fps=24.0, layout="thwc", range="full_u8")
     drain_until(1)
 
-    # Latency: one frame at a time, drained to completion. n samples.
+    # Latency: one frame at a time, drained to completion. Off by default because
+    # the memory sink batches: poll() can return nothing for several frames and then
+    # release four units at once, so this pass waits out its deadline each time.
     latency = []
     incomplete = 0
-    for i in range(1, n):
+    for i in range(1, n if row.get("latency", False) else 1):
         t0 = time.perf_counter()
         enc.submit(payload(i), width=w, height=h, fps=24.0, layout="thwc", range="full_u8")
-        if not drain_until(done + 1):
+        if not drain_until(done + 1, timeout_s=10.0):
             incomplete += 1
         latency.append((time.perf_counter() - t0) * 1e3)
 
@@ -125,7 +127,7 @@ def run_row(row: dict, cfg: dict) -> dict:
         "preprocess": row["preprocess"], "width": w, "height": h,
         "source": {"dtype": "bf16", "layout": "bcthw", "resident": "device"},
         "basis": "latency: submit then drain each frame; throughput: whole clip",
-        **stats(latency),
+        **stats(latency if latency else [throughput_ms]),
         "throughput_complete": complete and not failed and incomplete == 0,
         "incomplete_frames": incomplete,
         "throughput_ms": round(throughput_ms, 3),

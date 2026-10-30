@@ -1,4 +1,5 @@
-# Steady-state throughput. The source is a (1,3,T,H,W) device tensor already
+# Steady-state throughput. `latency = true` opts a row into per-frame latency, which
+# only works if the sink releases units promptly; the memory sink batches. The source is a (1,3,T,H,W) device tensor already
 # resident: nothing here uploads source frames, and session open is excluded from
 # every per-frame figure.
 
