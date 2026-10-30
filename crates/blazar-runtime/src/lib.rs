@@ -555,7 +555,6 @@ impl<S: Sink> Stream<S> {
 
         let desc = frame.desc;
         let units = {
-            let _queue = blazar_trace::span(blazar_trace::Stage::Queue);
             // A missing encoder here means the state machine was violated
             // ("open" without a built encoder). This must be an error, not a
             // panic: the runtime is embedded behind the Python FFI, where a
@@ -586,6 +585,7 @@ impl<S: Sink> Stream<S> {
             self.enc.sink.flush()?;
         }
 
+        blazar_trace::add_counter(blazar_trace::Counter::FramesSubmitted, 1);
         let seq = self.seq;
         self.seq += 1;
         Ok(seq)
@@ -632,7 +632,6 @@ impl<S: Sink> Stream<S> {
             }
         }
         let units = {
-            let _queue = blazar_trace::span(blazar_trace::Stage::Queue);
             let encoder = self
                 .encoder
                 .as_mut()
@@ -652,6 +651,7 @@ impl<S: Sink> Stream<S> {
             // before `close()` — SGLang SIGKILLs its scheduler on shutdown.
             self.enc.sink.flush()?;
         }
+        blazar_trace::add_counter(blazar_trace::Counter::FramesSubmitted, 1);
         let seq = self.seq;
         self.seq += 1;
         Ok(seq)
@@ -683,7 +683,6 @@ impl<S: Sink> Stream<S> {
         }
 
         let units = {
-            let _queue = blazar_trace::span(blazar_trace::Stage::Queue);
             let encoder = self
                 .encoder
                 .as_mut()
@@ -708,6 +707,7 @@ impl<S: Sink> Stream<S> {
             self.enc.sink.flush()?;
         }
 
+        blazar_trace::add_counter(blazar_trace::Counter::FramesSubmitted, 1);
         let seq = self.seq;
         self.seq += 1;
         Ok(seq)
