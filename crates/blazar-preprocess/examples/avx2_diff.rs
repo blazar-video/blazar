@@ -35,6 +35,20 @@ fn main() {
             return;
         };
 
+        if w == 16 && h == 8 {
+            println!("16x8 per-row Y diff counts:");
+            for r in 0..h {
+                let n = (0..w)
+                    .filter(|&x| want.0[r * w + x] != got.0[r * w + x])
+                    .count();
+                println!(
+                    "  row {r}: {n} differ   want {:?}   got {:?}",
+                    &want.0[r * w..r * w + 8],
+                    &got.0[r * w..r * w + 8]
+                );
+            }
+        }
+
         for (name, a, b, stride) in [
             ("Y", &want.0, &got.0, w),
             ("U", &want.1, &got.1, w.div_ceil(2)),
