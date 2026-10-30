@@ -1,0 +1,13 @@
+# One row, for verifying the runner end to end on a real GPU.
+
+[corpus]
+name = "ltx-2.5"
+frames = 32
+
+[[rows]]
+label = "device-1088p"
+backend = "nvenc"
+codec = "h264"
+preprocess = "device"
+width = 1920
+height = 1088
