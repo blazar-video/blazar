@@ -555,6 +555,7 @@ impl<S: Sink> Stream<S> {
 
         let desc = frame.desc;
         let units = {
+            let _queue = blazar_trace::span(blazar_trace::Stage::Queue);
             // A missing encoder here means the state machine was violated
             // ("open" without a built encoder). This must be an error, not a
             // panic: the runtime is embedded behind the Python FFI, where a
@@ -574,6 +575,7 @@ impl<S: Sink> Stream<S> {
         self.last_desc.get_or_insert(desc);
         if !units.is_empty() {
             self.ensure_sink(&desc)?;
+            let _mux = blazar_trace::span(blazar_trace::Stage::MuxWrite);
             for u in &units {
                 self.enc.sink.write(u)?;
             }
@@ -630,6 +632,7 @@ impl<S: Sink> Stream<S> {
             }
         }
         let units = {
+            let _queue = blazar_trace::span(blazar_trace::Stage::Queue);
             let encoder = self
                 .encoder
                 .as_mut()
@@ -639,6 +642,7 @@ impl<S: Sink> Stream<S> {
         self.last_desc.get_or_insert(desc);
         if !units.is_empty() {
             self.ensure_sink(&desc)?;
+            let _mux = blazar_trace::span(blazar_trace::Stage::MuxWrite);
             for u in &units {
                 self.enc.sink.write(u)?;
             }
@@ -679,6 +683,7 @@ impl<S: Sink> Stream<S> {
         }
 
         let units = {
+            let _queue = blazar_trace::span(blazar_trace::Stage::Queue);
             let encoder = self
                 .encoder
                 .as_mut()
@@ -692,6 +697,7 @@ impl<S: Sink> Stream<S> {
         self.last_desc.get_or_insert(desc);
         if !units.is_empty() {
             self.ensure_sink(&desc)?;
+            let _mux = blazar_trace::span(blazar_trace::Stage::MuxWrite);
             for u in &units {
                 self.enc.sink.write(u)?;
             }
@@ -725,6 +731,7 @@ impl<S: Sink> Stream<S> {
             if !units.is_empty() {
                 self.open_sink_if_needed()?;
             }
+            let _mux = blazar_trace::span(blazar_trace::Stage::MuxWrite);
             for u in &units {
                 self.enc.sink.write(u)?;
             }
@@ -750,6 +757,7 @@ impl<S: Sink> Stream<S> {
             if !units.is_empty() {
                 self.open_sink_if_needed()?;
             }
+            let _mux = blazar_trace::span(blazar_trace::Stage::MuxWrite);
             for u in &units {
                 self.enc.sink.write(u)?;
             }

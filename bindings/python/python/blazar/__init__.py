@@ -18,6 +18,12 @@ This module is deliberately small. Audio, device tensors and non-file sinks do
 not exist yet.
 """
 
-from ._blazar import Calibrations, Encoder, backends, __version__  # noqa: F401
+from ._blazar import (
+    Calibrations,
+    Encoder,
+    __version__,
+    backends,
+    enable_tracing,
+)  # noqa: F401
 
-__all__ = ["Calibrations", "Encoder", "backends", "__version__"]
+__all__ = ["Calibrations", "Encoder", "backends", "enable_tracing", "__version__"]

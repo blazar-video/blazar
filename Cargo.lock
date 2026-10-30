@@ -109,6 +109,7 @@ dependencies = [
  "blazar-core",
  "blazar-preprocess",
  "blazar-svtav1-sys",
+ "blazar-trace",
  "blazar-vpx-sys",
  "blazar-x265-sys",
  "cudarc",
@@ -139,6 +140,7 @@ dependencies = [
  "blazar-encoder",
  "blazar-preprocess",
  "blazar-sink",
+ "blazar-trace",
  "thiserror",
  "tracing",
 ]

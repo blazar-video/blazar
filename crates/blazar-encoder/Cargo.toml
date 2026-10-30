@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+blazar-trace.workspace = true
 blazar-x265-sys = { path = "../blazar-x265-sys", optional = true }
 # Probing for libcuda before cudarc touches it: cudarc panics when the driver
 # library is absent, and a panic in a worker thread is not an error a caller can

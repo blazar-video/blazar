@@ -42,7 +42,7 @@ use blazar_sink::{Feedback, Sink, SinkError};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
 
 type FileSink = Fmp4FileSink<BufWriter<File>>;
 
@@ -646,6 +646,44 @@ fn worker_main(
 #[pyclass(name = "Calibrations", module = "blazar")]
 struct PyCalibrations {
     index: CalibrationIndex,
+}
+
+/// The process-wide trace snapshot as a plain dict.
+fn trace_snapshot(py: Python<'_>) -> PyResult<Py<PyDict>> {
+    let snap = blazar_trace::snapshot();
+    let dict = PyDict::new(py);
+    dict.set_item("spans_recorded", snap.spans_recorded)?;
+    dict.set_item("spans_dropped", snap.spans_dropped)?;
+    let stages = PyList::empty(py);
+    for s in &snap.stages {
+        let e = PyDict::new(py);
+        e.set_item("stage", s.stage)?;
+        e.set_item("count", s.count)?;
+        e.set_item("samples", s.samples)?;
+        e.set_item("min_us", s.min_us)?;
+        e.set_item("p50_us", s.p50_us)?;
+        e.set_item("p95_us", s.p95_us)?;
+        e.set_item("max_us", s.max_us)?;
+        e.set_item("mean_us", s.mean_us)?;
+        stages.append(e)?;
+    }
+    dict.set_item("stages", stages)?;
+    let counters = PyDict::new(py);
+    for c in &snap.counters {
+        counters.set_item(c.counter, c.value)?;
+    }
+    dict.set_item("counters", counters)?;
+    Ok(dict.unbind())
+}
+
+/// Turn on span instrumentation for the process.
+///
+/// Must be called before the first frame: the global tracer is initialised once.
+/// Returns False if something has already recorded.
+#[pyfunction]
+#[pyo3(signature = (samples=blazar_trace::DEFAULT_SAMPLES, spans=blazar_trace::DEFAULT_SPANS))]
+fn enable_tracing(samples: usize, spans: usize) -> bool {
+    blazar_trace::enable(samples, spans)
 }
 
 #[pymethods]
@@ -1536,6 +1574,8 @@ impl PyEncoder {
         dict.set_item("last_encode_us", stats.last_encode_us)?;
         dict.set_item("max_encode_us", stats.max_encode_us)?;
         dict.set_item("failed", stats.failed)?;
+        drop(stats);
+        dict.set_item("trace", trace_snapshot(py)?)?;
         Ok(dict.unbind())
     }
 
@@ -1924,6 +1964,7 @@ fn _blazar(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyCalibrations>()?;
     module.add_class::<PyEncoder>()?;
     module.add_function(wrap_pyfunction!(backends, module)?)?;
+    module.add_function(wrap_pyfunction!(enable_tracing, module)?)?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     #[cfg(feature = "nvenc")]
     module.add_function(wrap_pyfunction!(_nvenc_encode_micros, module)?)?;

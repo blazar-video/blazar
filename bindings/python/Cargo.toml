@@ -16,6 +16,7 @@ name = "_blazar"
 crate-type = ["cdylib"]
 
 [dependencies]
+blazar-trace = { path = "../../crates/blazar-trace" }
 pyo3 = { version = "=0.30.1", features = ["extension-module"] }
 # Session logs must come from the Rust worker, not from Python print statements,
 # so "Blazar encoded this" is verifiable from the encoder's own side.

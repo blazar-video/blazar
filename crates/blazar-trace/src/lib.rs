@@ -428,6 +428,48 @@ impl Drop for Span<'_> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Process-wide tracer
+// ---------------------------------------------------------------------------
+
+static GLOBAL: std::sync::OnceLock<Tracer> = std::sync::OnceLock::new();
+
+/// The process-wide tracer.
+///
+/// Instrumentation lives deep in the encoder and the runtime, where threading a
+/// handle through every constructor would touch code that has nothing to do with
+/// measurement. A global costs one atomic load at each site instead. It is
+/// disabled unless [`enable`] has been called.
+#[must_use]
+pub fn global() -> &'static Tracer {
+    GLOBAL.get_or_init(Tracer::disabled)
+}
+
+/// Enable the process-wide tracer with the given window sizes.
+///
+/// Returns `false` if instrumentation has already been used in this process: the
+/// global is initialised once, so enabling has to happen before the first frame.
+pub fn enable(samples: usize, spans: usize) -> bool {
+    GLOBAL.set(Tracer::with_capacities(samples, spans)).is_ok()
+}
+
+/// Record a span on the process-wide tracer.
+#[must_use]
+pub fn span(stage: Stage) -> Span<'static> {
+    global().span(stage)
+}
+
+/// Add to a counter on the process-wide tracer.
+pub fn add_counter(counter: Counter, value: u64) {
+    global().add_counter(counter, value);
+}
+
+/// Snapshot of the process-wide tracer.
+#[must_use]
+pub fn snapshot() -> Snapshot {
+    global().snapshot()
+}
+
 /// A snapshot of one stage.
 #[derive(Clone, Debug, Serialize)]
 pub struct StageStat {

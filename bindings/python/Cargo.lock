@@ -109,6 +109,7 @@ dependencies = [
  "blazar-core",
  "blazar-preprocess",
  "blazar-svtav1-sys",
+ "blazar-trace",
  "blazar-vpx-sys",
  "blazar-x265-sys",
  "cudarc",
@@ -139,6 +140,7 @@ dependencies = [
  "blazar-encoder",
  "blazar-runtime",
  "blazar-sink",
+ "blazar-trace",
  "pyo3",
  "tracing",
  "tracing-subscriber",
@@ -153,6 +155,7 @@ dependencies = [
  "blazar-encoder",
  "blazar-preprocess",
  "blazar-sink",
+ "blazar-trace",
  "thiserror",
  "tracing",
 ]
@@ -174,6 +177,13 @@ version = "0.1.2"
 dependencies = [
  "bindgen 0.69.5",
  "pkg-config",
+]
+
+[[package]]
+name = "blazar-trace"
+version = "0.1.2"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

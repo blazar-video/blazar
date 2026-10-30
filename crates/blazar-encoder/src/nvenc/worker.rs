@@ -965,6 +965,7 @@ fn encode_with_retry(
             ..Default::default()
         };
         let started = std::time::Instant::now();
+        let _queue = blazar_trace::span(blazar_trace::Stage::Queue);
         let result = session.encode_picture(input, output, params);
         ENCODE_MICROS.fetch_add(
             started.elapsed().as_micros() as u64,

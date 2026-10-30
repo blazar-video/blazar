@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+blazar-trace.workspace = true
 blazar-core.workspace = true
 blazar-calibration.workspace = true
 blazar-encoder.workspace = true
