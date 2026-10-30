@@ -63,18 +63,42 @@ def run_row(row: dict, cfg: dict) -> dict:
         target="balanced", backend=row["backend"], codec=row["codec"],
         output=None, request_id=row["label"], preprocess=row["preprocess"],
     )
-    # Warm-up is not part of the measurement, and neither is session open.
-    enc.submit(dev[:, :, 0:1].contiguous(), width=w, height=h, fps=24.0,
-               layout="thwc", range="full_u8")
-    enc.poll()
+    def payload(i: int):
+        """What this row submits. A host row pays its own D2H, in the clock."""
+        if row["preprocess"] == "host":
+            u8 = ((dev[:, :, i].float() * 0.5 + 0.5) * 255.0).round_().clamp_(0, 255).to(torch.uint8)
+            return u8[0].permute(1, 2, 0).contiguous().cpu().numpy()
+        return dev[:, :, i:i + 1].contiguous()
 
-    samples = []
+    done = 0
+
+    def drain_until(total: int) -> None:
+        """Wait until `total` encoded units have arrived."""
+        nonlocal done
+        while done < total:
+            done += sum(1 for u in enc.poll() if u["kind"] == "encoded" and u["data"])
+
+    # Warm-up is outside the measurement, and so is session open.
+    enc.submit(payload(0), width=w, height=h, fps=24.0, layout="thwc", range="full_u8")
+    drain_until(1)
+
+    # Latency: one frame at a time, drained to completion. n samples.
+    latency = []
     for i in range(1, n):
-        frame = dev[:, :, i:i + 1].contiguous()
         t0 = time.perf_counter()
-        enc.submit(frame, width=w, height=h, fps=24.0, layout="thwc", range="full_u8")
-        enc.poll()
-        samples.append((time.perf_counter() - t0) * 1e3)
+        enc.submit(payload(i), width=w, height=h, fps=24.0, layout="thwc", range="full_u8")
+        drain_until(done + 1)
+        latency.append((time.perf_counter() - t0) * 1e3)
+
+    # Throughput: the whole clip submitted, then drained. One figure, because the
+    # encoder is the bottleneck rather than any single call.
+    frames = n - 1
+    t0 = time.perf_counter()
+    for i in range(1, n):
+        enc.submit(payload(i), width=w, height=h, fps=24.0, layout="thwc", range="full_u8")
+    drain_until(done + frames)
+    throughput_ms = (time.perf_counter() - t0) * 1e3 / frames
+
     trace = enc.stats.get("trace", {})
     enc.close()
 
@@ -83,7 +107,10 @@ def run_row(row: dict, cfg: dict) -> dict:
         "backend": row["backend"], "codec": row["codec"],
         "preprocess": row["preprocess"], "width": w, "height": h,
         "source": {"dtype": "bf16", "layout": "bcthw", "resident": "device"},
-        **stats(samples),
+        "basis": "latency: submit then drain each frame; throughput: whole clip",
+        **stats(latency),
+        "throughput_ms": round(throughput_ms, 3),
+        "throughput_fps": round(1000.0 / throughput_ms, 1),
         "trace": trace,
     }
 

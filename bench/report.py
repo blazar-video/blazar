@@ -31,9 +31,15 @@ def compare(base: dict[str, dict], run: list[dict], threshold: float = 0.05) -> 
     return out
 
 def table(rows: list[dict]) -> str:
-    lines = ["| row | p50 ms | p95 ms | fps (min) | n |", "|---|---|---|---|---|"]
+    lines = [
+        "| row | latency p50 | latency p95 | throughput | fps | n |",
+        "|---|---|---|---|---|---|",
+    ]
     for r in rows:
-        lines.append(f"| {r['row']} | {r['p50_ms']:.2f} | {r['p95_ms']:.2f} | {r['fps']:.1f} | {r['n']} |")
+        lines.append(
+            f"| {r['row']} | {r['p50_ms']:.2f} ms | {r['p95_ms']:.2f} ms "
+            f"| {r['throughput_ms']:.2f} ms | {r['throughput_fps']:.1f} | {r['n']} |"
+        )
     return "\n".join(lines)
 
 def main(argv: list[str] | None = None) -> int:

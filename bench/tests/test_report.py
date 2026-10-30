@@ -12,7 +12,8 @@ def write(path, header, rows):
 
 
 def row(name, p50, n=100):
-    return {"kind": "row", "row": name, "p50_ms": p50, "p95_ms": p50 * 1.2, "fps": 1000 / p50, "n": n}
+    return {"kind": "row", "row": name, "p50_ms": p50, "p95_ms": p50 * 1.2,
+            "fps": 1000 / p50, "throughput_ms": p50, "throughput_fps": 1000 / p50, "n": n}
 
 
 def test_table_and_regressions():
@@ -26,7 +27,7 @@ def test_table_and_regressions():
         bheader, brows = report.load(run)
         assert bheader["provenance"]["git_rev"] == "abc1234"
         md = report.table(brows)
-        assert "| a | 2.02 |" in md
+        assert "| a | 2.02 ms |" in md
         regressions = report.compare({r["row"]: r for r in report.load(base)[1]}, brows)
         assert regressions == ["b: 5.00 -> 5.60 ms (+12%)"], regressions
 
