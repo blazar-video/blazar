@@ -333,5 +333,12 @@ unsafe fn convert_thwc_u8_avx2(
 /// but until they are, this is the only path that runs.
 #[must_use]
 pub fn convert(bytes: &[u8], desc: &FrameDesc, w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if std::is_x86_feature_detected!("avx2") {
+            // SAFETY: guarded by the runtime feature check above.
+            return unsafe { convert_thwc_u8_avx2(bytes, desc, w, h) };
+        }
+    }
     convert_thwc_u8(bytes, desc, w, h)
 }
