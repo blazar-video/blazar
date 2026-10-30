@@ -187,7 +187,7 @@ unsafe fn convert_thwc_u8_avx2(
         row: usize,
         sx: usize,
         count: usize,
-        out_y: &mut [u8],
+        out_y: &mut [u8], // this row only: the caller slices it
         out_cb: &mut [i32],
         out_cr: &mut [i32],
         k: (
@@ -226,6 +226,8 @@ unsafe fn convert_thwc_u8_avx2(
         for i in 0..count {
             out_y[sx + i] = buf[i] as u8;
         }
+        // `out_y` is the current row, not the plane: indexing the plane here wrote
+        // every row pair over row 0.
 
         let cb = _mm256_mullo_epi32(_mm256_sub_epi32(_mm256_slli_epi32(b, 8), y16), cb_c);
         let cr = _mm256_mullo_epi32(_mm256_sub_epi32(_mm256_slli_epi32(r, 8), y16), cr_c);
@@ -250,9 +252,27 @@ unsafe fn convert_thwc_u8_avx2(
         while cx + 4 <= cw && cx * 2 + 8 < w {
             let sx = cx * 2;
             unsafe {
-                row(bytes, sy, sx, 8, &mut y_plane, &mut cb_a, &mut cr_a, k);
+                row(
+                    bytes,
+                    sy,
+                    sx,
+                    8,
+                    &mut y_plane[sy * w..(sy + 1) * w],
+                    &mut cb_a,
+                    &mut cr_a,
+                    k,
+                );
                 if has_b {
-                    row(bytes, sy + 1, sx, 8, &mut y_plane, &mut cb_b, &mut cr_b, k);
+                    row(
+                        bytes,
+                        sy + 1,
+                        sx,
+                        8,
+                        &mut y_plane[(sy + 1) * w..(sy + 2) * w],
+                        &mut cb_b,
+                        &mut cr_b,
+                        k,
+                    );
                 }
             }
             let rows = if has_b { 2 } else { 1 } as i32;
@@ -313,9 +333,5 @@ unsafe fn convert_thwc_u8_avx2(
 /// but until they are, this is the only path that runs.
 #[must_use]
 pub fn convert(bytes: &[u8], desc: &FrameDesc, w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-    // The AVX2 path is still wrong: `Y differs by 252` at 131x67, which is an
-    // unwritten region rather than a rounding error — the vector loop covers
-    // pixels 0..127 and the tail the rest, so the gap is inside `row()`. It stays
-    // out of the dispatch until the gate passes on mosk.
     convert_thwc_u8(bytes, desc, w, h)
 }
