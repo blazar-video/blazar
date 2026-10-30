@@ -42,7 +42,7 @@ fn main() {
         let reps = 50;
 
         // Float SIMD path, through the same entry point the encoder uses.
-        let frame = FrameRef::new(FrameBuffer::host_owned(rgb.clone()), d.clone());
+        let frame = FrameRef::new(FrameBuffer::host_owned(rgb.clone()), d);
         for _ in 0..3 {
             std::hint::black_box(stage.process(&frame).unwrap());
         }
@@ -54,11 +54,11 @@ fn main() {
 
         // Scalar fixed-point reference.
         for _ in 0..3 {
-            std::hint::black_box(integer::convert_thwc_u8(&rgb, &d, w as usize, h as usize));
+            std::hint::black_box(integer::convert(&rgb, &d, w as usize, h as usize));
         }
         let t0 = Instant::now();
         for _ in 0..reps {
-            std::hint::black_box(integer::convert_thwc_u8(&rgb, &d, w as usize, h as usize));
+            std::hint::black_box(integer::convert(&rgb, &d, w as usize, h as usize));
         }
         let integer_scalar = t0.elapsed().as_secs_f64() / f64::from(reps);
 

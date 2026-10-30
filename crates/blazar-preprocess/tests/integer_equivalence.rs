@@ -61,9 +61,9 @@ fn thwc_u8_matches_the_float_path_within_one_code_value() {
             let rgb = pixels(w, h, (w * h) ^ 0x9e37);
             let d = desc(w, h, colorspace);
 
-            let frame = FrameRef::new(FrameBuffer::host_owned(rgb.clone()), d.clone());
+            let frame = FrameRef::new(FrameBuffer::host_owned(rgb.clone()), d);
             let float = CpuPreprocess::new().process(&frame).expect("float path");
-            let (y, u, v) = integer::convert_thwc_u8(&rgb, &d, w as usize, h as usize);
+            let (y, u, v) = integer::convert(&rgb, &d, w as usize, h as usize);
 
             for (name, int, flt) in [
                 ("Y", &y, &float.y),
