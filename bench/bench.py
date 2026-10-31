@@ -76,6 +76,32 @@ def run_row(row: dict, cfg: dict) -> dict:
     done = 0
     failed = False
 
+    def drain_quiet(quiet_s: float = 0.25, timeout_s: float = 120.0) -> bool:
+        """Poll until nothing new has arrived for `quiet_s`.
+
+        Counting data-carrying units against a target does not work: 24 frames
+        produced 22 such units, because the tail of the stream is still in flight at
+        close. A drain that waits for `frames` data units therefore waits forever and
+        reports a deadline as if it were a measurement -- which is exactly what the
+        first run did.
+        """
+        nonlocal done, failed
+        last = time.monotonic()
+        deadline = last + timeout_s
+        while time.monotonic() < deadline:
+            units = enc.poll()
+            new = [u for u in units if u["data"]]
+            if new:
+                done += len(new)
+                last = time.monotonic()
+            if enc.stats.get("failed"):
+                failed = True
+                return False
+            if time.monotonic() - last > quiet_s:
+                return True
+            time.sleep(0.002)
+        return False
+
     def drain_until(total: int, timeout_s: float = 120.0) -> bool:
         """Wait until `total` encoded units have arrived, or give up.
 
@@ -118,8 +144,11 @@ def run_row(row: dict, cfg: dict) -> dict:
     t0 = time.perf_counter()
     for i in range(1, n):
         enc.submit(payload(i), width=w, height=h, fps=24.0, layout="thwc", range="full_u8")
-    complete = drain_until(done + frames, timeout_s=300.0)
-    throughput_ms = (time.perf_counter() - t0) * 1e3 / frames
+    complete = drain_quiet(quiet_s=0.5, timeout_s=300.0)
+    # The quiet window is part of the elapsed time, so subtract it: the clip is
+    # finished when the last unit lands, not when the poller gives up.
+    elapsed = time.perf_counter() - t0
+    throughput_ms = (elapsed - (0.5 if complete else 0.0)) * 1e3 / frames
 
     trace = enc.stats.get("trace", {})
     enc.close()
