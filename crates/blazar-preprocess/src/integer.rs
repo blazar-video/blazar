@@ -298,6 +298,21 @@ pub fn convert_avx2(
     }
 }
 
+/// The AVX2 conversion, absent off x86_64.
+///
+/// Present on every platform so callers and examples compile everywhere; `None`
+/// means "not this architecture", the same answer as "no AVX2 here".
+#[cfg(not(target_arch = "x86_64"))]
+#[must_use]
+pub fn convert_avx2(
+    _bytes: &[u8],
+    _desc: &FrameDesc,
+    _w: usize,
+    _h: usize,
+) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    None
+}
+
 /// Dispatch: AVX2 on x86_64, the scalar reference elsewhere.
 ///
 /// Correct — it matches the scalar path exactly on every shape the gate covers — but

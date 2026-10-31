@@ -74,6 +74,12 @@ feature_sets() {
     for features in "" "enc-x264" "enc-svtav1" "enc-vp9" "enc-x265" "enc-opus" \
                     "nvenc" "gpu-preprocess" "nvenc,gpu-preprocess" \
                     "enc-svtav1,enc-vp9,enc-x264,enc-opus"; do
+        # The NVENC SDK fork ships no Apple sys module, so anything with `nvenc` is
+        # unbuildable on macOS regardless of what pkg-config reports.
+        if [[ ($features == *nvenc* || $features == *gpu-preprocess*) && $(uname -s) == Darwin ]]; then
+            printf -- '--- features: %s  SKIPPED (no NVENC sys module on macOS)\n' "$features"
+            continue
+        fi
         missing=""
         for code in ${features//,/ }; do
             need=$(codes_need "$code")
