@@ -134,7 +134,7 @@ def run_row(row: dict, cfg: dict) -> dict:
     for i in range(1, n if row.get("latency", False) else 1):
         t0 = time.perf_counter()
         enc.submit(payload(i), width=w, height=h, fps=24.0, layout="thwc", range="full_u8")
-        if not drain_until(done + 1, timeout_s=10.0):
+        if not drain_until(done + 1, timeout_s=0.5):
             incomplete += 1
         latency.append((time.perf_counter() - t0) * 1e3)
 
