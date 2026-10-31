@@ -159,7 +159,13 @@ def run_row(row: dict, cfg: dict) -> dict:
         "preprocess": row["preprocess"], "width": w, "height": h,
         "source": {"dtype": "bf16", "layout": "bcthw", "resident": "device"},
         "basis": "latency: submit then drain each frame; throughput: whole clip",
-        **stats(latency if latency else [throughput_ms]),
+        # A latency row that could not drain every frame has no latency to report:
+        # its samples are a mixture of the deadline and instant failures, and a
+        # median over that is meaningless. Null it out rather than print it.
+        **({"latency_valid": False, "n": 0, "min_ms": None, "p50_ms": None,
+            "p95_ms": None, "max_ms": None, "fps": None}
+           if incomplete or not latency else
+           {"latency_valid": True, **stats(latency)}),
         "throughput_complete": complete and not failed and incomplete == 0,
         "incomplete_frames": incomplete,
         "throughput_ms": round(throughput_ms, 3),

@@ -36,10 +36,16 @@ def table(rows: list[dict]) -> str:
         "|---|---|---|---|---|---|",
     ]
     for r in rows:
-        lines.append(
-            f"| {r['row']} | {r['p50_ms']:.2f} ms | {r['p95_ms']:.2f} ms "
-            f"| {r['throughput_ms']:.2f} ms | {r['throughput_fps']:.1f} | {r['n']} |"
-        )
+        if r.get("p50_ms") is None:
+            lines.append(
+                f"| {r['row']} | not measurable | - "
+                f"| {r['throughput_ms']:.2f} ms | {r['throughput_fps']:.1f} | {r['n']} |"
+            )
+        else:
+            lines.append(
+                f"| {r['row']} | {r['p50_ms']:.2f} ms | {r['p95_ms']:.2f} ms "
+                f"| {r['throughput_ms']:.2f} ms | {r['throughput_fps']:.1f} | {r['n']} |"
+            )
     return "\n".join(lines)
 
 def main(argv: list[str] | None = None) -> int:
